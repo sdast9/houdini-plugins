@@ -1,8 +1,53 @@
 # houdini-plugins
 
-These are HDAs necessary to run a first attempt at a GUI for polyfem preprocessing and postprocessing.
+These are HDAs necessary to run a GUI for polyfem preprocessing and postprocessing.
 
 **THIS ASSUMES YOU HAVE A COMPILED VERSION OF POLYFEM ON YOUR MACHINE**
+
+## What is in this repo
+
+| asset | file | replaces |
+| --- | --- | --- |
+| `stevenabramowitch::dev::PolyFEM::2.0` (Object) | `object_stevenabramowitch.dev.PolyFEM.2.0.hdanc` | `PolyFEM.IBS.0.2` |
+| `readPVD::1.0` (Object) | `object_readPVD.1.0.hdanc` | `readPVD.0.24` |
+| `MSH_Reader::3.0` (SOP) | `sop_MSH_Reader.3.0.hdanc` | `MSH_Readerv0.8` |
+
+The `.hdanc` files are what you install (see Setup). They are **built from
+`src/`**, which is the source of truth -- Python modules, VEX, and the
+parameter interface. Rebuild any time with:
+
+```bash
+hython src/build_all.py
+```
+
+which also installs the results into your `otls` directory. The committed
+`.hdanc` files are built from the committed `src/`; note that Houdini stamps
+each save, so a rebuild always shows up as a binary diff even when nothing
+changed.
+
+Tests are headless and drive the real PolyFEM binary, which they expect to
+find at `../polyfem/build/PolyFEM_bin` -- i.e. with this repo checked out
+alongside a built PolyFEM:
+
+```
+some-dir/
+  houdini-plugins/   <- this repo
+  polyfem/build/PolyFEM_bin
+```
+
+```bash
+hython tests/test_polyfem_hda.py     # end-to-end: scene -> json -> sim -> pvd
+hython tests/test_polyfem_materials.py
+hython tests/test_readpvd_materials.py
+```
+
+Further reading:
+
+* [docs/hdas.md](docs/hdas.md) -- what each asset does, what changed from the
+  previous generation, and the conventions the three assets share.
+* [docs/per-element-materials.md](docs/per-element-materials.md) -- fiber
+  models, composites, and per-element material data, including the PolyFEM-side
+  contract they depend on.
 
 ## Setup
 
@@ -16,20 +61,16 @@ The first initial setup only has to be done once.
    - **Other platforms**: If the folders are not where just described, you will have to create the "otls" directory in the correct location.
    - **Updating Houdini**: If you are updating Houdini from a previous verision to a newer version and you are using these HDAs, be sure to copy the 'otls' directory from the old version to the corresponding directory of the new verision. You will also need to rerun the setup steps below for the new version. 
 
-3. **Place the HDAs**: Place the HDAs in this GitHub into the "otls" folder. 
+3. **Place the HDAs**: Place the three `.hdanc` files from this GitHub into the "otls" folder. (If you build from source instead, `hython src/build_all.py` copies them there for you.) 
 
 4. **Set up Houdini Shell**: With Houdini installed and running on your desktop, select the "Windows" dropdown menu and then select "Shell". If you are on Linux, this should have opened an xterm window. Houdini assumes that you are using xterm as your terminal. To proceed, install xterm on your system (e.g. `sudo apt install xterm`) and try again. You may have to close and reopen Houdini.
 
-5. **Install Python libraries**: Enter the following commands:
+5. **Install Python libraries**: None are required. This generation parses
+  `.msh` and VTK/VTU files natively with numpy, which ships with Houdini --
+  the `meshio` install the older HDAs needed is no longer necessary.
 
-  hython -m get-pip.py   
-  hython -m pip install meshio
- 
-  Note that this says "hython" and not "python". "hython" stands for the Houdini-specific version of Python.
-
-6. **Restart Houdini**: Restart Houdini if it is currently open.
-
-7. **Meshio library requirement**: The Houdini-specific version of Python (i.e. hython) requires the meshio library to run the polyfem hda. The code should let you know if the library has not been found when you try to use the HDA.
+6. **Restart Houdini**: Restart Houdini if it is currently open. (Refreshing
+  the asset libraries from the Assets menu also works.)
 
 ------
 

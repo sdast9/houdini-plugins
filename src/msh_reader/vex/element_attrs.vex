@@ -1,0 +1,9 @@
+// Prim wrangle (parallel): sequential primary-element number + true centroid.
+// (2.2 computed hex centroids from only 7 of 8 corners; fixed here.)
+i@ElementNum = i@is_volume ? @primnum : -1;
+
+vector c = {0, 0, 0};
+int n = primvertexcount(0, @primnum);
+for (int j = 0; j < n; j++)
+    c += point(0, "P", vertexpoint(0, vertexindex(0, @primnum, j)));
+v@centroid = c / n;

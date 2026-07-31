@@ -1,0 +1,63 @@
+// Detail wrangle: build primary elements and optional 3D surface prims from
+// the connectivity arrays written by the Python SOP. Vertex orderings match MSH_Reader 2.2
+// (tets: [1,3,2,0]; hexes: [0,1,3,2,4,5,7,6]).
+int mesh_dim = detail(0, "mesh_dim");
+
+int tet[] = detail(0, "tet_conn");
+int tet_ent[] = detail(0, "tet_entity");
+int n_tet = len(tet) / 4;
+for (int i = 0; i < n_tet; i++) {
+    int prim = addprim(0, "tet",
+        tet[i*4+1], tet[i*4+3], tet[i*4+2], tet[i*4+0]);
+    setprimattrib(0, "Entity", prim, tet_ent[i], "set");
+    setprimattrib(0, "is_volume", prim, 1, "set");
+}
+
+int hex[] = detail(0, "hex_conn");
+int hex_ent[] = detail(0, "hex_entity");
+int n_hex = len(hex) / 8;
+for (int i = 0; i < n_hex; i++) {
+    int prim = addprim(0, "hex",
+        hex[i*8+0], hex[i*8+1], hex[i*8+3], hex[i*8+2],
+        hex[i*8+4], hex[i*8+5], hex[i*8+7], hex[i*8+6]);
+    setprimattrib(0, "Entity", prim, hex_ent[i], "set");
+    setprimattrib(0, "is_volume", prim, 1, "set");
+}
+
+int tri[] = detail(0, "tri_conn");
+int tri_ent[] = detail(0, "tri_entity");
+int n_tri = len(tri) / 3;
+for (int i = 0; i < n_tri; i++) {
+    int prim = addprim(0, "poly", tri[i*3+0], tri[i*3+1], tri[i*3+2]);
+    if (mesh_dim == 2) {
+        setprimattrib(0, "Entity", prim, tri_ent[i], "set");
+        setprimattrib(0, "is_volume", prim, 1, "set");
+    } else {
+        setprimattrib(0, "surface_entity", prim, tri_ent[i], "set");
+        setprimattrib(0, "is_volume", prim, 0, "set");
+    }
+}
+
+int quad[] = detail(0, "quad_conn");
+int quad_ent[] = detail(0, "quad_entity");
+int n_quad = len(quad) / 4;
+for (int i = 0; i < n_quad; i++) {
+    int prim = addprim(0, "poly",
+        quad[i*4+0], quad[i*4+1], quad[i*4+2], quad[i*4+3]);
+    if (mesh_dim == 2) {
+        setprimattrib(0, "Entity", prim, quad_ent[i], "set");
+        setprimattrib(0, "is_volume", prim, 1, "set");
+    } else {
+        setprimattrib(0, "surface_entity", prim, quad_ent[i], "set");
+        setprimattrib(0, "is_volume", prim, 0, "set");
+    }
+}
+
+int line[] = detail(0, "line_conn");
+int line_ent[] = detail(0, "line_entity");
+int n_line = len(line) / 2;
+for (int i = 0; i < n_line; i++) {
+    int prim = addprim(0, "polyline", line[i*2+0], line[i*2+1]);
+    setprimattrib(0, "Entity", prim, line_ent[i], "set");
+    setprimattrib(0, "is_volume", prim, 1, "set");
+}

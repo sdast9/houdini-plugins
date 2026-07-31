@@ -1,0 +1,4585 @@
+# Dialog script for stevenabramowitch::dev::PolyFEM::1.2 automatically generated
+
+{
+    name	stevenabramowitch::dev::PolyFEM::1.2
+    script	stevenabramowitch::dev::box_maker::1.0
+    label	"PolyFEM (Dev)"
+
+    help {
+	""
+    }
+
+    inputlabel	1	parent
+
+    group {
+        name    "stdswitcher7"
+        label   "Transform"
+        invisibletab
+
+        parm {
+            name    "xOrd"
+            baseparm
+            label   "Transform Order"
+            invisible
+            joinnext
+            export  none
+        }
+        parm {
+            name    "rOrd"
+            baseparm
+            label   "Rotate Order"
+            nolabel
+            invisible
+            export  none
+        }
+        parm {
+            name    "t"
+            baseparm
+            label   "Translate"
+            invisible
+            export  none
+        }
+        parm {
+            name    "r"
+            baseparm
+            label   "Rotate"
+            invisible
+            export  none
+        }
+        parm {
+            name    "s"
+            baseparm
+            label   "Scale"
+            invisible
+            export  none
+        }
+        parm {
+            name    "p"
+            baseparm
+            label   "Pivot Translate"
+            invisible
+            export  none
+        }
+        parm {
+            name    "pr"
+            baseparm
+            label   "Pivot Rotate"
+            invisible
+            export  none
+        }
+        parm {
+            name    "scale"
+            baseparm
+            label   "Uniform Scale"
+            invisible
+            export  none
+        }
+        parm {
+            name    "pre_xform"
+            baseparm
+            label   "Modify Pre-Transform"
+            invisible
+            export  none
+        }
+        parm {
+            name    "keeppos"
+            baseparm
+            label   "Keep Position When Parenting"
+            invisible
+            export  none
+        }
+        parm {
+            name    "childcomp"
+            baseparm
+            label   "Child Compensation"
+            invisible
+            export  none
+        }
+        parm {
+            name    "constraints_on"
+            baseparm
+            label   "Enable Constraints"
+            invisible
+            export  none
+        }
+        parm {
+            name    "constraints_path"
+            baseparm
+            label   "Constraints"
+            invisible
+            export  none
+        }
+        parm {
+            name    "lookatpath"
+            baseparm
+            label   "Look At"
+            invisible
+            export  none
+        }
+        parm {
+            name    "lookupobjpath"
+            baseparm
+            label   "Look Up Object"
+            invisible
+            export  none
+        }
+        parm {
+            name    "lookup"
+            baseparm
+            label   "Look At Up Vector"
+            invisible
+            export  none
+        }
+        parm {
+            name    "pathobjpath"
+            baseparm
+            label   "Path Object"
+            invisible
+            export  none
+        }
+        parm {
+            name    "roll"
+            baseparm
+            label   "Roll"
+            invisible
+            export  none
+        }
+        parm {
+            name    "pos"
+            baseparm
+            label   "Position"
+            invisible
+            export  none
+        }
+        parm {
+            name    "uparmtype"
+            baseparm
+            label   "Parameterization"
+            invisible
+            export  none
+        }
+        parm {
+            name    "pathorient"
+            baseparm
+            label   "Orient Along Path"
+            invisible
+            export  none
+        }
+        parm {
+            name    "up"
+            baseparm
+            label   "Orient Up Vector"
+            invisible
+            export  none
+        }
+        parm {
+            name    "bank"
+            baseparm
+            label   "Auto-Bank factor"
+            invisible
+            export  none
+        }
+    }
+
+    group {
+        name    "stdswitcher7_1"
+        label   "Render"
+        invisibletab
+
+        parm {
+            name    "shop_materialpath"
+            baseparm
+            label   "Material"
+            export  none
+        }
+        parm {
+            name    "shop_materialopts"
+            baseparm
+            label   "Options"
+            invisible
+            export  none
+        }
+        parm {
+            name    "tdisplay"
+            baseparm
+            label   "Display"
+            joinnext
+            export  none
+        }
+        parm {
+            name    "display"
+            baseparm
+            label   "Display"
+            export  none
+        }
+        parm {
+            name    "viewportlod"
+            label   "Display As"
+            type    ordinal
+            default { "full" }
+            help    "Choose how the object's geometry should be rendered in the viewport"
+            menu {
+                "full"      "Full Geometry"
+                "points"    "Point Cloud"
+                "box"       "Bounding Box"
+                "centroid"  "Centroid"
+                "hidden"    "Hidden"
+                "subd"      "Subdivision Surface / Curves"
+            }
+            parmtag { "spare_category" "Render" }
+        }
+        parm {
+            name    "vm_rendervisibility"
+            label   "Render Visibility"
+            type    string
+            default { "*" }
+            menureplace {
+                "*"                             "Visible to all"
+                "primary"                       "Visible only to primary rays"
+                "primary|shadow"                "Visible only to primary and shadow rays"
+                "-primary"                      "Invisible to primary rays (Phantom)"
+                "-diffuse"                      "Invisible to diffuse rays"
+                "-diffuse&-reflect&-refract"    "Invisible to secondary rays"
+                ""                              "Invisible (Unrenderable)"
+            }
+            parmtag { "mantra_class" "object" }
+            parmtag { "mantra_name" "rendervisibility" }
+            parmtag { "spare_category" "Render" }
+        }
+        parm {
+            name    "vm_rendersubd"
+            label   "Render Polygons As Subdivision (Mantra)"
+            type    toggle
+            default { "0" }
+            parmtag { "mantra_class" "object" }
+            parmtag { "mantra_name" "rendersubd" }
+            parmtag { "spare_category" "Geometry" }
+        }
+        parm {
+            name    "vm_subdstyle"
+            label   "Subdivision Style"
+            type    string
+            default { "mantra_catclark" }
+            hidewhen "{ vm_rendersubd == 0 }"
+            menu {
+                "mantra_catclark"   "Mantra Catmull-Clark"
+                "osd_catclark"      "OpenSubdiv Catmull-Clark"
+            }
+            parmtag { "mantra_class" "object" }
+            parmtag { "mantra_name" "subdstyle" }
+            parmtag { "spare_category" "Geometry" }
+        }
+        parm {
+            name    "vm_subdgroup"
+            label   "Subdivision Group"
+            type    string
+            default { "" }
+            hidewhen "{ vm_rendersubd == 0 }"
+            parmtag { "mantra_class" "object" }
+            parmtag { "mantra_name" "subdgroup" }
+            parmtag { "spare_category" "Geometry" }
+        }
+        parm {
+            name    "vm_osd_quality"
+            label   "Open Subdiv Quality"
+            type    float
+            default { "1" }
+            hidewhen "{ vm_rendersubd == 0 vm_subdstyle != osd_catclark }"
+            range   { 0 10 }
+            parmtag { "mantra_class" "object" }
+            parmtag { "mantra_name" "osd_quality" }
+            parmtag { "spare_category" "Geometry" }
+        }
+        parm {
+            name    "vm_osd_vtxinterp"
+            label   "OSD Vtx Interp"
+            type    integer
+            default { "2" }
+            hidewhen "{ vm_rendersubd == 0 vm_subdstyle != osd_catclark }"
+            menu {
+                "0" "No vertex interpolation"
+                "1" "Edges only"
+                "2" "Edges and Corners"
+            }
+            range   { 0 10 }
+            parmtag { "mantra_class" "object" }
+            parmtag { "mantra_name" "osd_vtxinterp" }
+            parmtag { "spare_category" "Geometry" }
+        }
+        parm {
+            name    "vm_osd_fvarinterp"
+            label   "OSD FVar Interp"
+            type    integer
+            default { "4" }
+            hidewhen "{ vm_rendersubd == 0 vm_subdstyle != osd_catclark }"
+            menu {
+                "0" "Smooth everywhere"
+                "1" "Sharpen corners only"
+                "2" "Sharpen edges and corners"
+                "3" "Sharpen edges and propagated corners"
+                "4" "Sharpen all boundaries"
+                "5" "Bilinear interpolation"
+            }
+            range   { 0 10 }
+            parmtag { "mantra_class" "object" }
+            parmtag { "mantra_name" "osd_fvarinterp" }
+            parmtag { "spare_category" "Geometry" }
+        }
+        group {
+            name    "folder3"
+            label   "Shading"
+
+            parm {
+                name    "categories"
+                label   "Categories"
+                type    string
+                default { "" }
+                help    "A list of tags which can be used to select the object"
+                parmtag { "spare_category" "Shading" }
+            }
+            parm {
+                name    "reflectmask"
+                label   "Reflection Mask"
+                type    oplist
+                default { "*" }
+                help    "Objects that will be reflected on this object."
+                parmtag { "opexpand" "1" }
+                parmtag { "opfilter" "!!OBJ/GEOMETRY!!" }
+                parmtag { "oprelative" "/obj" }
+                parmtag { "spare_category" "Shading" }
+            }
+            parm {
+                name    "refractmask"
+                label   "Refraction Mask"
+                type    oplist
+                default { "*" }
+                help    "Objects that will be refracted on this object."
+                parmtag { "opexpand" "1" }
+                parmtag { "opfilter" "!!OBJ/GEOMETRY!!" }
+                parmtag { "oprelative" "/obj" }
+                parmtag { "spare_category" "Shading" }
+            }
+            parm {
+                name    "lightmask"
+                label   "Light Mask"
+                type    oplist
+                default { "*" }
+                help    "Lights that illuminate this object."
+                parmtag { "opexpand" "1" }
+                parmtag { "opfilter" "!!OBJ/LIGHT!!" }
+                parmtag { "oprelative" "/obj" }
+                parmtag { "spare_category" "Shading" }
+            }
+            parm {
+                name    "lightcategories"
+                label   "Light Selection"
+                type    string
+                default { "*" }
+                parmtag { "spare_category" "Shading" }
+            }
+            parm {
+                name    "vm_lpetag"
+                label   "LPE Tag"
+                type    string
+                default { "" }
+                parmtag { "mantra_class" "object" }
+                parmtag { "mantra_name" "lpetag" }
+                parmtag { "spare_category" "Shading" }
+            }
+            parm {
+                name    "vm_volumefilter"
+                label   "Volume Filter"
+                type    string
+                default { "box" }
+                menu {
+                    "box"       "Box Filter"
+                    "gaussian"  "Gaussian"
+                    "bartlett"  "Bartlett (triangle)"
+                    "catrom"    "Catmull-Rom"
+                    "hanning"   "Hanning"
+                    "blackman"  "Blackman"
+                    "sinc"      "Sinc (sharpening)"
+                }
+                parmtag { "mantra_class" "object" }
+                parmtag { "mantra_name" "filter" }
+                parmtag { "spare_category" "Shading" }
+            }
+            parm {
+                name    "vm_volumefilterwidth"
+                label   "Volume Filter Width"
+                type    float
+                default { "1" }
+                range   { 0.001 5 }
+                parmtag { "mantra_class" "object" }
+                parmtag { "mantra_name" "filterwidth" }
+                parmtag { "spare_category" "Shading" }
+            }
+            parm {
+                name    "vm_matte"
+                label   "Matte shading"
+                type    toggle
+                default { "0" }
+                parmtag { "mantra_class" "object" }
+                parmtag { "mantra_name" "matte" }
+                parmtag { "spare_category" "Shading" }
+            }
+            parm {
+                name    "vm_rayshade"
+                label   "Raytrace Shading"
+                type    toggle
+                default { "0" }
+                parmtag { "mantra_class" "object" }
+                parmtag { "mantra_name" "rayshade" }
+                parmtag { "spare_category" "Shading" }
+            }
+        }
+
+        group {
+            name    "folder3_1"
+            label   "Sampling"
+
+            parm {
+                name    "geo_velocityblur"
+                label   "Geometry Velocity Blur"
+                type    ordinal
+                default { "off" }
+                disablewhen "{ allowmotionblur == 0 }"
+                menu {
+                    "off"       "No Velocity Blur"
+                    "on"        "Velocity Blur"
+                    "accelblur" "Acceleration Blur"
+                }
+            }
+            parm {
+                name    "geo_accelattribute"
+                label   "Acceleration Attribute"
+                type    string
+                default { "accel" }
+                hidewhen "{ geo_velocityblur != accelblur }"
+                parmtag { "spare_category" "Sampling" }
+            }
+        }
+
+        group {
+            name    "folder3_2"
+            label   "Dicing"
+
+            parm {
+                name    "vm_shadingquality"
+                label   "Shading Quality"
+                type    float
+                default { "1" }
+                range   { 0 10 }
+                parmtag { "mantra_class" "object" }
+                parmtag { "mantra_name" "shadingquality" }
+                parmtag { "spare_category" "Dicing" }
+            }
+            parm {
+                name    "vm_flatness"
+                label   "Dicing Flatness"
+                type    float
+                default { "0.05" }
+                range   { 0 1 }
+                parmtag { "mantra_class" "object" }
+                parmtag { "mantra_name" "flatness" }
+                parmtag { "spare_category" "Dicing" }
+            }
+            parm {
+                name    "vm_raypredice"
+                label   "Ray Predicing"
+                type    integer
+                default { "0" }
+                menu {
+                    "0" "Disable Predicing"
+                    "1" "Full Predicing"
+                    "2" "Precompute Bounds"
+                }
+                range   { 0 10 }
+                parmtag { "mantra_class" "object" }
+                parmtag { "mantra_name" "raypredice" }
+                parmtag { "spare_category" "Dicing" }
+            }
+            parm {
+                name    "vm_curvesurface"
+                label   "Shade Curves As Surfaces"
+                type    toggle
+                default { "0" }
+                parmtag { "mantra_class" "object" }
+                parmtag { "mantra_name" "curvesurface" }
+                parmtag { "spare_category" "Dicing" }
+            }
+        }
+
+        group {
+            name    "folder3_3"
+            label   "Geometry"
+
+            parm {
+                name    "vm_rmbackface"
+                label   "Backface Removal"
+                type    toggle
+                default { "0" }
+                parmtag { "mantra_class" "object" }
+                parmtag { "mantra_name" "rmbackface" }
+                parmtag { "spare_category" "Geometry" }
+            }
+            parm {
+                name    "shop_geometrypath"
+                label   "Procedural Shader"
+                type    oppath
+                default { "" }
+                parmtag { "opfilter" "!!SHOP/GEOMETRY!!" }
+                parmtag { "oprelative" "." }
+                parmtag { "spare_category" "Geometry" }
+            }
+            parm {
+                name    "vm_forcegeometry"
+                label   "Force Procedural Geometry Output"
+                type    toggle
+                default { "1" }
+                parmtag { "spare_category" "Geometry" }
+            }
+            parm {
+                name    "vm_rendersubdcurves"
+                label   "Render Polygon Curves As Subdivision (Mantra)"
+                type    toggle
+                default { "0" }
+                parmtag { "mantra_class" "object" }
+                parmtag { "mantra_name" "rendersubdcurves" }
+                parmtag { "spare_category" "Geometry" }
+            }
+            parm {
+                name    "vm_renderpoints"
+                label   "Render As Points (Mantra)"
+                type    integer
+                default { "2" }
+                menu {
+                    "0" "No Point Rendering"
+                    "1" "Render Only Points"
+                    "2" "Render Unconnected Points"
+                }
+                range   { 0 10 }
+                parmtag { "mantra_class" "object" }
+                parmtag { "mantra_name" "renderpoints" }
+                parmtag { "spare_category" "Geometry" }
+            }
+            parm {
+                name    "vm_renderpointsas"
+                label   "Render Points As (Mantra)"
+                type    integer
+                default { "0" }
+                disablewhen "{ vm_renderpoints == 0 }"
+                menu {
+                    "0" "Spheres"
+                    "1" "Circles"
+                }
+                range   { 0 10 }
+                parmtag { "mantra_class" "object" }
+                parmtag { "mantra_name" "renderpointsas" }
+                parmtag { "spare_category" "Geometry" }
+            }
+            parm {
+                name    "vm_usenforpoints"
+                label   "Use N For Point Rendering"
+                type    toggle
+                default { "0" }
+                disablewhen "{ vm_renderpoints == 0 }"
+                parmtag { "mantra_class" "object" }
+                parmtag { "mantra_name" "usenforpoints" }
+                parmtag { "spare_category" "Geometry" }
+            }
+            parm {
+                name    "vm_pointscale"
+                label   "Point Scale"
+                type    float
+                default { "1" }
+                disablewhen "{ vm_renderpoints == 0 }"
+                range   { 0! 10 }
+                parmtag { "mantra_class" "object" }
+                parmtag { "mantra_name" "pointscale" }
+                parmtag { "spare_category" "Geometry" }
+            }
+            parm {
+                name    "vm_pscalediameter"
+                label   "Treat Point Scale as Diameter Instead of Radius"
+                type    toggle
+                default { "0" }
+                parmtag { "mantra_class" "object" }
+                parmtag { "mantra_name" "pscalediameter" }
+                parmtag { "spare_category" "Geometry" }
+            }
+            parm {
+                name    "vm_metavolume"
+                label   "Metaballs as Volume"
+                type    toggle
+                default { "0" }
+                parmtag { "mantra_class" "object" }
+                parmtag { "mantra_name" "metavolume" }
+                parmtag { "spare_category" "Geometry" }
+            }
+            parm {
+                name    "vm_coving"
+                label   "Coving"
+                type    integer
+                default { "1" }
+                menu {
+                    "0" "Disable Coving"
+                    "1" "Coving for displacement/sub-d"
+                    "2" "Coving for all primitives"
+                }
+                range   { 0 10 }
+                parmtag { "mantra_class" "object" }
+                parmtag { "mantra_name" "coving" }
+                parmtag { "spare_category" "Geometry" }
+            }
+            parm {
+                name    "vm_materialoverride"
+                label   "Material Override"
+                type    string
+                default { "compact" }
+                menu {
+                    "none"      "Disabled"
+                    "full"      "Evaluate for Each Primitve/Point"
+                    "compact"   "Evaluate Once"
+                }
+                parmtag { "spare_category" "Geometry" }
+            }
+            parm {
+                name    "vm_overridedetail"
+                label   "Ignore Geometry Attribute Shaders"
+                type    toggle
+                default { "0" }
+                parmtag { "mantra_class" "object" }
+                parmtag { "mantra_name" "overridedetail" }
+                parmtag { "spare_category" "Geometry" }
+            }
+            parm {
+                name    "vm_procuseroottransform"
+                label   "Proc Use Root Transform"
+                type    toggle
+                default { "1" }
+                parmtag { "mantra_class" "object" }
+                parmtag { "mantra_name" "procuseroottransform" }
+                parmtag { "spare_category" "Geometry" }
+            }
+        }
+
+    }
+
+    group {
+        name    "stdswitcher7_2"
+        label   "Misc"
+        invisibletab
+
+        parm {
+            name    "use_dcolor"
+            baseparm
+            label   "Set Wireframe Color"
+            export  none
+        }
+        parm {
+            name    "dcolor"
+            baseparm
+            label   "Wireframe Color"
+            export  none
+        }
+        parm {
+            name    "picking"
+            baseparm
+            label   "Viewport Selecting Enabled"
+            export  none
+        }
+        parm {
+            name    "pickscript"
+            baseparm
+            label   "Select Script"
+            export  none
+        }
+        parm {
+            name    "caching"
+            baseparm
+            label   "Cache Object Transform"
+            export  none
+        }
+        parm {
+            name    "vport_shadeopen"
+            baseparm
+            label   "Shade Open Curves In Viewport"
+            export  none
+        }
+        parm {
+            name    "vport_displayassubdiv"
+            baseparm
+            label   "Display as Subdivision in Viewport"
+            invisible
+            export  none
+        }
+        parm {
+            name    "vport_onionskin"
+            baseparm
+            label   "Onion Skinning"
+            export  none
+        }
+    }
+
+    parm {
+        name    "renderable"
+        baseparm
+        label   "Renderable"
+        invisible
+        export  none
+    }
+    group {
+        name    "Main"
+        label   "Main"
+
+        parm {
+            name    "polyfem_bin"
+            label   "PolyFEM Binary"
+            type    file
+            default { "" }
+            parmtag { "script_callback" "hou.pwd().hm().polyfem_bin_check(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "working_dir"
+            label   "Working Directory"
+            type    directory
+            default { "" }
+            parmtag { "script_callback" "hou.pwd().hm().working_dir_check(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "main_sep"
+            label   "Separator"
+            type    separator
+            default { "" }
+        }
+        parm {
+            name    "Export_params"
+            label   "Run PolyFEM"
+            type    button
+            joinnext
+            default { "0" }
+            help    "Write params.json and launch PolyFEM in a terminal window."
+            parmtag { "script_callback" "hou.pwd().hm().write_params(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "run_background"
+            label   "Run in Background"
+            type    button
+            joinnext
+            default { "0" }
+            help    "Write params.json and launch PolyFEM headless; output streams to <working_dir>/output/log.txt."
+            parmtag { "script_callback" "hou.pwd().hm().run_background(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "show_log"
+            label   "Show Log"
+            type    button
+            default { "0" }
+            help    "Open the most recent background-run log."
+            parmtag { "script_callback" "hou.pwd().hm().show_log(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "write_only"
+            label   "Write params.json Only"
+            type    button
+            default { "0" }
+            help    "Write params.json and the selection files without launching PolyFEM."
+            parmtag { "script_callback" "hou.pwd().hm().write_params_only(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "sepparm5"
+            label   "Separator"
+            type    separator
+            default { "" }
+        }
+    }
+
+    group {
+        name    "Main_1"
+        label   "Geometry"
+
+        parm {
+            name    "geo_int"
+            label   "Num of Geometries"
+            type    integer
+            joinnext
+            default { "1" }
+            range   { 1 20 }
+            parmtag { "script_callback" "hou.pwd().hm().clear_geos(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "clear"
+            label   "Clear All"
+            type    button
+            default { "0" }
+            parmtag { "script_callback" "hou.pwd().hm().clear_all_geos(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        multiswitcher {
+            name    "num_geos"
+            label    "Number of Geometries"
+            invisible
+            default 1
+            parmtag { "script_callback" "" }
+            parmtag { "script_callback_language" "python" }
+
+            parm {
+                name    "file_location#"
+                label   "file_location"
+                type    geometry
+                default { "" }
+                parmtag { "filechooser_mode" "read" }
+                parmtag { "filechooser_pattern" "*.msh, *.obj, *.stl,*.ply" }
+                parmtag { "script_callback" "hou.pwd().hm().create_geo_nodes(kwargs)" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "geo_label1_#"
+                label   "Message"
+                type    label
+                default { "* copies file to input folder in working directory after selection" }
+                parmtag { "sidefx::look" "block" }
+            }
+            parm {
+                name    "is_obstacle#"
+                label   "Is obstacle?"
+                type    toggle
+                joinnext
+                default { "0" }
+                parmtag { "script_callback" "hou.pwd().hm().create_geo_nodes(kwargs)" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "geo_duplicate_#"
+                label   "Duplicate Geometry"
+                type    button
+                default { "0" }
+                parmtag { "script_callback" "hou.pwd().hm().geo_duplicate(kwargs)" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "is_enabled#"
+                label   "Is enabled?"
+                type    toggle
+                default { "1" }
+                parmtag { "script_callback_language" "python" }
+            }
+            groupcollapsible {
+                name    "fiber_display_#"
+                label   "Fiber / Material Display"
+                disablewhentab "{ is_obstacle# != 0 }"
+                hidewhentab "{ is_obstacle# != 0 }"
+
+                parm {
+                    name    "show_fibers#"
+                    label   "Show Fiber Directions"
+                    type    toggle
+                    default { "0" }
+                    help    "Draw the exact PolyFEM reference direction a0 in simulation/world coordinates. The Geometry Transform moves the mesh but, matching PolyFEM, does not rotate or scale a0."
+                    parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "fiber_scale#"
+                    label   "Fiber Line Scale"
+                    type    float
+                    default { "0.5" }
+                    disablewhen "{ show_fibers# != 1 }"
+                    range   { 0.01 5 }
+                    parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "fiber_surface_alpha#"
+                    label   "Surface Opacity While Showing Fibers"
+                    type    float
+                    default { "0.2" }
+                    disablewhen "{ show_fibers# != 1 }"
+                    range   { 0 1 }
+                    parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "fiber_max_lines#"
+                    label   "Max Fiber Lines"
+                    type    integer
+                    default { "20000" }
+                    disablewhen "{ show_fibers# != 1 }"
+                    range   { 100 200000 }
+                    parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "fiber_color_mode#"
+                    label   "Fiber Color"
+                    type    ordinal
+                    default { "0" }
+                    disablewhen "{ show_fibers# != 1 }"
+                    menu {
+                        "direction_rgb" "Direction (RGB)"
+                        "family"        "Per Family"
+                        "uniform"       "Uniform"
+                    }
+                    parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "fiber_color#"
+                    label   "Uniform Fiber Color"
+                    type    color
+                    size    3
+                    default { "1" "1" "1" }
+                    disablewhen "{ show_fibers# != 1 } { fiber_color_mode# != uniform }"
+                    range   { 0 1 }
+                    parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "color_by#"
+                    label   "Surface Color By"
+                    type    ordinal
+                    default { "0" }
+                    menu {
+                        "subdomains" "Subdomain Colors"
+                        "kappa"      "Fiber Dispersion (kappa)"
+                        "fiber_rgb"  "Fiber Direction (RGB)"
+                    }
+                    parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+            }
+            groupcollapsible {
+                name    "Transform__#"
+                label   "Transform (World Coordinates; Adjusting Pivot after Transform may yield undesired results)"
+
+                parm {
+                    name    "xform_xOrd__#"
+                    label   "Transform Order"
+                    type    ordinal
+                    invisible
+                    joinnext
+                    default { "0" }
+                    help    "None"
+                    menu {
+                        "srt"   "Scale Rot Trans"
+                        "str"   "Scale Trans Rot"
+                        "rst"   "Rot Scale Trans"
+                        "rts"   "Rot Trans Scale"
+                        "tsr"   "Trans Scale Rot"
+                        "trs"   "Trans Rot Scale"
+                    }
+                    parmtag { "cook_dependent" "1" }
+                    parmtag { "spare_category" "Pre-Transform" }
+                }
+                parm {
+                    name    "xform_rOrd__#"
+                    label   "Pre-Rotate Order"
+                    type    ordinal
+                    invisible
+                    nolabel
+                    default { "0" }
+                    help    "None"
+                    menu {
+                        "xyz"   "Rx Ry Rz"
+                        "xzy"   "Rx Rz Ry"
+                        "yxz"   "Ry Rx Rz"
+                        "yzx"   "Ry Rz Rx"
+                        "zxy"   "Rz Rx Ry"
+                        "zyx"   "Rz Ry Rx"
+                    }
+                    parmtag { "cook_dependent" "1" }
+                    parmtag { "spare_category" "Pre-Transform" }
+                }
+                parm {
+                    name    "xform_t__#"
+                    label   "Translate"
+                    type    vector
+                    size    3
+                    default { "0" "0" "0" }
+                    help    "None"
+                    range   { -1 1 }
+                    parmtag { "cook_dependent" "1" }
+                    parmtag { "spare_category" "Pre-Transform" }
+                }
+                parm {
+                    name    "xform_r__#"
+                    label   "Rotate"
+                    type    vector
+                    size    3
+                    default { "0" "0" "0" }
+                    help    "Rotates the mesh geometry only. PolyFEM does not apply this rotation to material fiber_direction; fiber a0 values remain in simulation/world coordinates."
+                    range   { -1 1 }
+                    parmtag { "cook_dependent" "1" }
+                    parmtag { "spare_category" "Pre-Transform" }
+                }
+                parm {
+                    name    "xform_s__#"
+                    label   "Scale"
+                    type    vector
+                    size    3
+                    default { "1" "1" "1" }
+                    help    "None"
+                    range   { -1 1 }
+                    parmtag { "cook_dependent" "1" }
+                    parmtag { "spare_category" "Pre-Transform" }
+                }
+                parm {
+                    name    "geo_sepparm2_#"
+                    label   "Separator"
+                    type    separator
+                    default { "" }
+                }
+                parm {
+                    name    "tpivot_#"
+                    label   "Pivot Translate"
+                    type    vector
+                    size    3
+                    default { "0" "0" "0" }
+                    help    "None"
+                    range   { -1 1 }
+                    parmtag { "cook_dependent" "1" }
+                    parmtag { "spare_category" "Transform" }
+                }
+                parm {
+                    name    "rpivot_#"
+                    label   "Pivot Rotate"
+                    type    vector
+                    size    3
+                    default { "0" "0" "0" }
+                    help    "None"
+                    range   { -1 1 }
+                    parmtag { "cook_dependent" "1" }
+                    parmtag { "spare_category" "Transform" }
+                }
+                parm {
+                    name    "geo_sepparm3_#"
+                    label   "Separator"
+                    type    separator
+                    default { "" }
+                }
+                parm {
+                    name    "resett#"
+                    label   "Reset Transform"
+                    type    button
+                    joinnext
+                    default { "0" }
+                    parmtag { "script_callback" "hou.pwd().hm().reset_transform(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "pivot_to_centroid#"
+                    label   "Pivot to Centroid"
+                    type    button
+                    joinnext
+                    default { "0" }
+                    parmtag { "script_callback" "hou.pwd().hm().pivot_to_centroid(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "pivot_to_origin#"
+                    label   "Pivot to Origin"
+                    type    button
+                    joinnext
+                    default { "0" }
+                    parmtag { "script_callback" "hou.pwd().hm().pivot_to_origin(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "geoemtry_to_origin#"
+                    label   "Geometry to Origin"
+                    type    button
+                    default { "0" }
+                    parmtag { "script_callback" "hou.pwd().hm().geometry_to_origin(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "geo_label3_#"
+                    label   "Message"
+                    type    label
+                    default { "Note: Hover mouse over sceneview window and hit 'return' to\nto enter transform mode. Hit 'esc' to exit mode. Pivot/Handle placed \nat object centroid by default." }
+                    parmtag { "sidefx::look" "block" }
+                }
+            }
+
+            parm {
+                name    "geo_sep10_#"
+                label   "Spacer"
+                type    separator
+                default { "" }
+                parmtag { "sidefx::layout_height" "large" }
+                parmtag { "sidefx::look" "blank" }
+            }
+            groupcollapsible {
+                name    "folder0_#"
+                label   "Add Change Number of Subdomains (Volumes for multimaterials)"
+                hidewhentab "{ is_obstacle# != 0 }"
+                hidewhen "{ is_obstacle# != 0 }"
+
+                parm {
+                    name    "elements_#"
+                    label   "Elements"
+                    type    string
+                    default { "" }
+                    parmtag { "script_action" "import soputils\nparent = kwargs['node']\nparent.allowEditingOfContents(True)\ngeo_number = kwargs['script_multiparm_index']\ngroup_node = parent.node(\"elements_\"+str(geo_number))\n\n\n\nkwargs['node'] = group_node\nkwargs['geometrytype'] = kwargs['node'].parmTuple('grouptype')\nkwargs['inputindex'] = 0\nkwargs['ordered'] = kwargs['node'].parm('ordered').eval()\nsoputils.selectGroupParm(kwargs)\n\n\n" }
+                    parmtag { "script_action_help" "Select geometry from an available viewport.\nShift-click to turn on Select Groups." }
+                    parmtag { "script_action_icon" "BUTTONS_reselect" }
+                    parmtag { "script_callback" "" }
+                }
+                parm {
+                    name    "subdomain_number_#"
+                    label   "Label"
+                    type    integer
+                    default { "1" }
+                    range   { 1 10 }
+                    parmtag { "script_callback" "hou.pwd().hm().fetch_elements(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "apply_changes#"
+                    label   "Apply Changes?"
+                    type    button
+                    joinnext
+                    default { "0" }
+                    parmtag { "script_callback" "hou.pwd().hm().update_entities(kwargs,0)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "revert#"
+                    label   "Back to Original?"
+                    type    button
+                    default { "0" }
+                    parmtag { "script_callback" "hou.pwd().hm().revert_entities(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+            }
+
+            parm {
+                name    "geo_sep1_#"
+                label   "Spacer"
+                type    separator
+                default { "" }
+                parmtag { "sidefx::layout_height" "large" }
+                parmtag { "sidefx::look" "blank" }
+            }
+            parm {
+                name    "geo_sep2_#"
+                label   "Spacer"
+                type    separator
+                default { "" }
+                parmtag { "sidefx::layout_height" "large" }
+                parmtag { "sidefx::look" "blank" }
+            }
+            parm {
+                name    "geo_label2_#"
+                label   "Message"
+                type    label
+                default { "Set Materials, Sidesets, Initial Conditions for Each Subdomain below" }
+                parmtag { "sidefx::look" "block" }
+            }
+            parm {
+                name    "geo_sep3_#"
+                label   "Spacer"
+                type    separator
+                default { "" }
+                hidewhen "{ is_obstacle# != 0 }"
+                parmtag { "sidefx::layout_height" "large" }
+                parmtag { "sidefx::look" "blank" }
+            }
+            parm {
+                name    "color_#"
+                label   "Label"
+                type    color
+                nolabel
+                size    3
+                default { "1" "0" "0" }
+                hidewhen "{ is_obstacle# != 1 }"
+                range   { 0 1 }
+                parmtag { "colortype" "hide" }
+            }
+            multiparm {
+                name    "num_volumes#"
+                label    "Number of Volumes"
+                invisible
+                default 1
+                hidewhen "{ is_obstacle# != 0 }"
+
+                parm {
+                    name    "subdomain#_#"
+                    label   "Geometry Subdomain"
+                    type    label
+                    default { "#_#" }
+                }
+                parm {
+                    name    "color_#_#"
+                    label   "Label"
+                    type    color
+                    nolabel
+                    joinnext
+                    size    3
+                    default { "1" "0" "0" }
+                    range   { 0 1 }
+                    parmtag { "colortype" "hide" }
+                }
+                parm {
+                    name    "mainOrder#_#"
+                    label   "Subdomain Element Order"
+                    type    ordinal
+                    default { "0" }
+                    menu {
+                        "1" "1"
+                        "2" "2"
+                        "3" "3"
+                        "4" "4"
+                    }
+                    parmtag { "script_callback_language" "python" }
+                }
+                groupcollapsible {
+                    name    "material#_#"
+                    label   "Material"
+                    disablewhentab "{ is_obstacle# != 0 }"
+                    disablewhen "{ is_obstacle# != 0 }"
+                    hidewhentab "{ is_obstacle# != 0 }"
+                    hidewhen "{ is_obstacle# != 0 }"
+
+                    parm {
+                        name    "materials#_#"
+                        label   "Material"
+                        type    ordinal
+                        joinnext
+                        default { "3" }
+                        menu {
+                            "LinearElasticity"                  "LinearElasticity"
+                            "HookeLinearElasticity"             "HookeLinearElasticity"
+                            "IncompressibleLinearElasticity"    "IncompressibleLinearElasticity"
+                            "NeoHookean"                        "NeoHookean"
+                            "IncompressibleOgden"               "IncompressibleOgden"
+                            "UnconstrainedOgden"                "UnconstrainedOgden"
+                            "MooneyRivlin"                      "MooneyRivlin"
+                            "MooneyRivlin3Param"                "MooneyRivlin3Param"
+                            "MooneyRivlin3ParamSymbolic"        "MooneyRivlin3ParamSymbolic"
+                            "SaintVenant"                       "SaintVenant"
+                            "FixedCorotational"                 "FixedCorotational"
+                            "IsochoricNeoHookean"               "Isochoric NeoHookean"
+                            "HGOFiber"                          "HGO Fiber (aligned)"
+                            "HGODispersion"                     "HGO Dispersion (GOH)"
+                            "ActiveFiber"                       "Active Fiber (muscle)"
+                            "MaterialSum"                       "Composite (Matrix + Fiber Families)"
+                        }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "matrix_model#_#"
+                        label   "Matrix Model"
+                        type    ordinal
+                        default { "3" }
+                        disablewhen "{ materials#_# != MaterialSum }"
+                        hidewhen "{ materials#_# != MaterialSum }"
+                        menu {
+                            "LinearElasticity"                  "LinearElasticity"
+                            "HookeLinearElasticity"             "HookeLinearElasticity"
+                            "IncompressibleLinearElasticity"    "IncompressibleLinearElasticity"
+                            "NeoHookean"                        "NeoHookean"
+                            "IncompressibleOgden"               "IncompressibleOgden"
+                            "UnconstrainedOgden"                "UnconstrainedOgden"
+                            "MooneyRivlin"                      "MooneyRivlin"
+                            "MooneyRivlin3Param"                "MooneyRivlin3Param"
+                            "MooneyRivlin3ParamSymbolic"        "MooneyRivlin3ParamSymbolic"
+                            "SaintVenant"                       "SaintVenant"
+                            "FixedCorotational"                 "FixedCorotational"
+                            "IsochoricNeoHookean"               "Isochoric NeoHookean"
+                            "None"                              "None (fiber only)"
+                        }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "damping#_#"
+                        label   "Damping"
+                        type    toggle
+                        default { "0" }
+                        hidewhen "@SHOW_FOR(NeoHookean LinearElasticity SaintVenant FixedCorotational)@"
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "E#_#"
+                        label   "E"
+                        type    float
+                        default { "100000" }
+                        disablewhen "@SHOW_FOR(NeoHookean LinearElasticity IncompressibleLinearElasticity FixedCorotational IsochoricNeoHookean)@"
+                        hidewhen "@SHOW_FOR(NeoHookean LinearElasticity IncompressibleLinearElasticity FixedCorotational IsochoricNeoHookean)@"
+                        range   { 0 1e+07 }
+                        parmtag { "script_callback_language" "python" }
+                        parmtag { "units" "" }
+                    }
+                    parm {
+                        name    "nu#_#"
+                        label   "Poisson's Ratio"
+                        type    float
+                        default { "0.45" }
+                        disablewhen "@SHOW_FOR(NeoHookean LinearElasticity IncompressibleLinearElasticity FixedCorotational IsochoricNeoHookean)@"
+                        hidewhen "@SHOW_FOR(NeoHookean LinearElasticity IncompressibleLinearElasticity FixedCorotational IsochoricNeoHookean)@"
+                        range   { -1 0.5 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "c1#_#"
+                        label   "C1"
+                        type    float
+                        default { "0" }
+                        disablewhen "@SHOW_FOR(MooneyRivlin MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
+                        hidewhen "@SHOW_FOR(MooneyRivlin MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
+                        range   { -10000 10000 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "c2#_#"
+                        label   "C2"
+                        type    float
+                        default { "0" }
+                        disablewhen "@SHOW_FOR(MooneyRivlin MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
+                        hidewhen "@SHOW_FOR(MooneyRivlin MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
+                        range   { -10000 10000 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "c3#_#"
+                        label   "C3"
+                        type    float
+                        default { "0" }
+                        disablewhen "@SHOW_FOR(MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
+                        hidewhen "@SHOW_FOR(MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
+                        range   { -10000 10000 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "d1#_#"
+                        label   "d1"
+                        type    float
+                        default { "0" }
+                        disablewhen "@SHOW_FOR(MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
+                        hidewhen "@SHOW_FOR(MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
+                        range   { -10000 10000 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "ogdenC#_#"
+                        label   "C"
+                        type    string
+                        default { "[0.0329e6]" }
+                        disablewhen "@SHOW_FOR(IncompressibleOgden)@"
+                        hidewhen "@SHOW_FOR(IncompressibleOgden)@"
+                        range   { -10000 10000 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "ogdenM#_#"
+                        label   "m"
+                        type    string
+                        default { "[6.82]" }
+                        disablewhen "@SHOW_FOR(IncompressibleOgden)@"
+                        hidewhen "@SHOW_FOR(IncompressibleOgden)@"
+                        range   { -10000 10000 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "ogden_alphas#_#"
+                        label   "alphas"
+                        type    string
+                        default { "[0.0329e6]" }
+                        disablewhen "@SHOW_FOR(UnconstrainedOgden)@"
+                        hidewhen "@SHOW_FOR(UnconstrainedOgden)@"
+                        range   { -10000 10000 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "ogden_mus#_#"
+                        label   "Mus"
+                        type    string
+                        default { "[6.82]" }
+                        disablewhen "@SHOW_FOR(UnconstrainedOgden)@"
+                        hidewhen "@SHOW_FOR(UnconstrainedOgden)@"
+                        range   { -10000 10000 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "ogden_ds#_#"
+                        label   "Ds"
+                        type    string
+                        default { "[1]" }
+                        disablewhen "@SHOW_FOR(UnconstrainedOgden)@"
+                        hidewhen "@SHOW_FOR(UnconstrainedOgden)@"
+                        range   { -10000 10000 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "bulk#_#"
+                        label   "Bulk Modulus"
+                        type    float
+                        default { "1e+08" }
+                        disablewhen "@SHOW_FOR(MooneyRivlin IncompressibleOgden)@"
+                        hidewhen "@SHOW_FOR(MooneyRivlin IncompressibleOgden)@"
+                        range   { -10000 10000 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "elast_tensor#_#"
+                        label   "Elasticity Tensor"
+                        type    string
+                        default { "[E11,E22,E33,nu12,nu13,nu23,mu23,mu31,mu12]" }
+                        disablewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@"
+                        hidewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@"
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "material_coord#_#"
+                        label   "Material Coord"
+                        type    string
+                        default { "[1,0,0,0,1,0,0,0,1]" }
+                        disablewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@"
+                        hidewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@"
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "hgo_k1#_#"
+                        label   "Fiber Stiffness k1"
+                        type    float
+                        default { "10000" }
+                        disablewhen "@SHOW_FOR_DIRECT(HGOFiber HGODispersion)@"
+                        hidewhen "@SHOW_FOR_DIRECT(HGOFiber HGODispersion)@"
+                        range   { 0 1e+07 }
+                        parmtag { "script_callback_language" "python" }
+                        parmtag { "units" "" }
+                    }
+                    parm {
+                        name    "hgo_k2#_#"
+                        label   "Exponential Stiffening k2"
+                        type    float
+                        default { "5" }
+                        disablewhen "@SHOW_FOR_DIRECT(HGOFiber HGODispersion)@"
+                        hidewhen "@SHOW_FOR_DIRECT(HGOFiber HGODispersion)@"
+                        range   { 0.0001 1000 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "kappa_source#_#"
+                        label   "Dispersion Source"
+                        type    ordinal
+                        default { "constant" }
+                        disablewhen "@SHOW_FOR_DIRECT(HGODispersion)@"
+                        hidewhen "@SHOW_FOR_DIRECT(HGODispersion)@"
+                        menu {
+                            "constant"   "Constant"
+                            "expression" "Expression of x,y,z,t"
+                            "attribute"  "Per-Element Attribute"
+                            "file"       "Per-Element File"
+                        }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "kappa#_#"
+                        label   "Fiber Dispersion (kappa)"
+                        type    float
+                        default { "0" }
+                        disablewhen "{ kappa_source#_# != constant } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        hidewhen "{ kappa_source#_# != constant } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        range   { 0 0.3333 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "kappa_expr#_#"
+                        label   "Dispersion Expression"
+                        type    string
+                        default { "0" }
+                        disablewhen "{ kappa_source#_# != expression } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        hidewhen "{ kappa_source#_# != expression } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "kappa_sop#_#"
+                        label   "Dispersion SOP"
+                        type    oppath
+                        default { "" }
+                        disablewhen "{ kappa_source#_# != attribute } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        hidewhen "{ kappa_source#_# != attribute } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        parmtag { "opfilter" "!!SOP!!" }
+                        parmtag { "oprelative" "." }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "kappa_attrib#_#"
+                        label   "Dispersion Attribute"
+                        type    string
+                        default { "kappa" }
+                        disablewhen "{ kappa_source#_# != attribute } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        hidewhen "{ kappa_source#_# != attribute } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "kappa_file#_#"
+                        label   "Dispersion File"
+                        type    file
+                        default { "" }
+                        disablewhen "{ kappa_source#_# != file } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        hidewhen "{ kappa_source#_# != file } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "k_chi#_#"
+                        label   "Switch Smoothness k_chi"
+                        type    float
+                        default { "100" }
+                        disablewhen "@SHOW_FOR_DIRECT(HGODispersion)@"
+                        hidewhen "@SHOW_FOR_DIRECT(HGODispersion)@"
+                        range   { 1 10000 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "Tmax#_#"
+                        label   "Max Active Tension"
+                        type    float
+                        default { "100000" }
+                        disablewhen "@SHOW_FOR_DIRECT(ActiveFiber)@"
+                        hidewhen "@SHOW_FOR_DIRECT(ActiveFiber)@"
+                        range   { 0 1e+07 }
+                        parmtag { "script_callback_language" "python" }
+                        parmtag { "units" "" }
+                    }
+                    parm {
+                        name    "activation#_#"
+                        label   "Activation"
+                        type    string
+                        default { "1" }
+                        disablewhen "@SHOW_FOR_DIRECT(ActiveFiber)@"
+                        hidewhen "@SHOW_FOR_DIRECT(ActiveFiber)@"
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_source#_#"
+                        label   "Fiber Direction Source"
+                        type    ordinal
+                        default { "constant" }
+                        help    "PolyFEM interprets these as reference directions a0 in simulation/world coordinates. A Geometry Transform changes mesh coordinates but does not transform these vector components."
+                        disablewhen "@SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "@SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        menu {
+                            "constant"    "Constant Direction"
+                            "expression"  "Expression of x,y,z,t"
+                            "attribute"   "Per-Element Attribute"
+                            "file"        "Per-Element File"
+                            "cylindrical" "Cylindrical (radial / circumferential / axial)"
+                            "curve"       "Curve Tangent (line of action)"
+                        }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_dir#_#"
+                        label   "Fiber Direction"
+                        type    vector
+                        size    3
+                        default { "1" "0" "0" }
+                        help    "Reference direction a0 in simulation/world coordinates. It is not rotated or scaled by this geometry's Transform parameters."
+                        disablewhen "{ fib_source#_# != constant } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "{ fib_source#_# != constant } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        range   { -1 1 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_expr#_#"
+                        label   "Fiber Expression"
+                        type    string
+                        default { "[1, 0, 0]" }
+                        disablewhen "{ fib_source#_# != expression } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "{ fib_source#_# != expression } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_sop#_#"
+                        label   "Fiber SOP"
+                        type    oppath
+                        default { "" }
+                        disablewhen "{ fib_source#_# != attribute } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "{ fib_source#_# != attribute } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        parmtag { "opfilter" "!!SOP!!" }
+                        parmtag { "oprelative" "." }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_attrib#_#"
+                        label   "Fiber Attribute"
+                        type    string
+                        default { "fiber1" }
+                        disablewhen "{ fib_source#_# != attribute } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "{ fib_source#_# != attribute } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_file#_#"
+                        label   "Fiber File"
+                        type    file
+                        default { "" }
+                        disablewhen "{ fib_source#_# != file } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "{ fib_source#_# != file } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_axis_origin#_#"
+                        label   "Cylinder Axis Origin"
+                        type    vector
+                        size    3
+                        default { "0" "0" "0" }
+                        disablewhen "{ fib_source#_# != cylindrical } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "{ fib_source#_# != cylindrical } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_axis_dir#_#"
+                        label   "Cylinder Axis Direction"
+                        type    vector
+                        size    3
+                        default { "0" "1" "0" }
+                        disablewhen "{ fib_source#_# != cylindrical } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "{ fib_source#_# != cylindrical } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_component#_#"
+                        label   "Cylinder Component"
+                        type    ordinal
+                        default { "circumferential" }
+                        disablewhen "{ fib_source#_# != cylindrical } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "{ fib_source#_# != cylindrical } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        menu {
+                            "circumferential" "Circumferential (hoop)"
+                            "radial"          "Radial (through wall)"
+                            "longitudinal"    "Longitudinal (along axis)"
+                        }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_curve#_#"
+                        label   "Line-of-Action Curve"
+                        type    oppath
+                        default { "" }
+                        disablewhen "{ fib_source#_# != curve } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "{ fib_source#_# != curve } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        parmtag { "opfilter" "!!SOP!!" }
+                        parmtag { "oprelative" "." }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_file_field#_#"
+                        label   "Fiber VTK Field"
+                        type    string
+                        default { "FIB_DIR1" }
+                        disablewhen "{ fib_source#_# != file } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "{ fib_source#_# != file } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    multiparm {
+                        name    "num_fiber_families#_#"
+                        label    "Num of Fiber Families"
+                        default 1
+                        disablewhen "{ materials#_# != MaterialSum }"
+                        hidewhen "{ materials#_# != MaterialSum }"
+
+                        parm {
+                            name    "fam_model#_#_#"
+                            label   "Family Model"
+                            type    ordinal
+                            default { "HGODispersion" }
+                            menu {
+                                "HGOFiber"      "HGO Fiber (aligned)"
+                                "HGODispersion" "HGO Dispersion (GOH)"
+                                "ActiveFiber"   "Active Fiber (muscle)"
+                            }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_k1#_#_#"
+                            label   "Fiber Stiffness k1"
+                            type    float
+                            default { "10000" }
+                            disablewhen "{ fam_model#_#_# == ActiveFiber }"
+                            hidewhen "{ fam_model#_#_# == ActiveFiber }"
+                            range   { 0 1e+07 }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_k2#_#_#"
+                            label   "Exponential Stiffening k2"
+                            type    float
+                            default { "5" }
+                            disablewhen "{ fam_model#_#_# == ActiveFiber }"
+                            hidewhen "{ fam_model#_#_# == ActiveFiber }"
+                            range   { 0.0001 1000 }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_kappa_source#_#_#"
+                            label   "Dispersion Source"
+                            type    ordinal
+                            default { "constant" }
+                            disablewhen "{ fam_model#_#_# != HGODispersion }"
+                            hidewhen "{ fam_model#_#_# != HGODispersion }"
+                            menu {
+                                "constant"   "Constant"
+                                "expression" "Expression of x,y,z,t"
+                                "attribute"  "Per-Element Attribute"
+                                "file"       "Per-Element File"
+                            }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_kappa#_#_#"
+                            label   "Fiber Dispersion (kappa)"
+                            type    float
+                            default { "0" }
+                            disablewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != constant }"
+                            hidewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != constant }"
+                            range   { 0 0.3333 }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_kappa_expr#_#_#"
+                            label   "Dispersion Expression"
+                            type    string
+                            default { "0" }
+                            disablewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != expression }"
+                            hidewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != expression }"
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_kappa_sop#_#_#"
+                            label   "Dispersion SOP"
+                            type    oppath
+                            default { "" }
+                            disablewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != attribute }"
+                            hidewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != attribute }"
+                            parmtag { "opfilter" "!!SOP!!" }
+                            parmtag { "oprelative" "." }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_kappa_attrib#_#_#"
+                            label   "Dispersion Attribute"
+                            type    string
+                            default { "kappa" }
+                            disablewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != attribute }"
+                            hidewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != attribute }"
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_kappa_file#_#_#"
+                            label   "Dispersion File"
+                            type    file
+                            default { "" }
+                            disablewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != file }"
+                            hidewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != file }"
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_k_chi#_#_#"
+                            label   "Switch Smoothness k_chi"
+                            type    float
+                            default { "100" }
+                            disablewhen "{ fam_model#_#_# != HGODispersion }"
+                            hidewhen "{ fam_model#_#_# != HGODispersion }"
+                            range   { 1 10000 }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_Tmax#_#_#"
+                            label   "Max Active Tension"
+                            type    float
+                            default { "100000" }
+                            disablewhen "{ fam_model#_#_# != ActiveFiber }"
+                            hidewhen "{ fam_model#_#_# != ActiveFiber }"
+                            range   { 0 1e+07 }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_activation#_#_#"
+                            label   "Activation"
+                            type    string
+                            default { "1" }
+                            disablewhen "{ fam_model#_#_# != ActiveFiber }"
+                            hidewhen "{ fam_model#_#_# != ActiveFiber }"
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_source#_#_#"
+                            label   "Fiber Direction Source"
+                            type    ordinal
+                            default { "constant" }
+                            help    "PolyFEM interprets these as reference directions a0 in simulation/world coordinates. A Geometry Transform changes mesh coordinates but does not transform these vector components."
+                            menu {
+                                "constant"    "Constant Direction"
+                                "expression"  "Expression of x,y,z,t"
+                                "attribute"   "Per-Element Attribute"
+                                "file"        "Per-Element File"
+                                "cylindrical" "Cylindrical (radial / circumferential / axial)"
+                                "curve"       "Curve Tangent (line of action)"
+                            }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_dir#_#_#"
+                            label   "Fiber Direction"
+                            type    vector
+                            size    3
+                            default { "1" "0" "0" }
+                            help    "Reference direction a0 in simulation/world coordinates. It is not rotated or scaled by this geometry's Transform parameters."
+                            disablewhen "{ fam_fib_source#_#_# != constant }"
+                            hidewhen "{ fam_fib_source#_#_# != constant }"
+                            range   { -1 1 }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_expr#_#_#"
+                            label   "Fiber Expression"
+                            type    string
+                            default { "[1, 0, 0]" }
+                            disablewhen "{ fam_fib_source#_#_# != expression }"
+                            hidewhen "{ fam_fib_source#_#_# != expression }"
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_sop#_#_#"
+                            label   "Fiber SOP"
+                            type    oppath
+                            default { "" }
+                            disablewhen "{ fam_fib_source#_#_# != attribute }"
+                            hidewhen "{ fam_fib_source#_#_# != attribute }"
+                            parmtag { "opfilter" "!!SOP!!" }
+                            parmtag { "oprelative" "." }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_attrib#_#_#"
+                            label   "Fiber Attribute"
+                            type    string
+                            default { "fiber1" }
+                            disablewhen "{ fam_fib_source#_#_# != attribute }"
+                            hidewhen "{ fam_fib_source#_#_# != attribute }"
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_file#_#_#"
+                            label   "Fiber File"
+                            type    file
+                            default { "" }
+                            disablewhen "{ fam_fib_source#_#_# != file }"
+                            hidewhen "{ fam_fib_source#_#_# != file }"
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_axis_origin#_#_#"
+                            label   "Cylinder Axis Origin"
+                            type    vector
+                            size    3
+                            default { "0" "0" "0" }
+                            disablewhen "{ fam_fib_source#_#_# != cylindrical fam_axis_source#_#_# != cylindrical }"
+                            hidewhen "{ fam_fib_source#_#_# != cylindrical fam_axis_source#_#_# != cylindrical }"
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_axis_dir#_#_#"
+                            label   "Cylinder Axis Direction"
+                            type    vector
+                            size    3
+                            default { "0" "1" "0" }
+                            disablewhen "{ fam_fib_source#_#_# != cylindrical fam_axis_source#_#_# != cylindrical }"
+                            hidewhen "{ fam_fib_source#_#_# != cylindrical fam_axis_source#_#_# != cylindrical }"
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_component#_#_#"
+                            label   "Cylinder Component"
+                            type    ordinal
+                            default { "circumferential" }
+                            disablewhen "{ fam_fib_source#_#_# != cylindrical }"
+                            hidewhen "{ fam_fib_source#_#_# != cylindrical }"
+                            menu {
+                                "circumferential" "Circumferential (hoop)"
+                                "radial"          "Radial (through wall)"
+                                "longitudinal"    "Longitudinal (along axis)"
+                            }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_curve#_#_#"
+                            label   "Line-of-Action Curve"
+                            type    oppath
+                            default { "" }
+                            disablewhen "{ fam_fib_source#_#_# != curve }"
+                            hidewhen "{ fam_fib_source#_#_# != curve }"
+                            parmtag { "opfilter" "!!SOP!!" }
+                            parmtag { "oprelative" "." }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_file_field#_#_#"
+                            label   "Fiber VTK Field"
+                            type    string
+                            default { "FIB_DIR1" }
+                            disablewhen "{ fam_fib_source#_#_# != file }"
+                            hidewhen "{ fam_fib_source#_#_# != file }"
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_mirror#_#_#"
+                            label   "Symmetric Pair (+/- theta)"
+                            type    toggle
+                            default { "0" }
+                            disablewhen "{ fam_fib_source#_#_# == expression }"
+                            hidewhen "{ fam_fib_source#_#_# == expression }"
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_theta#_#_#"
+                            label   "Half Angle (deg)"
+                            type    float
+                            default { "30" }
+                            disablewhen "{ fam_mirror#_#_# != 1 }"
+                            hidewhen "{ fam_mirror#_#_# != 1 }"
+                            range   { 0 90 }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_axis_source#_#_#"
+                            label   "Rotation Axis Source"
+                            type    ordinal
+                            default { "constant" }
+                            disablewhen "{ fam_mirror#_#_# != 1 }"
+                            hidewhen "{ fam_mirror#_#_# != 1 }"
+                            menu {
+                                "constant"    "Constant Axis"
+                                "attribute"   "Per-Element Attribute"
+                                "cylindrical" "Cylinder Radial Direction (wall normal)"
+                            }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_axis#_#_#"
+                            label   "Rotation Axis"
+                            type    vector
+                            size    3
+                            default { "0" "0" "1" }
+                            disablewhen "{ fam_mirror#_#_# != 1 } { fam_axis_source#_#_# != constant }"
+                            hidewhen "{ fam_mirror#_#_# != 1 } { fam_axis_source#_#_# != constant }"
+                            range   { -1 1 }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_axis_attrib#_#_#"
+                            label   "Rotation Axis Attribute"
+                            type    string
+                            default { "normal1" }
+                            disablewhen "{ fam_mirror#_#_# != 1 } { fam_axis_source#_#_# != attribute }"
+                            hidewhen "{ fam_mirror#_#_# != 1 } { fam_axis_source#_#_# != attribute }"
+                            parmtag { "script_callback_language" "python" }
+                        }
+                    }
+                    parm {
+                        name    "volume_penalty#_#"
+                        label   "Add Volume Penalty"
+                        type    toggle
+                        default { "0" }
+                        disablewhen "{ materials#_# != MaterialSum }"
+                        hidewhen "{ materials#_# != MaterialSum }"
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "vp_k#_#"
+                        label   "Volume Penalty k"
+                        type    float
+                        default { "1e+08" }
+                        disablewhen "{ materials#_# != MaterialSum } { volume_penalty#_# != 1 }"
+                        hidewhen "{ materials#_# != MaterialSum } { volume_penalty#_# != 1 }"
+                        range   { 0 1e+10 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "extra_models_json#_#"
+                        label   "Extra Models (JSON)"
+                        type    string
+                        default { "" }
+                        disablewhen "{ materials#_# != MaterialSum }"
+                        hidewhen "{ materials#_# != MaterialSum }"
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "refresh_material_data#_#"
+                        label   "Refresh Per-Element Data"
+                        type    button
+                        default { "0" }
+                        parmtag { "script_callback" "hou.phm().refresh_material_data(kwargs)" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "rho#_#"
+                        label   "Density"
+                        type    float
+                        default { "1000" }
+                        range   { 0 5000 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "phi#_#"
+                        label   "phi"
+                        type    float
+                        default { "0" }
+                        disablewhen "{ damping#_# != 1 } @SHOW_FOR(NeoHookean LinearElasticity SaintVenant FixedCorotational)@"
+                        hidewhen "{ damping#_# != 1 } @SHOW_FOR(NeoHookean LinearElasticity SaintVenant FixedCorotational)@"
+                        range   { -10000 10000 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "psi#_#"
+                        label   "psi"
+                        type    float
+                        default { "0" }
+                        disablewhen "{ damping#_# != 1 } @SHOW_FOR(NeoHookean LinearElasticity SaintVenant FixedCorotational)@"
+                        hidewhen "{ damping#_# != 1 } @SHOW_FOR(NeoHookean LinearElasticity SaintVenant FixedCorotational)@"
+                        range   { -10000 10000 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                }
+
+                parm {
+                    name    "geo_sep4_#_#"
+                    label   "Spacer"
+                    type    separator
+                    default { "" }
+                    hidewhen "{ is_obstacle# != 0 }"
+                    parmtag { "sidefx::layout_height" "large" }
+                    parmtag { "sidefx::look" "blank" }
+                }
+                groupcollapsible {
+                    name    "folder1_#_#"
+                    label   "Sideset Selection"
+                    disablewhentab "{ is_obstacle# != 0 }"
+                    disablewhen "{ is_obstacle# != 0 }"
+                    hidewhentab "{ is_obstacle# != 0 }"
+                    hidewhen "{ is_obstacle# != 0 }"
+
+                    multiparm {
+                        name    "sideset_selection#_#"
+                        label    "Number of Sidesets"
+                        disablewhen "{ is_obstacle# != 0 }"
+                        hidewhen "{ is_obstacle# != 0 }"
+                        parmtag { "script_callback" "hou.pwd().hm().create_group(kwargs)" }
+                        parmtag { "script_callback_language" "python" }
+
+                        parm {
+                            name    "grouptype#_#_#"
+                            label   "Group Type"
+                            type    ordinal
+                            default { "0" }
+                            menu {
+                                "primitive" "Primitives"
+                                "point"     "Points"
+                            }
+                            parmtag { "autoscope" "0000000000000000" }
+                            parmtag { "autoselect" "0000000000000000" }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "basegroup#_#_#"
+                            label   "Base Group"
+                            type    string
+                            default { "" }
+                            parmtag { "script_action" "import soputils\nparent = kwargs['node']\nparent.allowEditingOfContents(True)\nbutton_number = kwargs['script_multiparm_index3']\nvolumn_number = kwargs['script_multiparm_index2']\nsurf_number = kwargs['script_multiparm_index']\ngroup_node = parent.node(\"group_\"+str(button_number)+\"_\"+str(volumn_number)+\"_\"+str(surf_number))\nif group_node:\n    kwargs['node'] = group_node\n    kwargs['geometrytype'] = kwargs['node'].parmTuple('grouptype')\n    kwargs['inputindex'] = 0\n    kwargs['ordered'] = kwargs['node'].parm('ordered').eval()\n    soputils.selectGroupParm(kwargs)\n\n\n" }
+                            parmtag { "script_action_help" "Select geometry from an available viewport.\nShift-click to turn on Select Groups." }
+                            parmtag { "script_action_icon" "BUTTONS_reselect" }
+                            parmtag { "script_callback" "" }
+                        }
+                        parm {
+                            name    "geo_label3_#_#_#"
+                            label   "Message"
+                            type    label
+                            default { "Type * if you want to select all points or prims" }
+                            parmtag { "sidefx::look" "block" }
+                        }
+                        parm {
+                            name    "geo_sep5_#_#_#"
+                            label   "Spacer"
+                            type    separator
+                            default { "" }
+                            parmtag { "export_disable" "1" }
+                            parmtag { "sidefx::layout_height" "large" }
+                            parmtag { "sidefx::look" "blank" }
+                        }
+                        multiparm {
+                            name    "Boundary_Condition__#_#_#"
+                            label    "Num of Boundary Conditions"
+                            disablewhen "{ is_obstacle# != 0 }"
+                            hidewhen "{ is_obstacle# != 0 }"
+
+                            parm {
+                                name    "boundary_type#_#_#_#"
+                                label   "Boundary Type"
+                                type    ordinal
+                                default { "0" }
+                                menu {
+                                    "Dirichlet"                 "Dirichlet"
+                                    "Neumann"                   "Neumann"
+                                    "Normal_Aligned_Neumann"    "Normal Aligned Neumann"
+                                    "Pressure_Boundary"         "Pressure Boundary"
+                                    "Pressure_Cavity"           "Pressure Cavity"
+                                }
+                                parmtag { "script_callback_language" "python" }
+                            }
+                            parm {
+                                name    "vector_#_#_#_#"
+                                label   "Vector"
+                                type    string
+                                default { "[\"0*t\",\"0*t\",\"0*t\"]" }
+                                disablewhen "{ boundary_type#_#_#_# != Neumann boundary_type#_#_#_# != Dirichlet }"
+                                hidewhen "{ boundary_type#_#_#_# != Neumann boundary_type#_#_#_# != Dirichlet }"
+                                parmtag { "script_callback_language" "python" }
+                            }
+                            parm {
+                                name    "value_#_#_#_#"
+                                label   "Value"
+                                type    string
+                                default { "\"0*t\"" }
+                                disablewhen "{ boundary_type#_#_#_# != Normal_Aligned_Neumann boundary_type#_#_#_# != Pressure_Boundary boundary_type#_#_#_# != Pressure_Cavity }"
+                                hidewhen "{ boundary_type#_#_#_# != Normal_Aligned_Neumann boundary_type#_#_#_# != Pressure_Boundary boundary_type#_#_#_# != Pressure_Cavity }"
+                                parmtag { "script_callback_language" "python" }
+                            }
+                            parm {
+                                name    "x_dimension#_#_#_#"
+                                label   "x"
+                                type    toggle
+                                joinnext
+                                default { "1" }
+                                hidewhen "{ boundary_type#_#_#_# == Neumann } { boundary_type#_#_#_# == Normal_Aligned_Neumann } { boundary_type#_#_#_# == Pressure_Boundary } { boundary_type#_#_#_# == Pressure_Cavity }"
+                                parmtag { "script_callback_language" "python" }
+                            }
+                            parm {
+                                name    "y_dimension#_#_#_#"
+                                label   "y"
+                                type    toggle
+                                joinnext
+                                default { "1" }
+                                hidewhen "{ boundary_type#_#_#_# == Neumann } { boundary_type#_#_#_# == Normal_Aligned_Neumann } { boundary_type#_#_#_# == Pressure_Boundary } { boundary_type#_#_#_# == Pressure_Cavity }"
+                                parmtag { "script_callback_language" "python" }
+                            }
+                            parm {
+                                name    "z_dimension#_#_#_#"
+                                label   "z"
+                                type    toggle
+                                default { "1" }
+                                hidewhen "{ boundary_type#_#_#_# == Neumann } { boundary_type#_#_#_# == Normal_Aligned_Neumann } { boundary_type#_#_#_# == Pressure_Boundary } { boundary_type#_#_#_# == Pressure_Cavity }"
+                                parmtag { "script_callback_language" "python" }
+                            }
+                        }
+
+                    }
+
+                }
+
+                parm {
+                    name    "geo_sep6_#_#"
+                    label   "Spacer"
+                    type    separator
+                    default { "" }
+                    parmtag { "sidefx::layout_height" "large" }
+                    parmtag { "sidefx::look" "blank" }
+                }
+                groupcollapsible {
+                    name    "folder2_#_#"
+                    label   "Initial Conditions"
+                    disablewhentab "{ is_obstacle# != 0 }"
+                    disablewhen "{ is_obstacle# != 0 }"
+                    hidewhentab "{ is_obstacle# != 0 }"
+                    hidewhen "{ is_obstacle# != 0 }"
+
+                    multiparm {
+                        name    "initial_conditions#_#"
+                        label    "Number of Conditions"
+                        disablewhen "{ is_obstacle# != 0 }"
+                        hidewhen "{ is_obstacle# != 0 }"
+                        parmtag { "script_callback" "" }
+                        parmtag { "script_callback_language" "python" }
+
+                        parm {
+                            name    "conditiontype#_#_#"
+                            label   "Condition Type"
+                            type    ordinal
+                            default { "0" }
+                            menu {
+                                "solution"  "Solution"
+                                "vel"       "Velocity"
+                                "accel"     "Acceleration"
+                            }
+                            parmtag { "autoscope" "0000000000000000" }
+                            parmtag { "autoselect" "0000000000000000" }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "condition_vector_#_#_#"
+                            label   "vector"
+                            type    string
+                            default { "[0,0,0]" }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "geo_sep7_#_#_#"
+                            label   "Spacer"
+                            type    separator
+                            default { "" }
+                            parmtag { "sidefx::layout_height" "large" }
+                            parmtag { "sidefx::look" "blank" }
+                        }
+                    }
+
+                }
+
+                parm {
+                    name    "geo_sep8_#_#"
+                    label   "Spacer"
+                    type    separator
+                    default { "" }
+                    parmtag { "sidefx::layout_height" "large" }
+                    parmtag { "sidefx::look" "blank" }
+                }
+            }
+
+            parm {
+                name    "obstacle_disp#"
+                label   "Obstacle Disp"
+                type    string
+                default { "[0,0,0]" }
+                disablewhen "{ is_obstacle# != 1 }"
+                hidewhen "{ is_obstacle# != 1 }"
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "geo_sep9_#"
+                label   "Separator"
+                type    separator
+                default { "" }
+            }
+        }
+
+    }
+
+    group {
+        name    "Main_2"
+        label   "Global"
+
+        parm {
+            name    "RHS"
+            label   "Right-Hand-Side"
+            type    string
+            default { "[0, 0, 0]" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "sepparm7"
+            label   "Separator"
+            type    separator
+            default { "" }
+        }
+        parm {
+            name    "units"
+            label   "Units (optional)"
+            type    toggle
+            default { "0" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "length"
+            label   "Length"
+            type    string
+            default { "m" }
+            disablewhen "{ units == 0 }"
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "mass"
+            label   "Mass"
+            type    string
+            default { "kg" }
+            disablewhen "{ units == 0 }"
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "time"
+            label   "Time"
+            type    string
+            default { "s" }
+            disablewhen "{ units == 0 }"
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "char_length"
+            label   "Characteristic Length"
+            type    log
+            default { "1" }
+            disablewhen "{ units == 0 }"
+            range   { 1e-09 1e+09 }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "sepparm9"
+            label   "Separator"
+            type    separator
+            default { "" }
+        }
+    }
+
+    group {
+        name    "Main_3"
+        label   "Remeshing"
+
+        parm {
+            name    "remeshing_enabled"
+            label   "Enable Adaptive Remeshing"
+            type    toggle
+            default { "0" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "remesh_type"
+            label   "Type"
+            type    ordinal
+            default { "0" }
+            disablewhen "{ remeshing_enabled == 0 }"
+            hidewhen "{ remeshing_enabled == 0 }"
+            menu {
+                "0" "Physics"
+                "1" "Sizing Field"
+            }
+            parmtag { "oprelative" "/" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "sepparm8"
+            label   "Separator"
+            type    separator
+            default { "" }
+        }
+        group {
+            name    "split"
+            label   "Splitting"
+            hidewhen "{ remeshing_enabled == 0 }"
+
+            parm {
+                name    "split_enabled"
+                label   "Enable Edge Splitting"
+                type    toggle
+                default { "1" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "split_acceptance_tol"
+                label   "Acceptance Tolerance"
+                type    log
+                default { "0.001" }
+                disablewhen "{ split_enabled == 0 }"
+                range   { 0! 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "split_culling_threshold"
+                label   "Culling Threshold"
+                type    log
+                default { "0.95" }
+                disablewhen "{ split_enabled == 0 }"
+                range   { 0! 1! }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "split_max_depth"
+                label   "Max Split Depth per TS"
+                type    integer
+                default { "3" }
+                disablewhen "{ split_enabled == 0 }"
+                range   { 1! 10 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "min_edge_length"
+                label   "Min Edge Length"
+                type    log
+                default { "1e-06" }
+                disablewhen "{ split_enabled == 0 }"
+                range   { 0! 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "split_1"
+            label   "Collapsing"
+
+            parm {
+                name    "collapse_enabled"
+                label   "Enable Collapsing"
+                type    toggle
+                default { "1" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "collapse_acceptance_tol"
+                label   "Acceptance Tolerance"
+                type    float
+                default { "-1e-08" }
+                disablewhen "{ collapse_enabled == 0 }"
+                range   { -1 0! }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "collapse_culling_threshold"
+                label   "Culling Threshold"
+                type    log
+                default { "0.01" }
+                disablewhen "{ collapse_enabled == 0 }"
+                range   { 0! 1! }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "collapse_max_depth"
+                label   "Max Collapse Depth per TS"
+                type    integer
+                default { "3" }
+                disablewhen "{ collapse_enabled == 0 }"
+                range   { 1! 10 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "rel_max_edge_length"
+                label   "Rel Max Edge Length"
+                type    log
+                default { "1" }
+                disablewhen "{ collapse_enabled == 0 }"
+                range   { 0! 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "abs_max_edge_length"
+                label   "Abs Max Edge Length"
+                type    log
+                default { "1e+100" }
+                disablewhen "{ collapse_enabled == 0 }"
+                range   { 0! 1e+09 }
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "split_3"
+            label   "Swap"
+
+            parm {
+                name    "swap_enabled2"
+                label   "Enable Edge/Face Swap"
+                type    toggle
+                default { "0" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "swap_acceptance_tol2"
+                label   "Acceptance Tolerance"
+                type    float
+                default { "-1e-08" }
+                disablewhen "{ swap_enabled2 == 0 }"
+                range   { -1 0! }
+                parmtag { "export_disable" "1" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "swap_max_depth2"
+                label   "Max Depth"
+                type    integer
+                default { "1" }
+                disablewhen "{ swap_enabled2 == 0 }"
+                range   { 1! 10 }
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "split_4"
+            label   "Smoothing"
+
+            parm {
+                name    "smooth_enabled"
+                label   "Enable Vertex Smoothing"
+                type    toggle
+                default { "0" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "smooth_acceptance_tol"
+                label   "Acceptance Tolerance"
+                type    float
+                default { "-1e-08" }
+                disablewhen "{ smooth_enabled == 0 }"
+                range   { -1 0! }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "smooth_max_iters"
+                label   "Max Iterations"
+                type    integer
+                default { "1" }
+                disablewhen "{ smooth_enabled == 0 }"
+                range   { 1! 10 }
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "split_5"
+            label   "Local Relaxation"
+
+            parm {
+                name    "local_mesh_n_ring"
+                label   "Size of n-ring"
+                type    integer
+                default { "2" }
+                range   { 0 10 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "local_mesh_rel_area"
+                label   "Min area"
+                type    log
+                default { "0.01" }
+                range   { 0! 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "max_nl_iterations"
+                label   "Max NL Solver iters"
+                type    integer
+                default { "1" }
+                range   { 1! 10 }
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+    }
+
+    group {
+        name    "Main_4"
+        label   "Time"
+
+        parm {
+            name    "quasistatic"
+            label   "Quasistatic?"
+            type    toggle
+            default { "0" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "sepparm10"
+            label   "Separator"
+            type    separator
+            default { "" }
+        }
+        parm {
+            name    "t0"
+            label   "Start Time"
+            type    float
+            default { "0" }
+            range   { 0! 10 }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "labelparm3"
+            label   "Message"
+            type    label
+            default { "Must choose ONLY 2 of the following, otherwise first 2 will be used:" }
+            parmtag { "sidefx::look" "block" }
+        }
+        parm {
+            name    "end_time_bool"
+            label   "End Time"
+            type    toggle
+            joinnext
+            default { "1" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "tend"
+            label   "End Time"
+            type    log
+            nolabel
+            default { "5" }
+            disablewhen "{ end_time_bool != 1 }"
+            hidewhen "{ end_time_bool != 1 }"
+            range   { 0! 100 }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "time_inc_bool"
+            label   "Time Increment"
+            type    toggle
+            joinnext
+            default { "1" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "dt"
+            label   "dt"
+            type    log
+            nolabel
+            default { "0.025" }
+            disablewhen "{ time_inc_bool != 1 }"
+            hidewhen "{ time_inc_bool != 1 }"
+            range   { 0! 10 }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "num_timesteps_bool"
+            label   "# of Timesteps"
+            type    toggle
+            joinnext
+            default { "0" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "num_timesteps"
+            label   "# of Timesteps"
+            type    log
+            nolabel
+            default { "200" }
+            disablewhen "{ num_timesteps_bool != 1 }"
+            hidewhen "{ num_timesteps_bool != 1 }"
+            range   { 0! 10000 }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "sepparm6"
+            label   "Separator"
+            type    separator
+            default { "" }
+        }
+        parm {
+            name    "integrator"
+            label   "Integrator"
+            type    ordinal
+            default { "0" }
+            menu {
+                "ImplicitEuler"     "ImplicitEuler"
+                "BDF1"              "BDF1"
+                "BDF2"              "BDF2"
+                "BDF3"              "BDF3"
+                "BDF4"              "BDF4"
+                "BDF5"              "BDF5"
+                "BDF6"              "BDF6"
+                "ImplicitNewmark"   "ImplicitNewmark"
+            }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "newmark_beta"
+            label   "Newmark Beta"
+            type    float
+            default { "0.25" }
+            disablewhen "{ integrator != ImplicitNewmark }"
+            hidewhen "{ integrator != ImplicitNewmark }"
+            range   { 0 0.5 }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "newmark_gamma"
+            label   "Newmark Gamma"
+            type    float
+            default { "0.5" }
+            disablewhen "{ integrator != ImplicitNewmark }"
+            hidewhen "{ integrator != ImplicitNewmark }"
+            range   { 0 1 }
+            parmtag { "script_callback_language" "python" }
+        }
+    }
+
+    group {
+        name    "Main_5"
+        label   "Contact"
+
+        parm {
+            name    "enable"
+            label   "Enable Contact"
+            type    toggle
+            default { "1" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "sepparm11"
+            label   "Spacer"
+            type    separator
+            default { "" }
+            parmtag { "sidefx::layout_height" "small" }
+            parmtag { "sidefx::look" "blank" }
+        }
+        group {
+            name    "barrier_tab"
+            label   "Barrier (ICP)"
+            disablewhen "{ enable == 0 }"
+            hidewhen "{ enable == 0 }"
+
+            parm {
+                name    "adapt_dhat"
+                label   "Adaptive dhat"
+                type    toggle
+                joinnext
+                default { "0" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "min_dist_ratio"
+                label   "Min dist ratio"
+                type    log
+                default { "0.5" }
+                disablewhen "{ adapt_dhat == 0 }"
+                range   { 0! 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "dhat"
+                label   "dhat"
+                type    log
+                default { "0.001" }
+                disablewhen "{ enable == 0 }"
+                range   { 1e-12 10 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "sepparm15"
+                label   "Spacer"
+                type    separator
+                default { "" }
+                parmtag { "sidefx::layout_height" "small" }
+                parmtag { "sidefx::look" "blank" }
+            }
+            parm {
+                name    "min_edge_button"
+                label   "Calc Min Edge"
+                type    button
+                joinnext
+                default { "0" }
+                disablewhen "{ enable == 0 }"
+                parmtag { "script_callback" "hou.pwd().hm().deter_min_edge(kwargs)" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "min_edge"
+                label   "Min Edge Length"
+                type    string
+                nolabel
+                default { "-1" }
+                disablewhen "{ enable == 0 }"
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "sepparm12"
+                label   "Spacer"
+                type    separator
+                default { "" }
+                parmtag { "sidefx::layout_height" "small" }
+                parmtag { "sidefx::look" "blank" }
+            }
+            parm {
+                name    "barrier_mode"
+                label   "Barrier Stiffness Mode"
+                type    ordinal
+                default { "0" }
+                disablewhen "{ enable == 0 }"
+                menu {
+                    "semi_implicit" "Semi-Implicit (per-contact, recommended)"
+                    "adaptive"      "Adaptive (classic IPC)"
+                    "fixed"         "Fixed Value"
+                }
+                help    "Semi-implicit: per-contact stiffness from the local elastic Hessian [Ando 2024] with a gap-band trim controller and stall recovery -- robust for stiff/quasistatic contact. Adaptive: classic IPC heuristic. Fixed: user value."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "barrier_stiffness"
+                label   "Fixed Barrier Stiffness"
+                type    log
+                default { "1e8" }
+                disablewhen "{ enable == 0 } { barrier_mode != fixed }"
+                range   { 1000 1e+30 }
+                help    "Used when mode is Fixed. Rule of thumb: 10-100x your largest Young's modulus."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "initial_barrier_stiffness"
+                label   "Initial Barrier Stiffness"
+                type    log
+                default { "1" }
+                disablewhen "{ enable == 0 } { barrier_mode != adaptive }"
+                range   { 1 1e+30 }
+                help    "Starting stiffness for the classic adaptive heuristic."
+                parmtag { "script_callback_language" "python" }
+            }
+            groupcollapsible {
+                name    "semi_implicit_folder"
+                label   "Semi-Implicit Options"
+                disablewhentab "{ barrier_mode != semi_implicit }"
+
+                parm {
+                    name    "si_trim_lower"
+                    label   "Trim Band Lower"
+                    type    log
+                    default { "0.5" }
+                    range   { 1e-08 1 }
+                    help    "Raise the global trim when the average active squared gap drops below this fraction of dhat^2. The default (0.5) actively centers the gap high in the dhat band, stiffening the barrier as the load grows -- essential for obstacle-driven contact. Lower values turn the controller into a collapse-only safety net."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_trim_upper"
+                    label   "Trim Band Upper"
+                    type    float
+                    default { "0.9" }
+                    range   { 0.01 1 }
+                    help    "Lower the global trim when the average active squared gap exceeds this fraction of dhat^2."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_trim_factor"
+                    label   "Trim Factor"
+                    type    float
+                    default { "2" }
+                    range   { 1.1 16 }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_kappa_spread"
+                    label   "Stiffness Spread Cap"
+                    type    log
+                    default { "10000" }
+                    range   { 10 1e+08 }
+                    help    "Cap each per-contact stiffness at this multiple of the batch median (guards against crushed-element Hessian blowups). For thin structures under extreme stretch, larger values (1e8) let taut-membrane hotspots keep their full local stiffness."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_conditioning_cap"
+                    label   "Conditioning Cap"
+                    type    log
+                    default { "1000" }
+                    range   { 10 1e+06 }
+                    help    "On first (unloaded) contact, cap the effective barrier stiffness at this multiple of the max system-Hessian entry. Bounds the Newton system's dynamic range until the load provides a force-balance calibration."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_controller_interval"
+                    label   "Controller Interval"
+                    type    integer
+                    default { "30" }
+                    range   { 0 200 }
+                    help    "Newton-iteration cadence of the in-solve downward stiffness step when the gap stays pinned above the band. 0 disables."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_constraint_floor"
+                    label   "Constraint Floor"
+                    type    log
+                    default { "0.0001" }
+                    range   { 1e-08 0.1 }
+                    help    "Pairs with gap below this fraction of dhat are treated as active constraints: removed from the barrier and their closing motion projected out of the Newton direction (sliding/separation stay free; CCD guards feasibility). Prevents a single pinched pair (thin-object scissoring, impact at first contact) from stalling the solver. 0 disables."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_refresh_interval"
+                    label   "Refresh Interval"
+                    type    integer
+                    default { "0" }
+                    range   { 0 50 }
+                    help    "0 = refresh per-contact stiffness only at solve starts and stall restarts (recommended); N > 0 also refreshes every N Newton iterations."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_restart_enabled"
+                    label   "Stall Restart"
+                    type    toggle
+                    default { "1" }
+                    help    "Detect line-search stalls and restart the solve with retuned stiffness."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_alpha_threshold"
+                    label   "Stall Alpha Threshold"
+                    type    log
+                    default { "0.01" }
+                    disablewhen "{ si_restart_enabled == 0 }"
+                    range   { 1e-08 0.1 }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_patience"
+                    label   "Stall Patience"
+                    type    integer
+                    default { "5" }
+                    disablewhen "{ si_restart_enabled == 0 }"
+                    range   { 1 50 }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_soft_iteration_limit"
+                    label   "Soft Iteration Limit"
+                    type    integer
+                    default { "100" }
+                    disablewhen "{ si_restart_enabled == 0 }"
+                    range   { -1 500 }
+                    help    "Restart with retuned stiffness after this many Newton iterations (-1 disables); keep below the solver's hard max_iterations."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_max_restarts"
+                    label   "Max Restarts"
+                    type    integer
+                    default { "20" }
+                    disablewhen "{ si_restart_enabled == 0 }"
+                    range   { 0 50 }
+                    parmtag { "script_callback_language" "python" }
+                }
+            }
+            parm {
+                name    "sepparm13"
+                label   "Spacer"
+                type    separator
+                default { "" }
+                parmtag { "sidefx::layout_height" "small" }
+                parmtag { "sidefx::look" "blank" }
+            }
+            parm {
+                name    "area_weighted"
+                label   "Use Convergent Formulation (Area Weighted)"
+                type    toggle
+                default { "0" }
+                disablewhen "{ enable == 0 }"
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "barrier_tab_1"
+            label   "Geometric Contact (GCP)"
+            disablewhentab "{ enable == 0 }"
+            hidewhentab "{ enable == 0 }"
+
+            parm {
+                name    "gcp_enable"
+                label   "Enable"
+                type    toggle
+                default { "0" }
+                disablewhen "{ enable == 0 }"
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "alpha_t"
+                label   "Tangent Angle Control"
+                type    float
+                default { "0.5" }
+                disablewhen "{ enable == 0 } { gcp_enable == 0 }"
+                range   { -1! 1! }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "alpha_n"
+                label   "Normal Angle Control"
+                type    float
+                default { "0.5" }
+                disablewhen "{ enable == 0 } { gcp_enable == 0 }"
+                range   { -1! 1! }
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "barrier_tab_2"
+            label   "Friction"
+            disablewhentab "{ enable == 0 }"
+
+            parm {
+                name    "cof"
+                label   "COF"
+                type    float
+                default { "0" }
+                disablewhen "{ enable == 0 }"
+                range   { 0 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "epsv"
+                label   "epsv"
+                type    log
+                default { "0.001" }
+                disablewhen "{ enable == 0 }"
+                range   { 1e-06 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "friction_iterations"
+                label   "Friction Iterations"
+                type    integer
+                default { "1" }
+                disablewhen "{ enable == 0 }"
+                range   { 0 10 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "friction_convergence_tol"
+                label   "Friction Converg Tol"
+                type    log
+                default { "0.01" }
+                disablewhen "{ enable == 0 }"
+                range   { 0 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "barrier_tab_3"
+            label   "Adhesion"
+            disablewhentab "{ enable == 0 }"
+            hidewhentab "{ enable == 0 }"
+
+            parm {
+                name    "adhesion_enable"
+                label   "Enable"
+                type    toggle
+                default { "0" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "dhat_p"
+                label   "dhat peak"
+                type    log
+                default { "0.001" }
+                disablewhen "{ adhesion_enable == 0 }"
+                range   { 0! 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "dhat_a"
+                label   "dhat active"
+                type    log
+                default { "0.01" }
+                disablewhen "{ adhesion_enable == 0 }"
+                range   { 0! 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adhesion_strength"
+                label   "strength"
+                type    log
+                default { "0.001" }
+                disablewhen "{ adhesion_enable == 0 }"
+                range   { 0 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "tangent_coeff"
+                label   "tangential Coeff"
+                type    log
+                default { "0" }
+                disablewhen "{ adhesion_enable == 0 }"
+                range   { 0! 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adhesion_epsa"
+                label   "epsa"
+                type    log
+                default { "1" }
+                disablewhen "{ adhesion_enable == 0 }"
+                range   { 1e-06! 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "tangent_iter"
+                label   "Tangential Iterations"
+                type    integer
+                default { "1" }
+                disablewhen "{ adhesion_enable == 0 }"
+                range   { 0! 10 }
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "barrier_tab_4"
+            label   "CCD Parameters"
+            tabbreak
+            disablewhentab "{ enable == 0 }"
+            hidewhentab "{ enable == 0 }"
+
+            parm {
+                name    "broad_phase"
+                label   "Broad Phase"
+                type    ordinal
+                default { "3" }
+                disablewhen "{ enable == 0 }"
+                menu {
+                    "hash_grid"                     "Hash Grid"
+                    "brute_force"                   "Brute Force"
+                    "spatial_hash"                  "Spatial Hash"
+                    "BVH"                           "BVH"
+                    "sweep_and_prune"               "Sweep and Prune"
+                    "sweep_and_tiniest_queue_gpu"   "Sweep and Tiniest Queue (GPU)"
+                }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "CCD_tolerance"
+                label   "CCD tolerance"
+                type    float
+                default { "1e-06" }
+                disablewhen "{ enable == 0 }"
+                range   { 0 10 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "ccd_max_iterations"
+                label   "CCD Max Iterations"
+                type    intlog
+                default { "1e+06" }
+                disablewhen "{ enable == 0 }"
+                range   { 1000 1e+12 }
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+    }
+
+    group {
+        name    "Main_6"
+        label   "Solver"
+
+        group {
+            name    "linear"
+            label   "Linear"
+            invisibletab
+
+            parm {
+                name    "solver"
+                label   "Solver"
+                type    ordinal
+                default { "5" }
+                menu {
+                    "Eigen:SparseLU"                        "Eigen:SparseLU"
+                    "Eigen::SimplicialLDLT"                 "Eigen::SimplicialLDLT"
+                    "Eigen::SuperLU"                        "Eigen::SuperLU"
+                    "Eigen::CholmodSupernodalLLT"           "Eigen::CholmodSupernodalLLT"
+                    "Eigen::UmfPackLU"                      "Eigen::UmfPackLU"
+                    "Eigen::PardisoLDLT"                    "Eigen::PardisoLDLT"
+                    "Eigen::PardisoLLT"                     "Eigen::PardisoLLT"
+                    "Eigen:PardisoLU"                       "Eigen:PardisoLU"
+                    "Pardiso"                               "Pardiso"
+                    "Hypre"                                 "Hypre"
+                    "AMGCL"                                 "AMGCL"
+                    "Eigen::LeastSquaresConjugateGradient"  "Eigen::LeastSquaresConjugateGradient"
+                    "Eigen::DGMRES"                         "Eigen::DGMRES"
+                    "Eigen::ConjugateGradient"              "Eigen::ConjugateGradient"
+                    "Eigen::BiCGSTAB"                       "Eigen::BiCGSTAB"
+                    "Eigen::GMRES"                          "Eigen::GMRES"
+                    "Eigen::MINRES"                         "Eigen::MINRES"
+                    "Eigen::AccelerateLLT"                  "Eigen::AccelerateLLT"
+                    "Eigen::AccelerateLDLT"                 "Eigen::AccelerateLDLT"
+                }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "max_iter"
+                label   "Max Iterations"
+                type    intlog
+                default { "1000" }
+                disablewhen "{ solver != AMGCL solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
+                hidewhen "{ solver != AMGCL solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
+                range   { 1 100000 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "tolerance"
+                label   "Tolerance"
+                type    log
+                default { "1e-12" }
+                disablewhen "{ solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
+                hidewhen "{ solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
+                range   { 1e-20 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "precond"
+                label   "Preconditioner"
+                type    ordinal
+                default { "0" }
+                disablewhen "{ solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
+                hidewhen "{ solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
+                menu {
+                    "Eigen::IdentityPreconditioner"             "Eigen::IdentityPreconditioner"
+                    "Eigen::DiagonalPreconditioner"             "Eigen::DiagonalPreconditioner"
+                    "Eigen::IncompleteCholesky"                 "Eigen::IncompleteCholesky"
+                    "Eigen::LeastSquareDiagonalPreconditioner"  "Eigen::LeastSquareDiagonalPreconditioner"
+                    "Eigen::IncompleteLUT"                      "Eigen::IncompleteLUT"
+                }
+                parmtag { "export_disable" "1" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "mtype"
+                label   "Matrix Type"
+                type    ordinal
+                default { "0" }
+                disablewhen "{ solver != Pardiso }"
+                hidewhen "{ solver != Pardiso }"
+                menu {
+                    "1"     "1"
+                    "2"     "2"
+                    "-2"    "-2"
+                    "3"     "3"
+                    "4"     "4"
+                    "-4"    "-4"
+                    "6"     "6"
+                    "11"    "11"
+                    "13"    "13"
+                }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "max_iter_hypre"
+                label   "Max Iterations"
+                type    intlog
+                default { "1000" }
+                disablewhen "{ solver != Hypre }"
+                hidewhen "{ solver != Hypre }"
+                range   { 0 100000 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "pre_max_iter_hypre"
+                label   "Pre Max Iterations"
+                type    integer
+                default { "1" }
+                disablewhen "{ solver != Hypre }"
+                hidewhen "{ solver != Hypre }"
+                range   { 0 10 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "tolerance_hypre_AMGCL"
+                label   "Tolerance"
+                type    log
+                default { "1e-10" }
+                disablewhen "{ solver != Hypre solver != AMGCL }"
+                hidewhen "{ solver != Hypre solver != AMGCL }"
+                range   { 1e-20 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "solver_type"
+                label   "Solver Type"
+                type    ordinal
+                default { "0" }
+                disablewhen "{ solver != AMGCL }"
+                hidewhen "{ solver != AMGCL }"
+                menu {
+                    "cg"    "cg"
+                }
+                parmtag { "script_callback_language" "python" }
+            }
+            groupcollapsible {
+                name    "precond_settings"
+                label   "AMGCL Precond Settings"
+                disablewhen "{ solver != AMGCL }"
+                hidewhen "{ solver != AMGCL }"
+
+                parm {
+                    name    "class"
+                    label   "class"
+                    type    ordinal
+                    default { "0" }
+                    disablewhen "{ solver != AMGCL }"
+                    hidewhen "{ solver != AMGCL }"
+                    menu {
+                        "amg"   "amg"
+                    }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "max_levels"
+                    label   "Max Levels"
+                    type    integer
+                    default { "6" }
+                    disablewhen "{ solver != AMGCL }"
+                    hidewhen "{ solver != AMGCL }"
+                    range   { 0 10 }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "direct_coarse"
+                    label   "Direct Coarse?"
+                    type    toggle
+                    default { "0" }
+                    disablewhen "{ solver != AMGCL }"
+                    hidewhen "{ solver != AMGCL }"
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "ncycle"
+                    label   "Num Cycles"
+                    type    integer
+                    default { "2" }
+                    disablewhen "{ solver != AMGCL }"
+                    hidewhen "{ solver != AMGCL }"
+                    range   { 0 10 }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "sepparm3"
+                    label   "Spacer"
+                    type    separator
+                    default { "" }
+                    parmtag { "sidefx::layout_height" "small" }
+                    parmtag { "sidefx::look" "blank" }
+                }
+                group {
+                    name    "Coarsening_Parameters"
+                    label   "Coarsening Parameters"
+                    disablewhen "{ solver != AMGCL }"
+                    hidewhen "{ solver != AMGCL }"
+
+                }
+
+                parm {
+                    name    "coarsening_type"
+                    label   "Coarse Type"
+                    type    ordinal
+                    default { "0" }
+                    disablewhen "{ solver != AMGCL }"
+                    hidewhen "{ solver != AMGCL }"
+                    menu {
+                        "smoothed_aggregation"  "smoothed_aggregation"
+                    }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "estimate_spectral_radius"
+                    label   "Est. Spectral Radius"
+                    type    toggle
+                    default { "1" }
+                    disablewhen "{ solver != AMGCL }"
+                    hidewhen "{ solver != AMGCL }"
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "eps_strong"
+                    label   "Aggr Epsilon Strong"
+                    type    float
+                    default { "0" }
+                    disablewhen "{ solver != AMGCL }"
+                    hidewhen "{ solver != AMGCL }"
+                    range   { 0 10 }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "coarse_relax"
+                    label   "Relax"
+                    type    float
+                    default { "1" }
+                    range   { 0 10 }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "sepparm2"
+                    label   "Spacer"
+                    type    separator
+                    default { "" }
+                    parmtag { "sidefx::layout_height" "small" }
+                    parmtag { "sidefx::look" "blank" }
+                }
+                group {
+                    name    "relax_params"
+                    label   "Relaxation Parameters"
+                    disablewhen "{ solver != AMGCL }"
+                    hidewhen "{ solver != AMGCL }"
+
+                    parm {
+                        name    "degree"
+                        label   "Degree"
+                        type    integer
+                        default { "16" }
+                        disablewhen "{ solver != AMGCL }"
+                        hidewhen "{ solver != AMGCL }"
+                        range   { 0 32 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "relax_type"
+                        label   "Relax Type"
+                        type    ordinal
+                        default { "0" }
+                        disablewhen "{ solver != AMGCL }"
+                        hidewhen "{ solver != AMGCL }"
+                        menu {
+                            "chebyshev" "chebyshev"
+                        }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "power_iters"
+                        label   "Power Iters"
+                        type    integer
+                        default { "100" }
+                        disablewhen "{ solver != AMGCL }"
+                        hidewhen "{ solver != AMGCL }"
+                        range   { 0 10 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "higher"
+                        label   "Higher"
+                        type    float
+                        default { "2" }
+                        disablewhen "{ solver != AMGCL }"
+                        hidewhen "{ solver != AMGCL }"
+                        range   { 0 10 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "lower"
+                        label   "Lower"
+                        type    log
+                        default { "0.00833333" }
+                        disablewhen "{ solver != AMGCL }"
+                        hidewhen "{ solver != AMGCL }"
+                        range   { -1e-06 1 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "scale_amgcl"
+                        label   "Scale"
+                        type    toggle
+                        default { "1" }
+                        disablewhen "{ solver != AMGCL }"
+                        hidewhen "{ solver != AMGCL }"
+                        range   { 0 10 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                }
+
+            }
+
+        }
+
+        parm {
+            name    "solver_nl"
+            label   "Solver"
+            type    ordinal
+            invisible
+            default { "0" }
+            menu {
+                "Newton"                    "Newton"
+                "DenseNewton"               "Dense Newton"
+                "GradientDescent"           "Gradient Descent"
+                "ADAM"                      "ADAM"
+                "StochasticADAM"            "Stocastic ADAM"
+                "StochasticGradientDescent" "Stochastic Gradient Descent"
+                "L-BFGS"                    "L-BFGS"
+                "BFGS"                      "BFGS"
+                "L-BFGS-B"                  "L-BFGS-B"
+                "MMA"                       "MMA"
+            }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "history_size"
+            label   "History Size"
+            type    integer
+            invisible
+            default { "6" }
+            disablewhen "{ solver_nl != L-BFGS solver_nl != L-BFGS-B }"
+            hidewhen "{ solver_nl != L-BFGS solver_nl != L-BFGS-B }"
+            range   { 0 10 }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "residual_tolerance"
+            label   "Residual Tolerance"
+            type    log
+            invisible
+            default { "1e+200" }
+            disablewhen "{ solver_nl != DenseRegularizedNewton solver_nl != DenseNewton solver_nl != RegularizedProjectedNewton solver_nl != RegularizedProjected Newton == solver_nl != == Newton solver_nl != ProjectedNewton solver_nl != RegularizedNewton }"
+            hidewhen "{ solver_nl != DenseRegularizedNewton solver_nl != DenseNewton solver_nl != RegularizedProjectedNewton solver_nl != Newton solver_nl != ProjectedNewton solver_nl != RegularizedNewton }"
+            range   { 1e-10 1 }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "reg_weight_min"
+            label   "Min Reg Weight"
+            type    log
+            invisible
+            default { "-1" }
+            disablewhen "{ solver_nl != DenseRegularizedNewton solver_nl != RegularizedProjectedNewton solver_nl != Newton solver_nl != RegularizedNewton }"
+            hidewhen "{ solver_nl != DenseRegularizedNewton solver_nl != RegularizedProjectedNewton solver_nl != Newton solver_nl != RegularizedNewton }"
+            range   { 1e-15 1 }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "reg_weight_max"
+            label   "Max Reg Weight"
+            type    log
+            invisible
+            default { "-1" }
+            disablewhen "{ solver_nl != DenseRegularizedNewton solver_nl != RegularizedProjectedNewton solver_nl != Newton solver_nl != RegularizedNewton }"
+            hidewhen "{ solver_nl != DenseRegularizedNewton solver_nl != RegularizedProjectedNewton solver_nl != Newton solver_nl != RegularizedNewton }"
+            range   { 1 1e+15 }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "reg_weight_inc"
+            label   "Reg Weight Increment"
+            type    integer
+            invisible
+            default { "10" }
+            disablewhen "{ solver_nl != DenseRegularizedNewton solver_nl != RegularizedProjectedNewton solver_nl != Newton solver_nl != RegularizedNewton }"
+            hidewhen "{ solver_nl != DenseRegularizedNewton solver_nl != RegularizedProjectedNewton solver_nl != Newton solver_nl != RegularizedNewton }"
+            range   { 1 100 }
+            parmtag { "export_disable" "1" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "use_psd_projection_in_regularized"
+            label   "Use PSD Projection in Reg"
+            type    toggle
+            invisible
+            default { "1" }
+            disablewhen "{ solver_nl != Newton }"
+            hidewhen "{ solver_nl != Newton }"
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "adam_alpha"
+            label   "Alpha"
+            type    float
+            invisible
+            default { "0.001" }
+            disablewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
+            hidewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
+            range   { 0 10 }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "adam_beta1"
+            label   "Beta1"
+            type    float
+            invisible
+            default { "0.9" }
+            disablewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
+            hidewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
+            range   { 0 10 }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "adam_beta2"
+            label   "Beta2"
+            type    float
+            invisible
+            default { "0.999" }
+            disablewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
+            hidewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
+            range   { 0 10 }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "adam_epsilon"
+            label   "epsilon"
+            type    float
+            invisible
+            default { "1e-08" }
+            disablewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
+            hidewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
+            range   { 0 10 }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "erase_component_probability"
+            label   "Erase Comp. Prob."
+            type    float
+            invisible
+            default { "1e-08" }
+            disablewhen "{ solver_nl != StochasticADAM solver_nl != StochasticGradientDescent }"
+            hidewhen "{ solver_nl != StochasticADAM solver_nl != StochasticGradientDescent }"
+            range   { 0 10 }
+            parmtag { "script_callback_language" "python" }
+        }
+        group {
+            name    "_folder0_2"
+            label   "Line Search"
+            invisibletab
+            grouptag { "sidefx::switcher" "folder0_2" }
+
+            parm {
+                name    "use_grad_norm_tol"
+                label   "Grad Norm Tol"
+                type    log
+                default { "1e-06" }
+                range   { 1e-15 0.1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "min_step_size"
+                label   "Min Step Size"
+                type    log
+                default { "1e-10" }
+                range   { 1e-15 1e-05 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "max_step_size_iter"
+                label   "Max Step Size Iter"
+                type    integer
+                default { "30" }
+                range   { 1 100 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "min_step_size_final"
+                label   "Min Step Size Final"
+                type    log
+                default { "1e-20" }
+                range   { 1e-30 1e-05 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "max_step_size_iter_final"
+                label   "Max Step Size Iter Final"
+                type    intlog
+                default { "100" }
+                range   { 1 1000 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "default_init_step_size"
+                label   "Default Init Step Size"
+                type    float
+                default { "1" }
+                range   { 0 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "step_ratio"
+                label   "Step Ratio"
+                type    log
+                default { "0.5" }
+                range   { 0.01 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "method"
+                label   "Method"
+                type    ordinal
+                default { "2" }
+                menu {
+                    "Armijo"        "Armijo"
+                    "ArmijoAlt"     "Armijo Alt"
+                    "RobustArmijo"  "Robust Armijo"
+                    "Backtracking"  "Backtracking"
+                    "MoreThuente"   "MoreThuente"
+                    "none"          "none"
+                }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "armijo_c"
+                label   "c"
+                type    log
+                default { "0.0001" }
+                disablewhen "{ method != Armijo }"
+                hidewhen "{ method != Armijo }"
+                range   { 0 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "delta_relative_tolerance"
+                label   "Delta Relative Tolerance"
+                type    float
+                default { "0.1" }
+                disablewhen "{ method != RobustArmijo }"
+                hidewhen "{ method != RobustArmijo }"
+                range   { 0 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "_folder0_2_1"
+            label   "Advanced"
+            invisibletab
+
+            parm {
+                name    "apply_gradient_fd"
+                label   "Apply Gradient FD"
+                type    ordinal
+                invisible
+                default { "0" }
+                menu {
+                    "None"                  "None"
+                    "DirectionalDerivative" "Directional Derivative"
+                    "FullFiniteDiff"        "Full Finite Diff"
+                }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "gradient_fd_eps"
+                label   "Gradient FD EPS"
+                type    log
+                invisible
+                default { "1e-07" }
+                disablewhen "{ apply_gradient_fd == None }"
+                hidewhen "{ apply_gradient_fd == None }"
+                range   { 0 0.1 }
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "_folder0_2_2"
+            label   "Nonlinear Settings"
+
+            parm {
+                name    "labelparm2"
+                label   "Stoppage criteria"
+                type    label
+                default { "Stoppage criteria" }
+                parmtag { "sidefx::look" "heading" }
+            }
+            parm {
+                name    "first_grad_norm_tol"
+                label   "1st Grad Norm Tol"
+                type    log
+                default { "1e-12" }
+                range   { 1e-20 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "x_delta"
+                label   "X_delta"
+                type    log
+                default { "0" }
+                range   { 1e-15 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "grad_norm"
+                label   "Grad Norm"
+                type    log
+                default { "1e-10" }
+                range   { 1e-20 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "max_iterations"
+                label   "Max iteration"
+                type    intlog
+                default { "500" }
+                range   { 1 100000 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "iterations_per_strategy"
+                label   "iter per strategy"
+                type    intlog
+                invisible
+                default { "5" }
+                range   { 1 100000 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "allow_out_of_iterations"
+                label   "Allow out of iterations"
+                type    toggle
+                invisible
+                default { "0" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "force_psd_projection"
+                label   "Force PSD Projection"
+                type    toggle
+                invisible
+                default { "0" }
+                disablewhen "{ solver_nl != Newton }"
+                hidewhen "{ solver_nl != Newton }"
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "use_psd_projection"
+                label   "Use PSD Projection"
+                type    toggle
+                invisible
+                default { "1" }
+                disablewhen "{ solver_nl != Newton }"
+                hidewhen "{ solver_nl != Newton }"
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "use_psd_projection_reg"
+                label   "Use PSD Projection in Regularized"
+                type    toggle
+                invisible
+                default { "1" }
+                disablewhen "{ solver_nl != Newton }"
+                hidewhen "{ solver_nl != Newton }"
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "labelparm"
+                label   "Advanced Stoppage Critera"
+                type    label
+                default { "Advanced Stoppage criteria" }
+                parmtag { "sidefx::look" "heading" }
+            }
+            parm {
+                name    "f_delta"
+                label   "f Delta"
+                type    log
+                default { "0" }
+                range   { 0 0.1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "f_delta_step_tol"
+                label   "f Delta Step Tol"
+                type    intlog
+                default { "100" }
+                range   { 1 1000 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "derivative_along_delta_x_tol"
+                label   "Derivative along deltaX tol"
+                type    log
+                default { "1e-16" }
+                range   { 0 1e-15 }
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "_folder0_2_3"
+            label   "Augmented Lagrangian"
+
+            parm {
+                name    "al_hessian_scaled"
+                label   "Hessian-Scaled Initial Weight"
+                type    toggle
+                default { "1" }
+                help    "Set the initial AL weight to multiplier * max|H| of the elastic Hessian at solve start so the boundary-condition penalty dominates the problem curvature."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_weight_multiplier"
+                label   "Weight Multiplier"
+                type    log
+                default { "10" }
+                disablewhen "{ al_hessian_scaled == 0 }"
+                range   { 0.1 1e+06 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_initial_weight"
+                label   "Initial Weight"
+                type    log
+                default { "1e6" }
+                disablewhen "{ al_hessian_scaled == 1 }"
+                range   { 1 1e+20 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_scaling"
+                label   "Scaling"
+                type    float
+                default { "2" }
+                range   { 0 10 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_max_weight"
+                label   "Max Weight"
+                type    log
+                default { "1e+30" }
+                range   { 1 1e+30 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_eta"
+                label   "Eta"
+                type    float
+                default { "0.99" }
+                range   { 0 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_max_iterations"
+                label   "Max Iterations"
+                type    integer
+                invisible
+                default { "500" }
+                range   { 1 1000 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "force_al"
+                label   "Force?"
+                type    toggle
+                invisible
+                default { "0" }
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "_folder0_2_4"
+            label   "Rayleigh Damping"
+
+            multiparm {
+                name    "num_rayleigh"
+                label    "Num of Rayleigh Damping Types"
+
+                parm {
+                    name    "rayleigh_form#"
+                    label   "Form"
+                    type    ordinal
+                    default { "0" }
+                    menu {
+                        "elasticity"    "elasticity"
+                        "contact"       "contact"
+                    }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "stiffness_ratio#"
+                    label   "Stiffness Ratio"
+                    type    float
+                    default { "0.75" }
+                    range   { 0 1 }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "rayleigh_lagging#"
+                    label   "Lagging Iterations"
+                    type    integer
+                    default { "1" }
+                    range   { 0 10 }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "sepparm4___#"
+                    label   "Spacer"
+                    type    separator
+                    default { "" }
+                    parmtag { "sidefx::layout_height" "small" }
+                    parmtag { "sidefx::look" "blank" }
+                }
+                parm {
+                    name    "sepparm6_#"
+                    label   "Separator"
+                    type    separator
+                    default { "" }
+                }
+            }
+
+        }
+
+        group {
+            name    "_folder0_2_5"
+            label   "Advanced"
+            tabbreak
+
+            parm {
+                name    "max_threads"
+                label   "Max Threads"
+                type    integer
+                default { "0" }
+                range   { 0 64 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "cache_size"
+                label   "Cache Size"
+                type    intlog
+                default { "900000" }
+                range   { 1 1e+16 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "lump_mass_matrix"
+                label   "Lump Mass Matrix"
+                type    toggle
+                default { "0" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "lagged_regularization_weight"
+                label   "Lagged Reg Weight"
+                type    float
+                invisible
+                default { "0" }
+                range   { 0 10 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "lagged_regularization_iterations"
+                label   "Lagged Reg Iterations"
+                type    integer
+                invisible
+                default { "1" }
+                range   { 0 10 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "inversion_method"
+                label   "Inversion Detection"
+                type    ordinal
+                invisible
+                default { "0" }
+                menu {
+                    "0" "Discrete"
+                    "1" "Conservative"
+                }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "jacobian_threshold"
+                label   "Jacobian Threshold"
+                type    float
+                invisible
+                default { "0" }
+                range   { 0 10 }
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+    }
+
+    group {
+        name    "Main_7"
+        label   "Input-Output"
+
+        group {
+            name    "folder1"
+            label   "Log"
+
+            parm {
+                name    "log_level"
+                label   "Level"
+                type    ordinal
+                default { "1" }
+                menu {
+                    "trace"     "trace"
+                    "debug"     "debug"
+                    "info"      "info"
+                    "warning"   "warning"
+                    "error"     "error"
+                    "critical"  "critical"
+                    "off"       "off"
+                }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "write_log"
+                label   "Save Log"
+                type    toggle
+                default { "0" }
+                parmtag { "filechooser_mode" "write" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "log_quiet"
+                label   "Quiet"
+                type    toggle
+                default { "0" }
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "folder1_1"
+            label   "Optional Output Files"
+
+            parm {
+                name    "output_json"
+                label   "Output JSON"
+                type    toggle
+                default { "0" }
+                parmtag { "filechooser_mode" "write" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "restart_json"
+                label   "Restart JSON"
+                type    toggle
+                default { "0" }
+                parmtag { "filechooser_mode" "write" }
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "folder1_2"
+            label   "Paraview"
+
+            parm {
+                name    "paraview_file_name"
+                label   "File Name"
+                type    string
+                default { "sim.pvd" }
+                parmtag { "filechooser_mode" "write" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "vismesh_rel_area"
+                label   "Upsampling Area"
+                type    log
+                default { "1e-05" }
+                range   { 1e-10 1 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "skip_frame"
+                label   "Skip Frames"
+                type    integer
+                default { "1" }
+                range   { 0 10 }
+                parmtag { "script_callback_language" "python" }
+            }
+            groupcollapsible {
+                name    "Options"
+                label   "Options"
+
+                parm {
+                    name    "use_hdf5"
+                    label   "Use HDF5"
+                    type    toggle
+                    default { "0" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "materials_fields"
+                    label   "Material"
+                    type    toggle
+                    default { "0" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "body_ids_fields"
+                    label   "Body IDs"
+                    type    toggle
+                    default { "0" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "traction_force_fields"
+                    label   "Traction Force"
+                    type    toggle
+                    invisible
+                    default { "0" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "pressure_fields"
+                    label   "Pressure"
+                    type    toggle
+                    invisible
+                    default { "0" }
+                    parmtag { "export_disable" "1" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "discr_fields"
+                    label   "Discretization Order"
+                    type    toggle
+                    default { "1" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "forces_HO_output"
+                    label   "Force High Order"
+                    type    toggle
+                    default { "0" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "minimal_fields"
+                    label   "Minimal Fields (derive in readPVD)"
+                    type    toggle
+                    default { "1" }
+                    help    "Export only the derivation basis (solution, F, Cauchy stress) plus enabled force/surface arrays. Von Mises, PK1/PK2, and the *_avg variants are omitted; the readPVD HDA derives them on load. Disable to write every field like upstream."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "scalar_values"
+                    label   "Scalar Values"
+                    type    toggle
+                    default { "1" }
+                    disablewhen "{ minimal_fields == 1 }"
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "tensor_values"
+                    label   "Tensor Values"
+                    type    toggle
+                    default { "1" }
+                    disablewhen "{ minimal_fields == 1 }"
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "high_order_mesh"
+                    label   "High Order Mesh"
+                    type    toggle
+                    invisible
+                    default { "1" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "paraview_wireframe"
+                    label   "Wireframe"
+                    type    toggle
+                    default { "0" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "paraview_points"
+                    label   "Points"
+                    type    toggle
+                    default { "0" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                group {
+                    name    "folder2"
+                    label   "Volume Specific Data"
+
+                    parm {
+                        name    "validity_fields"
+                        label   "Jacobian Validity"
+                        type    toggle
+                        invisible
+                        default { "0" }
+                        parmtag { "export_disable" "1" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "velocity_fields"
+                        label   "Velocity"
+                        type    toggle
+                        default { "0" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "nodes_field"
+                        label   "Nodes"
+                        type    toggle
+                        default { "1" }
+                        parmtag { "export_disable" "1" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "acceleration_fields"
+                        label   "Acceleration"
+                        type    toggle
+                        default { "0" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "forces_fields"
+                        label   "Forces"
+                        type    toggle
+                        default { "0" }
+                        parmtag { "export_disable" "1" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                }
+
+                group {
+                    name    "folder2_1"
+                    label   "Surface Specific Data"
+
+                    parm {
+                        name    "normals_fields"
+                        label   "Normals"
+                        type    toggle
+                        default { "0" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "displaced_normals_fields"
+                        label   "Displaced Normals"
+                        type    toggle
+                        default { "0" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "sidesets_fields"
+                        label   "Sidesets"
+                        type    toggle
+                        default { "0" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "solution_grad_fields"
+                        label   "Solution Gradient"
+                        type    toggle
+                        default { "0" }
+                        parmtag { "export_disable" "1" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                }
+
+                group {
+                    name    "folder2_2"
+                    label   "Contact Surface Data"
+
+                    parm {
+                        name    "contact_forces_fields"
+                        label   "Contact Forces"
+                        type    toggle
+                        default { "0" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "adaptive_dhat"
+                        label   "Adaptive dhat"
+                        type    toggle
+                        default { "0" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "friction_forces_fields"
+                        label   "Friction Forces"
+                        type    toggle
+                        default { "0" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "normal_adhesion_forces_fields"
+                        label   "Normal Adhesion Forces"
+                        type    toggle
+                        default { "0" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "tangential_adhesion_forces_fields"
+                        label   "Tangential Adhesion Forces"
+                        type    toggle
+                        default { "0" }
+                        parmtag { "export_disable" "1" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                }
+
+                group {
+                    name    "folder2_3"
+                    label   "Save txt file"
+
+                    parm {
+                        name    "solution_file"
+                        label   "Solution"
+                        type    toggle
+                        default { "0" }
+                        parmtag { "filechooser_mode" "write" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "stress_mat_file"
+                        label   "Stress"
+                        type    toggle
+                        default { "0" }
+                        parmtag { "filechooser_mode" "write" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "state_file"
+                        label   "State"
+                        type    toggle
+                        default { "0" }
+                        parmtag { "filechooser_mode" "write" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "rest_mesh_file"
+                        label   "Rest Mesh (.msh file)"
+                        type    toggle
+                        default { "0" }
+                        parmtag { "filechooser_mode" "write" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "mises_file"
+                        label   "von Mises"
+                        type    toggle
+                        default { "0" }
+                        parmtag { "filechooser_mode" "write" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "nodes"
+                        label   "nodes"
+                        type    toggle
+                        default { "0" }
+                        parmtag { "filechooser_mode" "write" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                }
+
+            }
+
+        }
+
+        group {
+            name    "folder1_3"
+            label   "Advanced"
+
+            parm {
+                name    "timestep_prefix"
+                label   "Timestep Prefix"
+                type    string
+                default { "step_" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "sol_on_grid"
+                label   "sol_on_grid"
+                type    float
+                default { "-1" }
+                range   { 0 10 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "compute_error"
+                label   "compute_error"
+                type    toggle
+                default { "1" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "sol_at_node"
+                label   "sol_at_node"
+                type    integer
+                default { "-1" }
+                range   { 0 10 }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "vis_boundary_only"
+                label   "vis_boundary_only"
+                type    toggle
+                default { "0" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "curved_mesh_size"
+                label   "curved_mesh_size"
+                type    toggle
+                default { "0" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "save_solve_sequence_debug"
+                label   "save_solve_sequence_debug"
+                type    toggle
+                default { "0" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "save_ccd_debug_meshes"
+                label   "save_ccd_debug_meshes"
+                type    toggle
+                default { "0" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "save_time_sequence"
+                label   "save_time_sequence"
+                type    toggle
+                default { "1" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "save_nl_solve_sequence"
+                label   "save_nl_solve_sequence"
+                type    toggle
+                default { "0" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "spectrum"
+                label   "spectrum"
+                type    toggle
+                default { "0" }
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "folder1_4"
+            label   "Restart?"
+
+            parm {
+                name    "restart_input"
+                label   "Restart?"
+                type    toggle
+                default { "0" }
+                parmtag { "filechooser_mode" "read" }
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "folder1_5"
+            label   "Import from Input Files"
+
+            parm {
+                name    "old_input_dir"
+                label   "Input Directory"
+                type    directory
+                default { "" }
+                parmtag { "filechooser_mode" "read" }
+                parmtag { "filechooser_pattern" "" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "newparameter2"
+                label   "Import"
+                type    button
+                default { "0" }
+                parmtag { "export_disable" "1" }
+                parmtag { "script_callback" "hou.pwd().hm().read_params(kwargs)" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "labelparm4"
+                label   "Message"
+                type    label
+                default { "*Select either a previous simulation root or its input folder.\n*Compatible older PolyFEM JSON files are imported as far as possible.\n*See Import Report for values that could not be reconstructed." }
+                parmtag { "sidefx::look" "block" }
+            }
+            parm {
+                name    "import_report"
+                label   "Import Report"
+                type    string
+                default { "No parameter folder has been imported." }
+                disablewhen "{ old_input_dir != __polyfem_report_edit_sentinel__ }"
+                parmtag { "editor" "1" }
+                parmtag { "sidefx::look" "block" }
+            }
+        }
+
+    }
+
+}
