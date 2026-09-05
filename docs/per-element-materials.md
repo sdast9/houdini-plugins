@@ -1,15 +1,28 @@
 # Spec: Fiber Models, HGO Dispersion, Model Sums & Per-Element Material Data in the PolyFEM 2.0 HDA
 
-Status: **design spec, ready to implement** (written 2026-07-30).
+Status: **implemented design record** (written 2026-07-30; status reviewed 2026-09-05).
+Phases 0–4 and the readPVD material/fiber pipeline are present in source and tests,
+including sign-aware smoothing and dispersion coloring. The 2.0 generation was
+published in `sdast9/houdini-plugins` at `5b8c5e9`; PolyFEM's material-file caching,
+bounds guard, and duplicate-model output names landed in `3503148d7` and are on
+`main`. See [hdas.md](hdas.md) for the user-facing feature summary.
+
+Sections below retain the original implementation plan, sketches, and July 30
+upstream observations. Phrases such as "today", "must add", "crashes", and
+"Phase 0 required" describe that pre-implementation baseline, not outstanding
+bugs in the current fork. The live source and tests take precedence over sketches;
+the phasing table is a historical plan. Deferred questions remain in section 10.
+The September 5 review inspected source; it did not rerun the HDA test suite.
+
 Target asset: `object_stevenabramowitch.dev.PolyFEM.2.0.hdanc`, source of truth in
 `houdini_HDAs/src/polyfem/` (`PythonModule.py`, `sections/DialogScript`), rebuilt with
 `hython src/build_all.py` (installs into `~/Library/Preferences/houdini/22.0/otls/`).
 
-This document is self-contained: an implementer should be able to execute it without
-reading the upstream PRs. Everything in §1 was **verified live on 2026-07-30** against
+The original plan below records the upstream contract and implementation rationale.
+Everything in §1 was **verified live on 2026-07-30** against
 `polyfem/build/PolyFEM_bin` (built 2026-07-30 10:59 from the merged tree, commit
-`a65e2f11`); the verification recipes are reproduced in §8 so they can be turned into
-regression tests.
+`a65e2f11`); the original verification recipes are reproduced in §8; implemented coverage lives
+in the source test suite.
 
 ---
 

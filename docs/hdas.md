@@ -1,9 +1,9 @@
 # PolyFEM Houdini Pipeline — 2.0 Generation
 
-Modernized HDAs targeting the local **semi-implicit-barrier** PolyFEM build
-(`polyfem/build/PolyFEM_bin`). The legacy assets remain installed untouched;
-Houdini offers the new versions for new nodes, old scenes keep their old
-definitions.
+Modernized HDAs targeting the local PolyFEM fork on **main**, including its
+semi-implicit barrier mode (`polyfem/build/PolyFEM_bin`). The build installs
+versioned definitions alongside legacy assets so existing nodes can retain their
+old definitions; installed-library state should be checked in Houdini.
 
 | asset | file | replaces |
 | --- | --- | --- |
@@ -13,7 +13,8 @@ definitions.
 
 Design notes: [per-element-materials.md](per-element-materials.md) —
 fiber models, composites, and per-element material data. **Implemented**
-2026-07-30 (phases 0–4 and R0–R1); the spec is kept as the rationale and
+2026-07-30 (phases 0–4 and readPVD material/fiber support, including sign-aware
+smoothing and dispersion coloring); the spec is kept as the rationale and
 upstream-contract reference.
 
 Everything is **built from source**: `src/` holds the Python modules, VEX,
