@@ -290,3 +290,16 @@ Targets the current build's strict-validated schema — the old fork keys
    viewport overlay legend, and scene gnomon; try both Auto Range buttons;
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
+
+### Contact floor default (2026-09-07)
+
+Constraint Floor now defaults to zero, retaining the barrier and CCD without the
+legacy below-floor deletion/projection. Existing saved nodes or imported JSON
+with positive values must be set to zero explicitly. Positive values retain the
+legacy behavior with known force/energy and prescribed-DOF inconsistencies. This
+default change is for practical instability testing, not physical certification.
+
+Validation: rebuilt all three assets inside the publication checkout; all 13 HDA
+test scripts passed against PolyFEM `6279b3492`. The installed node default and
+exported JSON were independently checked as zero. The solver focused suite passed
+22 cases / 1,161 assertions and all five contact smoke scenes passed.
