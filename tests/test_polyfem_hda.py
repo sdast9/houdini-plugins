@@ -51,6 +51,9 @@ def main():
     node = hou.node("/obj").createNode(
         "stevenabramowitch::dev::PolyFEM::2.0", "polyfem_test")
     mod = node.hdaModule()
+    assert node.parm("si_constraint_floor") is None, "retired control still exposed"
+    node.addSpareParmTuple(hou.FloatParmTemplate(
+        "si_constraint_floor", "Legacy saved floor", 1, default_value=(1e-4,)))
     node.setParms({"working_dir": work + "/", "polyfem_bin": POLYFEM_BIN})
 
     # --- geometry 1: simulated cube -------------------------------------
@@ -105,6 +108,7 @@ def main():
     contact = data["solver"]["contact"]
     assert contact["barrier_stiffness"] == "semi_implicit", contact
     assert "semi_implicit" in contact
+    assert "constraint_floor" not in contact["semi_implicit"]
     assert "adaptive_barrier_stiffness_multiplier" not in contact
     al = data["solver"]["augmented_lagrangian"]
     assert al["initial_weight"] == "hessian_scaled", al
@@ -148,6 +152,10 @@ def main():
     linf = [float(m.group(1)) for m in _re.finditer(
         r"-- Linf error: ([0-9.e+-]+)", result.stdout)]
     assert linf and linf[-1] > 0.05, f"no displacement; Linf={linf}"
+    # Import a legacy positive floor; it must be dropped on re-export.
+    data["solver"]["contact"]["semi_implicit"]["constraint_floor"] = 1e-4
+    with open(params_path, "w") as f:
+        json.dump(data, f)
     # --- round-trip: import the params back into a fresh node -------------
     node2 = hou.node("/obj").createNode(
         "stevenabramowitch::dev::PolyFEM::2.0", "polyfem_roundtrip")
@@ -175,7 +183,12 @@ def main():
     assert node2.evalParm("is_obstacle2") == 1
     assert node2.evalParm("obstacle_disp2").replace(" ", "") == "[0,0,0]", \
         node2.evalParm("obstacle_disp2")
-    print("PASS: params.json round-trip import")
+    assert node2.parm("si_constraint_floor") is None
+    roundtrip_path = node2.hdaModule().write_params_only({"node": node2})
+    with open(roundtrip_path) as f:
+        roundtrip_data = json.load(f)
+    assert "constraint_floor" not in roundtrip_data["solver"]["contact"]["semi_implicit"]
+    print("PASS: params.json round-trip import; retired floor dropped")
 
     print("\nPASS: end-to-end PolyFEM 2.0 HDA test")
     print("workdir:", work)

@@ -291,15 +291,19 @@ Targets the current build's strict-validated schema — the old fork keys
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
 
-### Contact floor default (2026-09-07)
+### Constraint floor retired (2026-09-07)
 
-Constraint Floor now defaults to zero, retaining the barrier and CCD without the
-legacy below-floor deletion/projection. Existing saved nodes or imported JSON
-with positive values must be set to zero explicitly. Positive values retain the
-legacy behavior with known force/energy and prescribed-DOF inconsistencies. This
-default change is for practical instability testing, not physical certification.
+The Constraint Floor control and JSON export have been removed. Old saved/spare
+node values are not read during export; imported JSON with a nonzero floor
+produces a compatibility note and drops the setting on export. PolyFEM also
+accepts the old key as ignored compatibility data, with a warning for nonzero
+values. It cannot reactivate barrier deletion or direction projection.
 
-Validation: rebuilt all three assets inside the publication checkout; all 13 HDA
-test scripts passed against PolyFEM `6279b3492`. The installed node default and
-exported JSON were independently checked as zero. The solver focused suite passed
-22 cases / 1,161 assertions and all five contact smoke scenes passed.
+Refresh Asset Libraries or restart Houdini to load the rebuilt definition.
+CCD and the separate trial-displacement cap remain active. Retiring the floor
+removes its known force/energy and prescribed-DOF defects; it does not certify
+all remaining contact coefficients or whole-scene physical accuracy.
+
+Validation: all 13 HDA test scripts passed, including legacy-floor import/export
+and a leftover positive spare parameter. Solver validation passed 22 focused
+cases / 1,189 assertions, five standard smokes and a legacy-positive input smoke.

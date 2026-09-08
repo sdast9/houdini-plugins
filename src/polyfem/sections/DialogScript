@@ -2885,15 +2885,6 @@
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
-                    name    "si_constraint_floor"
-                    label   "Constraint Floor"
-                    type    float
-                    default { "0" }
-                    range   { 0 0.1 }
-                    help    "Disabled by default (0): retains the barrier below the former floor and keeps CCD enabled. Positive values enable the legacy experimental floor as a fraction of dhat, deleting below-floor barriers and projecting closing directions. Known energy, prescribed-DOF and refresh inconsistencies remain; this is not a validated hard-contact formulation. Existing saved positive values must be set to 0 to disable."
-                    parmtag { "script_callback_language" "python" }
-                }
-                parm {
                     name    "si_refresh_interval"
                     label   "Refresh Interval"
                     type    integer

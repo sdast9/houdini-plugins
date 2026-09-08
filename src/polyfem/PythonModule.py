@@ -2786,7 +2786,6 @@ def build_solver(parent, data):
             "kappa_spread": parent.evalParm("si_kappa_spread"),
             "conditioning_cap": parent.evalParm("si_conditioning_cap"),
             "controller_interval": parent.evalParm("si_controller_interval"),
-            "constraint_floor": parent.evalParm("si_constraint_floor"),
             "restart": {
                 "enabled": bool(parent.evalParm("si_restart_enabled")),
                 "alpha_threshold": parent.evalParm("si_alpha_threshold"),
@@ -4025,6 +4024,10 @@ def _restore_solver(parent, data, legacy, warnings):
             parms["barrier_mode"] = 0
             semi = contact.get("semi_implicit", {})
             if isinstance(semi, dict):
+                if semi.get("constraint_floor", 0) != 0:
+                    warnings.append(
+                        "constraint_floor has been retired and is ignored; "
+                        "contact barriers remain active below the former floor.")
                 for key, parm in (
                         ("trim_lower", "si_trim_lower"),
                         ("trim_upper", "si_trim_upper"),
@@ -4032,8 +4035,7 @@ def _restore_solver(parent, data, legacy, warnings):
                         ("kappa_spread", "si_kappa_spread"),
                         ("refresh_interval", "si_refresh_interval"),
                         ("conditioning_cap", "si_conditioning_cap"),
-                        ("controller_interval", "si_controller_interval"),
-                        ("constraint_floor", "si_constraint_floor")):
+                        ("controller_interval", "si_controller_interval")):
                     if key in semi:
                         parms[parm] = semi[key]
                 restart = semi.get("restart", {})
