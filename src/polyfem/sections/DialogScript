@@ -2878,25 +2878,6 @@
             hidewhen "{ enable == 0 }"
 
             parm {
-                name    "adapt_dhat"
-                label   "Adaptive dhat"
-                type    toggle
-                joinnext
-                default { "0" }
-                help    "Let the barrier activation distance shrink locally where surfaces are already very close (adaptive dhat, used with the GCP formulation). Off = one global dhat everywhere."
-                parmtag { "script_callback_language" "python" }
-            }
-            parm {
-                name    "min_dist_ratio"
-                label   "Min dist ratio"
-                type    log
-                default { "0.5" }
-                disablewhen "{ adapt_dhat == 0 }"
-                range   { 0! 1 }
-                help    "With adaptive dhat: the local activation distance is this fraction of the current gap. Smaller values let surfaces get closer before the barrier acts."
-                parmtag { "script_callback_language" "python" }
-            }
-            parm {
                 name    "dhat"
                 label   "dhat"
                 type    log
@@ -3202,6 +3183,26 @@
                 default { "0" }
                 disablewhen "{ enable == 0 }"
                 help    "Use the Geometric Contact Potential (smooth, orientation-aware contact) instead of the standard IPC barrier. Experimental; not supported together with the semi-implicit barrier mode."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adapt_dhat"
+                label   "Adaptive dhat"
+                type    toggle
+                joinnext
+                default { "0" }
+                disablewhen "{ enable == 0 } { gcp_enable == 0 }"
+                help    "GCP only: computed once from the rest shape, every surface vertex, edge and face gets its own barrier activation distance, the smaller of dhat and Min dist ratio times its distance to the nearest other surface at rest. Surfaces that start close together (thin gaps, self-contact) are then not pushed apart by the barrier. Off = one global dhat everywhere. The standard IPC barrier has no adaptive dhat, so this is ignored and not exported when GCP is off."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "min_dist_ratio"
+                label   "Min dist ratio"
+                type    log
+                default { "0.5" }
+                disablewhen "{ enable == 0 } { gcp_enable == 0 } { adapt_dhat == 0 }"
+                range   { 0! 1 }
+                help    "With Adaptive dhat (GCP only): fraction of each surface element's rest-pose distance to the nearest other surface that becomes its local activation distance (never larger than dhat). Smaller values let surfaces get closer before the barrier acts; 0.5 is the reference value."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4748,7 +4749,7 @@
                         label   "Adaptive dhat"
                         type    toggle
                         default { "0" }
-                        help    "Export the local barrier activation distance used with adaptive dhat."
+                        help    "Export each surface element's local barrier activation distance. Only written when Geometric Contact (GCP) with Adaptive dhat is on; otherwise PolyFEM ignores this toggle."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {

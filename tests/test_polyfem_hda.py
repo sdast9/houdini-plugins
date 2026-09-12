@@ -110,6 +110,13 @@ def main():
     assert "semi_implicit" in contact
     assert "constraint_floor" not in contact["semi_implicit"]
     assert "adaptive_barrier_stiffness_multiplier" not in contact
+    # GCP-only settings live on the GCP tab and are exported only with GCP
+    gcp_keys = {"use_adaptive_dhat", "min_distance_ratio", "alpha_n", "alpha_t"}
+    assert not (gcp_keys & set(data["contact"])), data["contact"]
+    ptg = node.parmTemplateGroup()
+    for name in ("adapt_dhat", "min_dist_ratio"):
+        folder = ptg.containingFolder(name)
+        assert folder.label() == "Geometric Contact (GCP)", (name, folder.label())
     al = data["solver"]["augmented_lagrangian"]
     assert al["initial_weight"] == "hessian_scaled", al
     # minimal-fields mode (default): whitelist the derivation basis, drop

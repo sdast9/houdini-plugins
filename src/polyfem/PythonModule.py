@@ -2575,11 +2575,15 @@ def build_contact(parent, data):
         "friction_coefficient": parent.evalParm("cof"),
         "use_convergent_formulation": bool(area_weighted),
         "use_gcp_formulation": bool(parent.evalParm("gcp_enable")),
-        "alpha_n": parent.evalParm("alpha_n"),
-        "alpha_t": parent.evalParm("alpha_t"),
-        "min_distance_ratio": parent.evalParm("min_dist_ratio"),
-        "use_adaptive_dhat": bool(parent.evalParm("adapt_dhat")),
         "adhesion": adhesion}
+    if parent.evalParm("gcp_enable"):
+        # Read only by the smooth (GCP) contact form; the IPC barrier form
+        # never sees them, so the file carries them only when they apply.
+        data["contact"].update({
+            "alpha_n": parent.evalParm("alpha_n"),
+            "alpha_t": parent.evalParm("alpha_t"),
+            "use_adaptive_dhat": bool(parent.evalParm("adapt_dhat")),
+            "min_distance_ratio": parent.evalParm("min_dist_ratio")})
 
 
 def build_conditions(parent, data):

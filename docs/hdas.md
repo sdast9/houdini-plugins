@@ -335,6 +335,15 @@ Targets the current build's strict-validated schema — the old fork keys
   Untested beyond export: the reference binary is built without AMGCL.
 * The importer restores all of the above (menu tokens by name; `dimension`
   and `enable_overwrite_solver` are not controls).
+* **Adaptive dhat / Min dist ratio moved to the GCP tab.** PolyFEM passes
+  `use_adaptive_dhat` and `min_distance_ratio` only to the smooth (GCP)
+  contact form; on the Barrier (ICP) tab they were a silent no-op. They now
+  sit under *Geometric Contact (GCP)* next to the angle controls, disabled
+  unless GCP is on, and the four GCP-only keys (`alpha_n`, `alpha_t`,
+  `use_adaptive_dhat`, `min_distance_ratio`) are written to `params.json`
+  only when `use_gcp_formulation` is true. The adaptive dhat is computed once
+  from the rest shape (per element: min of dhat and ratio × rest distance to
+  the nearest other surface); the tooltips say so.
 * Validation: the 13 HDA test scripts pass; the end-to-end test additionally
   exports and runs Hypre (dimension 3), runs an unbuilt solver through the
   fallback, and round-trips the new controls through import.
