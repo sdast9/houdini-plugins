@@ -3371,7 +3371,7 @@
                     "sweep_and_prune"               "Sweep and Prune"
                     "sweep_and_tiniest_queue_gpu"   "Sweep and Tiniest Queue (GPU)"
                 }
-                help    "Method used to quickly find candidate pairs of nearby surface elements before exact collision detection. BVH and Hash Grid are fast general choices; Brute Force checks everything (only for tiny meshes); GPU variants need a CUDA build."
+                help    "Method used to quickly find candidate pairs of nearby surface elements before exact collision detection. BVH (the default) and Hash Grid are fast general choices; Brute Force checks everything (only for tiny meshes); GPU variants need a CUDA build. Memory: BVH and Sweep and Prune only ever store the pairs that really overlap, while Hash Grid (and Spatial Hash) first spread every element over the grid cells it sweeps through in a trial step -- when a few points fly very far in one solver step that can suddenly need gigabytes. Resource Limits below guard the Hash Grid and Brute Force cases."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3392,6 +3392,42 @@
                 disablewhen "{ enable == 0 }"
                 range   { 1000 1e+12 }
                 help    "Iteration cap for the continuous collision detection root finder. The default is large enough for all practical cases."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "resource_limits"
+                label   "Resource Limits"
+                type    ordinal
+                default { "0" }
+                disablewhen "{ enable == 0 }"
+                menu {
+                    "automatic" "Automatic (recommended)"
+                    "off"       "Off"
+                    "custom"    "Custom"
+                }
+                help    "Safety stop for the memory the contact search may use in one solver step. Before every trial step the solver lists the pairs of surface elements that might touch. With the Hash Grid or Brute Force broad phase that list can suddenly need gigabytes when a few points move very far in one trial step (a wild Newton step) -- and without a limit the operating system simply kills the run, with no message. Automatic (recommended) uses PolyFEM's built-in ceilings (100 million grid items, about 2.4 GB, and 50 million candidate pairs per pass, about 1.75 GB); real scenes stay thousands of times below them (the example scenes use a few thousand items). The ceilings only apply with Hash Grid or Brute Force; with BVH (the default here), Spatial Hash or Sweep and Prune they are skipped with a note in the log, and BVH does not have this memory problem. Off removes the ceilings: an oversized step can then exhaust memory and be killed. Custom lets you set both ceilings yourself. When a ceiling is reached the run stops cleanly with exit status 3 and an explanation at the end of the log; every step already written to the output folder is kept. To get past it: reduce the time step or the load increment, switch the broad phase to BVH, or raise the ceiling."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "resource_max_cell_items"
+                label   "Max Grid Items"
+                type    integer
+                default { "100000000" }
+                disablewhen "{ enable == 0 } { resource_limits != custom }"
+                hidewhen "{ resource_limits != custom }"
+                range   { 0! 1000000000 }
+                help    "Custom ceiling on the (element, grid cell) entries the Hash Grid may create while listing candidate pairs for one trial step; each entry costs about 24 bytes of scratch memory. A few points sweeping a long way cover (distance / cell size) cubed cells each, which is what makes this number explode. 100 million is about 2.4 GB. 0 = no ceiling on this quantity. Only the Hash Grid counts these (Brute Force has no grid)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "resource_max_candidate_emissions"
+                label   "Max Candidate Pairs"
+                type    integer
+                default { "50000000" }
+                disablewhen "{ enable == 0 } { resource_limits != custom }"
+                hidewhen "{ resource_limits != custom }"
+                range   { 0! 1000000000 }
+                help    "Custom ceiling on the candidate element pairs one search pass may produce before they are filtered down to the pairs that really overlap; each costs about 35 bytes of scratch memory. This number grows when everything moves a long way at once. 50 million is about 1.75 GB. 0 = no ceiling on this quantity. Counted by Hash Grid and Brute Force."
                 parmtag { "script_callback_language" "python" }
             }
         }

@@ -197,6 +197,39 @@ def main():
     assert "constraint_floor" not in roundtrip_data["solver"]["contact"]["semi_implicit"]
     print("PASS: params.json round-trip import; retired floor dropped")
 
+    # --- RB-05 resource limits: automatic by default, off / custom round-trip
+    limits = data["solver"]["contact"]["CCD"]["resource_limits"]
+    assert limits == {"max_cell_items": -1, "max_candidate_emissions": -1}, limits
+    assert node2.parm("resource_limits").evalAsString() == "automatic"
+    for parm_name in ("resource_limits", "resource_max_cell_items",
+                      "resource_max_candidate_emissions", "broad_phase"):
+        assert node.parm(parm_name).parmTemplate().help(), f"no tooltip on {parm_name}"
+    assert "exit status 3" in node.parm("resource_limits").parmTemplate().help()
+    node2.parm("resource_limits").set("custom")
+    node2.setParms({"resource_max_cell_items": 12345,
+                    "resource_max_candidate_emissions": 0})
+    custom_path = node2.hdaModule().write_params_only({"node": node2})
+    with open(custom_path) as f:
+        custom = json.load(f)["solver"]["contact"]["CCD"]["resource_limits"]
+    assert custom == {"max_cell_items": 12345, "max_candidate_emissions": 0}, custom
+    node3 = hou.node("/obj").createNode(
+        "stevenabramowitch::dev::PolyFEM::2.0", "polyfem_limits_roundtrip")
+    node3.setParms({"old_input_dir": os.path.dirname(custom_path)})
+    node3.hdaModule().read_params({"node": node3})
+    assert node3.parm("resource_limits").evalAsString() == "custom"
+    assert node3.evalParm("resource_max_cell_items") == 12345
+    assert node3.evalParm("resource_max_candidate_emissions") == 0
+    node3.parm("resource_limits").set("off")
+    off_path = node3.hdaModule().write_params_only({"node": node3})
+    with open(off_path) as f:
+        off = json.load(f)["solver"]["contact"]["CCD"]["resource_limits"]
+    assert off == {"max_cell_items": 0, "max_candidate_emissions": 0}, off
+    node3.setParms({"old_input_dir": os.path.dirname(off_path)})
+    node3.hdaModule().read_params({"node": node3})
+    assert node3.parm("resource_limits").evalAsString() == "off"
+    node3.destroy()
+    print("PASS: resource limits automatic by default; custom/off round-trip")
+
     # --- solver panel: nothing wired may be hidden --------------------------
     def walk(templates, path):
         for t in templates:

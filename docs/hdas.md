@@ -11,7 +11,7 @@ old definitions; installed-library state should be checked in Houdini.
 | `stevenabramowitch::dev::PolyFEM::2.0` (Object) | `object_stevenabramowitch.dev.PolyFEM.2.0.hdanc` | 1.2 |
 | `readPVD::1.0` (Object) | `object_readPVD.1.0.hdanc` | readPVD_higher_order 0.26 |
 
-Design notes: [per-element-materials.md](per-element-materials.md) —
+Design notes: [SPEC_per_element_materials.md](SPEC_per_element_materials.md) —
 fiber models, composites, and per-element material data. **Implemented**
 2026-07-30 (phases 0–4 and readPVD material/fiber support, including sign-aware
 smoothing and dispersion coloring); the spec is kept as the rationale and
@@ -290,6 +290,34 @@ Targets the current build's strict-validated schema — the old fork keys
    viewport overlay legend, and scene gnomon; try both Auto Range buttons;
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
+
+### Contact resource limits (2026-09-12, RB-05)
+
+* **New on the Contact ▸ CCD Parameters tab: Resource Limits** (Automatic /
+  Off / Custom) with *Max Grid Items* and *Max Candidate Pairs* for Custom.
+  Before every trial step PolyFEM lists the surface-element pairs that might
+  touch; with the Hash Grid or Brute Force broad phase that list can need
+  gigabytes when a few points move very far in one Newton trial, and the OS
+  then kills the run without a message (macOS never reports an allocation
+  failure to the program). *Automatic* (the default, exported as `-1`) uses
+  PolyFEM's built-in ceilings — 100 million grid items (≈ 2.4 GB) and
+  50 million candidate pairs per pass (≈ 1.75 GB), thousands of times above
+  what real scenes need — when the broad phase can enforce them; with BVH
+  (this node's default broad phase), Spatial Hash or Sweep and Prune they are
+  skipped with a note in the log, and BVH does not have the memory problem in
+  the first place. *Off* exports `0`, *Custom* the two values. Every tooltip
+  explains this for a first-time user; the Broad Phase tooltip now says which
+  methods can blow up.
+* **PolyFEM exit statuses are meaningful now.** A reached ceiling stops the
+  run with exit status **3** and a plain-language explanation at the end of
+  the log (steps already written are kept: reduce the time step or load
+  increment, switch to BVH, or raise the ceiling); any other named failure
+  (invalid input, a solver that stopped as configured, an option the binary
+  lacks) exits **1** with `PolyFEM stopped: …`; an abort signal (−6 / 134) is
+  a real crash. Use *Show Log* on the node to read the explanation.
+* The end-to-end test checks the automatic default in the exported
+  `params.json`, the Custom/Off round trips and that the new controls carry
+  tooltips.
 
 ### Solver panel completion (2026-09-12)
 

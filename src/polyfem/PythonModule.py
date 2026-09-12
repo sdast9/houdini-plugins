@@ -2885,10 +2885,23 @@ def build_solver(parent, data):
     broad_phase_dict = {0: "hash_grid", 1: "brute_force", 2: "spatial_hash",
                         3: "BVH", 4: "sweep_and_prune",
                         5: "sweep_and_tiniest_queue"}
+    # RB-05 resource limits: -1 = automatic (PolyFEM's production ceilings
+    # where the broad phase can enforce them), 0 = off, N = custom.
+    limits_mode = parent.parm("resource_limits").evalAsString()
+    if limits_mode == "off":
+        resource_limits = {"max_cell_items": 0, "max_candidate_emissions": 0}
+    elif limits_mode == "custom":
+        resource_limits = {
+            "max_cell_items": int(parent.evalParm("resource_max_cell_items")),
+            "max_candidate_emissions":
+                int(parent.evalParm("resource_max_candidate_emissions"))}
+    else:
+        resource_limits = {"max_cell_items": -1, "max_candidate_emissions": -1}
     contact = {
         "CCD": {"broad_phase": broad_phase_dict[parent.evalParm("broad_phase")],
                 "tolerance": parent.evalParm("CCD_tolerance"),
-                "max_iterations": parent.evalParm("ccd_max_iterations")},
+                "max_iterations": parent.evalParm("ccd_max_iterations"),
+                "resource_limits": resource_limits},
         "friction_iterations": parent.evalParm("friction_iterations"),
         "tangential_adhesion_iterations": parent.evalParm("tangent_iter"),
         "friction_convergence_tol":
@@ -4229,6 +4242,18 @@ def _restore_solver(parent, data, legacy, warnings):
                 parms["CCD_tolerance"] = ccd["tolerance"]
             if "max_iterations" in ccd:
                 parms["ccd_max_iterations"] = ccd["max_iterations"]
+            limits = ccd.get("resource_limits")
+            if isinstance(limits, dict):
+                items = limits.get("max_cell_items", -1)
+                pairs = limits.get("max_candidate_emissions", -1)
+                if items < 0 or pairs < 0:
+                    parms["resource_limits"] = 0  # automatic
+                elif items == 0 and pairs == 0:
+                    parms["resource_limits"] = 1  # off
+                else:
+                    parms["resource_limits"] = 2  # custom
+                    parms["resource_max_cell_items"] = int(items)
+                    parms["resource_max_candidate_emissions"] = int(pairs)
         stiffness = contact.get("barrier_stiffness", "semi_implicit")
         if stiffness == "semi_implicit":
             parms["barrier_mode"] = 0
