@@ -2388,7 +2388,7 @@
             label   "Right-Hand-Side"
             type    string
             default { "[0, 0, 0]" }
-            help    "Body force per unit mass applied everywhere, as [x, y, z] (PolyFEM multiplies it by each material's density). This is where gravity goes: [0, -9.81, 0] for SI units with y up. Entries may be expressions of x, y, z, t in quotes. [0, 0, 0] means no body force."
+            help    "Body force per unit mass applied everywhere, as [x, y, z]; PolyFEM multiplies it by each material's density. Note PolyFEM's sign convention: the value is the NEGATIVE of the acceleration, so gravity pulling down along -y is written [0, 9.81, 0] (this is how PolyFEM's own bouncing-ball examples write it). Entries may be expressions of x, y, z, t in quotes. [0, 0, 0] means no body force."
             parmtag { "script_callback_language" "python" }
         }
         parm {
