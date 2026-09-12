@@ -291,6 +291,54 @@ Targets the current build's strict-validated schema — the old fork keys
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
 
+### Solver panel completion (2026-09-12)
+
+* **The wired controls were not actually reachable.** The 2026-09-11 wiring
+  inherited the 1.2 asset's visibility flags: the whole *Linear* tab, the
+  *Line Search* tab and a hidden *Advanced* tab (the gradient finite-difference
+  check) were `invisibletab`, and 21 individual controls were `invisible` —
+  every per-method setting of the nonlinear solver (Newton residual tolerance
+  and regularization weights, the PSD toggles, L-BFGS history, ADAM, erase
+  probability) plus iterations per strategy, allow-out-of-iterations, the AL
+  phase iteration limit, lagged regularization and the Jacobian threshold.
+  Their values were exported, but only ever at their defaults. All are visible
+  now; the hidden gradient-check tab was merged into Solver ▸ *Advanced* under
+  a *Debugging* heading, and two hidden output toggles (*High Order Mesh*,
+  *Jacobian Validity*) are visible as well. The end-to-end test now fails if
+  any control or tab in the Solver folder is hidden.
+* **Choosing a solver the binary lacks no longer aborts the run.** PolyFEM
+  validates the linear solver against the list compiled into the binary;
+  before, picking AMGCL, Pardiso or any `Eigen::Pardiso*` on a build without
+  them stopped at startup with `invalid input json`. The exporter now writes
+  `enable_overwrite_solver: true` with any non-automatic choice, so PolyFEM
+  logs a warning and falls back to its default instead (the tooltip says so).
+  The test exercises this with AMGCL on the reference build.
+* **Hypre** gained *Strength Threshold* (theta) and *Nodal Coarsening*, and
+  the exporter always writes `dimension: 3`: without it PolySolve builds
+  scalar AMG for a 3-D elasticity system. On the quasistatic smoke, dimension 3
+  with nodal coarsening halved the first solve (0.81 s vs 1.50 s) and cut the
+  "large linear solve residual" events from 9 to 3, so *Nodal Coarsening*
+  defaults on (PolySolve's own default is off). *Pre Max Iterations* is kept
+  for compatibility; its tooltip now says the wrapper does not use it.
+* **Nonlinear stopping criteria completed:** *Gradient Norm Type* (Euclidean /
+  L2 / Linf), *Relative Gradient Norm Tolerance*, *Relative X Delta
+  Tolerance*, *Newton Decrement Tolerance* and *Allow Non-Gradient
+  Convergence* — every top-level key of PolySolve's nonlinear spec except
+  `box_constraints` (optimization only). Augmented Lagrangian gained *Mass
+  Lumping* (row_sum / hrz).
+* **AMGCL** type menus, previously one entry each, now list AMGCL's runtime
+  catalog (solver: cg, bicgstab, bicgstabl, gmres, lgmres, fgmres, idrs;
+  smoother: chebyshev, gauss_seidel, damped_jacobi, spai0/1, ilu0/k/t;
+  coarsening: smoothed_aggregation, aggregation, ruge_stuben,
+  smoothed_aggr_emin). The Chebyshev-only settings hide for other smoothers
+  and the coarsening controls moved into their previously empty group.
+  Untested beyond export: the reference binary is built without AMGCL.
+* The importer restores all of the above (menu tokens by name; `dimension`
+  and `enable_overwrite_solver` are not controls).
+* Validation: the 13 HDA test scripts pass; the end-to-end test additionally
+  exports and runs Hypre (dimension 3), runs an unbuilt solver through the
+  fallback, and round-trips the new controls through import.
+
 ### Solver wiring, new contact controls and tooltips (2026-09-11)
 
 * **Every parameter now has a tooltip** written for a first-time user (what the

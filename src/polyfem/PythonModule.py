@@ -2738,7 +2738,10 @@ def build_linear_solver(parent):
     solver = _menu_token(parent, "solver")
     if solver == "auto":
         return None
-    linear = {"solver": solver}
+    # PolyFEM validates the choice against the solvers compiled into the
+    # binary and aborts otherwise; with the overwrite flag it logs a warning
+    # and falls back to its default instead.
+    linear = {"solver": solver, "enable_overwrite_solver": True}
     iterative_eigen = ("Eigen::ConjugateGradient",
                        "Eigen::LeastSquaresConjugateGradient", "Eigen::DGMRES",
                        "Eigen::BiCGSTAB", "Eigen::GMRES", "Eigen::MINRES")
@@ -2752,7 +2755,14 @@ def build_linear_solver(parent):
         linear["Hypre"] = {
             "max_iter": parent.evalParm("max_iter_hypre"),
             "pre_max_iter": parent.evalParm("pre_max_iter_hypre"),
-            "tolerance": parent.evalParm("tolerance_hypre_AMGCL")}
+            "tolerance": parent.evalParm("tolerance_hypre_AMGCL"),
+            "theta": parent.evalParm("theta_hypre"),
+            "nodal_coarsening":
+                bool(parent.evalParm("nodal_coarsening_hypre")),
+            # Houdini scenes are 3-D; dimension > 1 switches BoomerAMG to
+            # its systems (elasticity) settings, which the default of 1
+            # never does.
+            "dimension": 3}
     elif solver == "AMGCL":
         linear["AMGCL"] = {
             "solver": {"maxiter": parent.evalParm("max_iter"),
@@ -2802,8 +2812,14 @@ def build_nonlinear_solver(parent):
         "allow_out_of_iterations":
             bool(parent.evalParm("allow_out_of_iterations")),
         "x_delta_tol": parent.evalParm("x_delta"),
+        "rel_x_delta_tol": parent.evalParm("rel_x_delta_tol"),
         "grad_norm_tol": parent.evalParm("grad_norm"),
+        "rel_grad_norm_tol": parent.evalParm("rel_grad_norm_tol"),
+        "norm_type": _menu_token(parent, "norm_type"),
         "first_grad_norm_tol": parent.evalParm("first_grad_norm_tol"),
+        "newton_decrement_tol": parent.evalParm("newton_decrement_tol"),
+        "allow_non_grad_convergence":
+            bool(parent.evalParm("allow_non_grad_convergence")),
         "line_search": ls,
         "advanced": {"f_delta_tol": parent.evalParm("f_delta"),
                      "f_delta_step_tol": parent.evalParm("f_delta_step_tol"),
@@ -2853,7 +2869,8 @@ def build_solver(parent, data):
         al = {"initial_weight": parent.evalParm("al_initial_weight")}
     al.update({"scaling": parent.evalParm("al_scaling"),
                "max_weight": parent.evalParm("al_max_weight"),
-               "eta": parent.evalParm("al_eta")})
+               "eta": parent.evalParm("al_eta"),
+               "lumping": _menu_token(parent, "al_lumping")})
     # The AL (boundary-condition preparation) phase reuses the nonlinear
     # settings with its own iteration budget.
     if parent.evalParm("al_max_iterations") != nonlinear["max_iterations"]:
@@ -4060,6 +4077,11 @@ def _restore_solver(parent, data, legacy, warnings):
                 (("x_delta_tol", "x_delta"), "x_delta"),
                 (("grad_norm_tol", "grad_norm"), "grad_norm"),
                 (("first_grad_norm_tol",), "first_grad_norm_tol"),
+                (("rel_grad_norm_tol",), "rel_grad_norm_tol"),
+                (("rel_x_delta_tol",), "rel_x_delta_tol"),
+                (("newton_decrement_tol",), "newton_decrement_tol"),
+                (("allow_non_grad_convergence",),
+                 "allow_non_grad_convergence"),
                 (("iterations_per_strategy",), "iterations_per_strategy"),
                 (("allow_out_of_iterations",), "allow_out_of_iterations")):
             key = next(
@@ -4067,6 +4089,9 @@ def _restore_solver(parent, data, legacy, warnings):
                 None)
             if key is not None:
                 parms[parm] = nonlinear[key]
+        norm_types = {"Euclidean": 0, "L2": 1, "Linf": 2}
+        if nonlinear.get("norm_type") in norm_types:
+            parms["norm_type"] = norm_types[nonlinear["norm_type"]]
         nonlinear_type = nonlinear.get("solver", "Newton")
         nonlinear_types = {
             name: index for index, name in enumerate((
@@ -4274,6 +4299,9 @@ def _restore_solver(parent, data, legacy, warnings):
                 ("eta", "al_eta")):
             if key in al:
                 parms[parm] = al[key]
+        lumpings = {"row_sum": 0, "hrz": 1}
+        if al.get("lumping") in lumpings:
+            parms["al_lumping"] = lumpings[al["lumping"]]
         al_nonlinear = al.get("nonlinear", {})
         if isinstance(al_nonlinear, dict) \
                 and "max_iterations" in al_nonlinear:
@@ -4360,11 +4388,26 @@ def _restore_linear_solver(parent, linear, parms, warnings):
             parms["mtype"] = mtypes.index(str(pardiso["mtype"]))
     hypre = linear.get("Hypre", {})
     if isinstance(hypre, dict):
+        # `dimension` is not a control: the exporter always writes 3.
         for key, parm in (("max_iter", "max_iter_hypre"),
                           ("pre_max_iter", "pre_max_iter_hypre"),
-                          ("tolerance", "tolerance_hypre_AMGCL")):
+                          ("tolerance", "tolerance_hypre_AMGCL"),
+                          ("theta", "theta_hypre"),
+                          ("nodal_coarsening", "nodal_coarsening_hypre")):
             if key in hypre:
                 parms[parm] = hypre[key]
+
+    def restore_token(parm_name, value, what):
+        if value is None:
+            return
+        tokens = list(parent.parm(parm_name).menuItems())
+        if value in tokens:
+            parms[parm_name] = tokens.index(value)
+        else:
+            warnings.append(
+                f"AMGCL {what} '{value}' is not offered by the HDA; the "
+                "default was kept.")
+
     amgcl = linear.get("AMGCL", {})
     if isinstance(amgcl, dict):
         amg_solver = amgcl.get("solver", {})
@@ -4373,8 +4416,11 @@ def _restore_linear_solver(parent, linear, parms, warnings):
                 parms["max_iter"] = amg_solver["maxiter"]
             if "tol" in amg_solver:
                 parms["tolerance_hypre_AMGCL"] = amg_solver["tol"]
+            restore_token("solver_type", amg_solver.get("type"), "solver type")
         precond_block = amgcl.get("precond", {})
         if isinstance(precond_block, dict):
+            restore_token("class", precond_block.get("class"),
+                          "preconditioner class")
             for key, parm in (("max_levels", "max_levels"),
                               ("direct_coarse", "direct_coarse"),
                               ("ncycle", "ncycle")):
@@ -4382,6 +4428,7 @@ def _restore_linear_solver(parent, linear, parms, warnings):
                     parms[parm] = precond_block[key]
             relax = precond_block.get("relax", {})
             if isinstance(relax, dict):
+                restore_token("relax_type", relax.get("type"), "relax type")
                 for key, parm in (("degree", "degree"),
                                   ("power_iters", "power_iters"),
                                   ("higher", "higher"), ("lower", "lower"),
@@ -4390,6 +4437,8 @@ def _restore_linear_solver(parent, linear, parms, warnings):
                         parms[parm] = relax[key]
             coarsening = precond_block.get("coarsening", {})
             if isinstance(coarsening, dict):
+                restore_token("coarsening_type", coarsening.get("type"),
+                              "coarsening type")
                 for key, parm in (
                         ("estimate_spectral_radius",
                          "estimate_spectral_radius"),

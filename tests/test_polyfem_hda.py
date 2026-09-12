@@ -190,6 +190,82 @@ def main():
     assert "constraint_floor" not in roundtrip_data["solver"]["contact"]["semi_implicit"]
     print("PASS: params.json round-trip import; retired floor dropped")
 
+    # --- solver panel: nothing wired may be hidden --------------------------
+    def walk(templates, path):
+        for t in templates:
+            if isinstance(t, hou.FolderParmTemplate):
+                assert not t.isHidden(), f"hidden tab {path}/{t.label()}"
+                walk(t.parmTemplates(), path + "/" + t.label())
+            elif not isinstance(t, hou.LabelParmTemplate):
+                assert not t.isHidden(), f"hidden control {path}/{t.name()}"
+    solver_folder = node.parmTemplateGroup().findFolder("Solver")
+    assert solver_folder is not None
+    walk(solver_folder.parmTemplates(), "Solver")
+    print("PASS: no hidden control or tab in the Solver folder")
+
+    # --- Hypre + the new convergence controls: export, validate, run ------
+    node.setParms({"tend": 0.25})
+    node.parm("solver").set("Hypre")
+    node.setParms({"nodal_coarsening_hypre": 1, "theta_hypre": 0.4,
+                   "rel_grad_norm_tol": 1e-9, "rel_x_delta_tol": 1e-12,
+                   "allow_non_grad_convergence": 1,
+                   "newton_decrement_tol": 1e-14})
+    node.parm("norm_type").set("Linf")
+    node.parm("al_lumping").set("hrz")
+    params_path = mod.write_params_only({"node": node})
+    with open(params_path) as f:
+        data = json.load(f)
+    linear = data["solver"]["linear"]
+    assert linear["solver"] == "Hypre" and linear["enable_overwrite_solver"], linear
+    assert linear["Hypre"]["dimension"] == 3, linear
+    assert linear["Hypre"]["nodal_coarsening"] is True
+    assert linear["Hypre"]["theta"] == 0.4
+    nl = data["solver"]["nonlinear"]
+    assert nl["norm_type"] == "Linf" and nl["rel_grad_norm_tol"] == 1e-9, nl
+    assert nl["rel_x_delta_tol"] == 1e-12 and nl["newton_decrement_tol"] == 1e-14
+    assert nl["allow_non_grad_convergence"] is True
+    assert data["solver"]["augmented_lagrangian"]["lumping"] == "hrz"
+    result = subprocess.run(
+        [POLYFEM_BIN, "-j", "params.json", "-o", "../output/",
+         "--log_level", "info"],
+        cwd=input_dir, capture_output=True, text=True, timeout=900)
+    sys.stdout.write(result.stdout[-1500:])
+    assert result.returncode == 0, "PolyFEM run with Hypre failed"
+    assert "falling back" not in result.stdout, "Hypre missing from binary"
+    print("PASS: Hypre (dimension 3, nodal coarsening) export and run")
+
+    # --- a solver the binary may lack must warn and fall back, not abort --
+    node.parm("solver").set("AMGCL")
+    params_path = mod.write_params_only({"node": node})
+    result = subprocess.run(
+        [POLYFEM_BIN, "-j", "params.json", "-o", "../output/",
+         "--log_level", "info"],
+        cwd=input_dir, capture_output=True, text=True, timeout=900)
+    sys.stdout.write(result.stdout[-1500:])
+    assert result.returncode == 0, "run with an unbuilt solver aborted"
+    assert "invalid input json" not in result.stdout
+    print("PASS: unbuilt linear solver falls back instead of aborting"
+          + (" (fallback taken)" if "falling back" in result.stdout
+             else " (AMGCL present in this binary)"))
+
+    # --- the new controls round-trip through the importer ------------------
+    node.parm("solver").set("Hypre")
+    params_path = mod.write_params_only({"node": node})
+    node3 = hou.node("/obj").createNode(
+        "stevenabramowitch::dev::PolyFEM::2.0", "polyfem_roundtrip_solver")
+    node3.setParms({"old_input_dir": input_dir})
+    node3.hdaModule().read_params({"node": node3})
+    assert node3.parm("solver").evalAsString() == "Hypre"
+    assert node3.evalParm("nodal_coarsening_hypre") == 1
+    assert abs(node3.evalParm("theta_hypre") - 0.4) < 1e-12
+    assert node3.parm("norm_type").evalAsString() == "Linf"
+    assert abs(node3.evalParm("rel_grad_norm_tol") - 1e-9) < 1e-20
+    assert abs(node3.evalParm("rel_x_delta_tol") - 1e-12) < 1e-24
+    assert abs(node3.evalParm("newton_decrement_tol") - 1e-14) < 1e-26
+    assert node3.evalParm("allow_non_grad_convergence") == 1
+    assert node3.parm("al_lumping").evalAsString() == "hrz"
+    print("PASS: solver-panel controls round-trip through import")
+
     print("\nPASS: end-to-end PolyFEM 2.0 HDA test")
     print("workdir:", work)
     return work

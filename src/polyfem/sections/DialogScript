@@ -3404,7 +3404,6 @@
         group {
             name    "linear"
             label   "Linear"
-            invisibletab
 
             parm {
                 name    "solver"
@@ -3433,7 +3432,7 @@
                     "Eigen::DGMRES"                         "Eigen::DGMRES (iterative)"
                     "Eigen::MINRES"                         "Eigen::MINRES (iterative)"
                 }
-                help    "Direct or iterative method for the linear system solved at each Newton iteration. Automatic lets PolyFEM pick the best direct solver compiled into your binary (recommended). Direct solvers (LDLT/LLT/LU) are robust and exact; iterative ones (CG, GMRES, Hypre, AMGCL) use less memory on very large meshes but need a preconditioner and tolerance. Options marked MKL or macOS only exist in builds with that library."
+                help    "Direct or iterative method for the linear system solved at each Newton iteration. Automatic lets PolyFEM pick the best direct solver compiled into your binary (recommended). Direct solvers (LDLT/LLT/LU) are robust and exact; iterative ones (CG, GMRES, Hypre, AMGCL) use less memory on very large meshes but need a preconditioner and tolerance. Options marked MKL or macOS only exist in builds with that library: if the binary you point at was not built with the solver you pick, PolyFEM prints a warning in the log and falls back to its own default instead of stopping (the HDA sets enable_overwrite_solver for you)."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3516,7 +3515,28 @@
                 disablewhen "{ solver != Hypre }"
                 hidewhen "{ solver != Hypre }"
                 range   { 0 10 }
-                help    "Number of Hypre pre-smoothing sweeps per multigrid cycle."
+                help    "Accepted for compatibility with PolySolve's Hypre settings but not used by the current Hypre wrapper, which always applies one multigrid V-cycle per iteration. Leave at 1."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "theta_hypre"
+                label   "Strength Threshold"
+                type    float
+                default { "0.5" }
+                disablewhen "{ solver != Hypre }"
+                hidewhen "{ solver != Hypre }"
+                range   { 0 1 }
+                help    "Hypre's strength-of-connection threshold (theta) used to build the coarse levels: couplings weaker than this fraction of the strongest coupling in a row are ignored when grouping unknowns. 0.25 suits 2-D problems, 0.5 (default) suits 3-D elasticity; higher values give a cheaper but weaker preconditioner. Only for the Hypre solver."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "nodal_coarsening_hypre"
+                label   "Nodal Coarsening"
+                type    toggle
+                default { "1" }
+                disablewhen "{ solver != Hypre }"
+                hidewhen "{ solver != Hypre }"
+                help    "Coarsen the three displacement components of each node together instead of treating every unknown separately. This is the recommended setting for elasticity and was faster and more reliable in tests; the HDA also tells Hypre the problem is 3-D (dimension = 3) so these elasticity options take effect. Turn it off only to reproduce PolySolve's plain scalar default."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3538,9 +3558,15 @@
                 disablewhen "{ solver != AMGCL }"
                 hidewhen "{ solver != AMGCL }"
                 menu {
-                    "cg"    "cg"
+                    "cg"        "cg (conjugate gradient)"
+                    "bicgstab"  "bicgstab"
+                    "bicgstabl" "bicgstabl"
+                    "gmres"     "gmres"
+                    "lgmres"    "lgmres"
+                    "fgmres"    "fgmres"
+                    "idrs"      "idrs"
                 }
-                help    "Krylov method AMGCL wraps around its multigrid preconditioner (cg = conjugate gradient, for symmetric positive-definite systems)."
+                help    "Krylov method AMGCL wraps around its multigrid preconditioner. cg (conjugate gradient) is the standard choice for the symmetric positive-definite systems Newton produces; bicgstab, gmres and their variants also handle nonsymmetric systems at a higher memory cost. AMGCL only exists in binaries built with it; other builds log a warning and fall back to the default solver."
                 parmtag { "script_callback_language" "python" }
             }
             groupcollapsible {
@@ -3608,53 +3634,56 @@
                     disablewhen "{ solver != AMGCL }"
                     hidewhen "{ solver != AMGCL }"
 
+                    parm {
+                        name    "coarsening_type"
+                        label   "Coarse Type"
+                        type    ordinal
+                        default { "0" }
+                        disablewhen "{ solver != AMGCL }"
+                        hidewhen "{ solver != AMGCL }"
+                        menu {
+                            "smoothed_aggregation"  "smoothed_aggregation"
+                            "aggregation"           "aggregation"
+                            "ruge_stuben"           "ruge_stuben"
+                            "smoothed_aggr_emin"    "smoothed_aggr_emin"
+                        }
+                        help    "How AMGCL builds the coarser levels. smoothed_aggregation groups strongly connected unknowns and smooths the result (the usual choice for elasticity); aggregation skips the smoothing (cheaper setup, slower convergence); ruge_stuben is classical algebraic multigrid; smoothed_aggr_emin is an energy-minimizing variant of smoothed aggregation."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "estimate_spectral_radius"
+                        label   "Est. Spectral Radius"
+                        type    toggle
+                        default { "1" }
+                        disablewhen "{ solver != AMGCL }"
+                        hidewhen "{ solver != AMGCL }"
+                        help    "Let AMGCL estimate the matrix spectral radius for its Chebyshev smoother instead of using a fixed guess (usually better)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "eps_strong"
+                        label   "Aggr Epsilon Strong"
+                        type    float
+                        default { "0" }
+                        disablewhen "{ solver != AMGCL }"
+                        hidewhen "{ solver != AMGCL }"
+                        range   { 0 10 }
+                        help    "AMGCL aggregation strength threshold: connections weaker than this fraction are ignored when grouping unknowns. 0 = use all connections."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "coarse_relax"
+                        label   "Coarsening Relax"
+                        type    float
+                        default { "1" }
+                        range   { 0 10 }
+                        disablewhen "{ solver != AMGCL }"
+                        hidewhen "{ solver != AMGCL }"
+                        help    "Relaxation factor of AMGCL's smoothed aggregation (1 = standard)."
+                        parmtag { "script_callback_language" "python" }
+                    }
                 }
 
-                parm {
-                    name    "coarsening_type"
-                    label   "Coarse Type"
-                    type    ordinal
-                    default { "0" }
-                    disablewhen "{ solver != AMGCL }"
-                    hidewhen "{ solver != AMGCL }"
-                    menu {
-                        "smoothed_aggregation"  "smoothed_aggregation"
-                    }
-                    help    "How AMGCL builds coarser levels (smoothed aggregation groups strongly connected unknowns)."
-                    parmtag { "script_callback_language" "python" }
-                }
-                parm {
-                    name    "estimate_spectral_radius"
-                    label   "Est. Spectral Radius"
-                    type    toggle
-                    default { "1" }
-                    disablewhen "{ solver != AMGCL }"
-                    hidewhen "{ solver != AMGCL }"
-                    help    "Let AMGCL estimate the matrix spectral radius for its Chebyshev smoother instead of using a fixed guess (usually better)."
-                    parmtag { "script_callback_language" "python" }
-                }
-                parm {
-                    name    "eps_strong"
-                    label   "Aggr Epsilon Strong"
-                    type    float
-                    default { "0" }
-                    disablewhen "{ solver != AMGCL }"
-                    hidewhen "{ solver != AMGCL }"
-                    range   { 0 10 }
-                    help    "AMGCL aggregation strength threshold: connections weaker than this fraction are ignored when grouping unknowns. 0 = use all connections."
-                    parmtag { "script_callback_language" "python" }
-                }
-                parm {
-                    name    "coarse_relax"
-                    label   "Coarsening Relax"
-                    type    float
-                    default { "1" }
-                    range   { 0 10 }
-                    disablewhen "{ solver != AMGCL }"
-                    hidewhen "{ solver != AMGCL }"
-                    help    "Relaxation factor of AMGCL's smoothed aggregation (1 = standard)."
-                    parmtag { "script_callback_language" "python" }
-                }
                 parm {
                     name    "sepparm2"
                     label   "Spacer"
@@ -3670,17 +3699,6 @@
                     hidewhen "{ solver != AMGCL }"
 
                     parm {
-                        name    "degree"
-                        label   "Degree"
-                        type    integer
-                        default { "16" }
-                        disablewhen "{ solver != AMGCL }"
-                        hidewhen "{ solver != AMGCL }"
-                        range   { 0 32 }
-                        help    "Polynomial degree of AMGCL's Chebyshev smoother. Higher degrees smooth more per application at more cost."
-                        parmtag { "script_callback_language" "python" }
-                    }
-                    parm {
                         name    "relax_type"
                         label   "Relax Type"
                         type    ordinal
@@ -3688,9 +3706,27 @@
                         disablewhen "{ solver != AMGCL }"
                         hidewhen "{ solver != AMGCL }"
                         menu {
-                            "chebyshev" "chebyshev"
+                            "chebyshev"     "chebyshev"
+                            "gauss_seidel"  "gauss_seidel"
+                            "damped_jacobi" "damped_jacobi"
+                            "spai0"         "spai0"
+                            "spai1"         "spai1"
+                            "ilu0"          "ilu0"
+                            "iluk"          "iluk"
+                            "ilut"          "ilut"
                         }
-                        help    "Smoother used on each AMGCL level (Chebyshev polynomial smoothing)."
+                        help    "Smoother applied on every multigrid level. chebyshev (polynomial smoothing, tuned by the settings below) is robust for elasticity; gauss_seidel, damped_jacobi, spai0/spai1 and the ilu variants are cheaper or stronger alternatives from AMGCL's catalog. Degree, Power Iters, Higher, Lower and Scale only apply to chebyshev and are hidden for the other smoothers."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "degree"
+                        label   "Degree"
+                        type    integer
+                        default { "16" }
+                        disablewhen "{ solver != AMGCL } { relax_type != chebyshev }"
+                        hidewhen "{ solver != AMGCL } { relax_type != chebyshev }"
+                        range   { 0 32 }
+                        help    "Polynomial degree of AMGCL's Chebyshev smoother. Higher degrees smooth more per application at more cost."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -3698,8 +3734,8 @@
                         label   "Power Iters"
                         type    integer
                         default { "100" }
-                        disablewhen "{ solver != AMGCL }"
-                        hidewhen "{ solver != AMGCL }"
+                        disablewhen "{ solver != AMGCL } { relax_type != chebyshev }"
+                        hidewhen "{ solver != AMGCL } { relax_type != chebyshev }"
                         range   { 0 10 }
                         help    "Power iterations AMGCL uses to estimate the largest eigenvalue for the Chebyshev smoother."
                         parmtag { "script_callback_language" "python" }
@@ -3709,8 +3745,8 @@
                         label   "Higher"
                         type    float
                         default { "2" }
-                        disablewhen "{ solver != AMGCL }"
-                        hidewhen "{ solver != AMGCL }"
+                        disablewhen "{ solver != AMGCL } { relax_type != chebyshev }"
+                        hidewhen "{ solver != AMGCL } { relax_type != chebyshev }"
                         range   { 0 10 }
                         help    "Upper safety factor applied to AMGCL's estimated largest eigenvalue (2 = smooth up to twice the estimate)."
                         parmtag { "script_callback_language" "python" }
@@ -3720,8 +3756,8 @@
                         label   "Lower"
                         type    log
                         default { "0.00833333" }
-                        disablewhen "{ solver != AMGCL }"
-                        hidewhen "{ solver != AMGCL }"
+                        disablewhen "{ solver != AMGCL } { relax_type != chebyshev }"
+                        hidewhen "{ solver != AMGCL } { relax_type != chebyshev }"
                         range   { -1e-06 1 }
                         help    "Lower fraction of the spectrum the Chebyshev smoother targets (as a fraction of the largest eigenvalue)."
                         parmtag { "script_callback_language" "python" }
@@ -3731,8 +3767,8 @@
                         label   "Scale"
                         type    toggle
                         default { "1" }
-                        disablewhen "{ solver != AMGCL }"
-                        hidewhen "{ solver != AMGCL }"
+                        disablewhen "{ solver != AMGCL } { relax_type != chebyshev }"
+                        hidewhen "{ solver != AMGCL } { relax_type != chebyshev }"
                         range   { 0 10 }
                         help    "Scale the matrix before building the AMGCL hierarchy (improves robustness for badly scaled systems)."
                         parmtag { "script_callback_language" "python" }
@@ -3767,7 +3803,6 @@
             name    "history_size"
             label   "History Size"
             type    integer
-            invisible
             default { "6" }
             disablewhen "{ solver_nl != L-BFGS solver_nl != L-BFGS-B }"
             hidewhen "{ solver_nl != L-BFGS solver_nl != L-BFGS-B }"
@@ -3779,7 +3814,6 @@
             name    "residual_tolerance"
             label   "Residual Tolerance"
             type    log
-            invisible
             default { "1e-05" }
             disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
             hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
@@ -3791,7 +3825,6 @@
             name    "reg_weight_min"
             label   "Min Reg Weight"
             type    log
-            invisible
             default { "1e-08" }
             disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
             hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
@@ -3803,7 +3836,6 @@
             name    "reg_weight_max"
             label   "Max Reg Weight"
             type    log
-            invisible
             default { "1e+08" }
             disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
             hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
@@ -3815,7 +3847,6 @@
             name    "reg_weight_inc"
             label   "Reg Weight Increment"
             type    float
-            invisible
             default { "10" }
             disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
             hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
@@ -3828,7 +3859,6 @@
             name    "adam_alpha"
             label   "Alpha"
             type    float
-            invisible
             default { "0.001" }
             disablewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
             hidewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
@@ -3840,7 +3870,6 @@
             name    "adam_beta1"
             label   "Beta 1"
             type    float
-            invisible
             default { "0.9" }
             disablewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
             hidewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
@@ -3852,7 +3881,6 @@
             name    "adam_beta2"
             label   "Beta 2"
             type    float
-            invisible
             default { "0.999" }
             disablewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
             hidewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
@@ -3864,7 +3892,6 @@
             name    "adam_epsilon"
             label   "Epsilon"
             type    float
-            invisible
             default { "1e-08" }
             disablewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
             hidewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
@@ -3876,7 +3903,6 @@
             name    "erase_component_probability"
             label   "Erase Component Probability"
             type    float
-            invisible
             default { "0.3" }
             disablewhen "{ solver_nl != StochasticADAM solver_nl != StochasticGradientDescent }"
             hidewhen "{ solver_nl != StochasticADAM solver_nl != StochasticGradientDescent }"
@@ -3887,7 +3913,6 @@
         group {
             name    "_folder0_2"
             label   "Line Search"
-            invisibletab
             grouptag { "sidefx::switcher" "folder0_2" }
 
             parm {
@@ -4002,38 +4027,6 @@
             }
         }
 
-        group {
-            name    "_folder0_2_1"
-            label   "Advanced"
-            invisibletab
-
-            parm {
-                name    "apply_gradient_fd"
-                label   "Gradient Finite-Difference Check"
-                type    ordinal
-                invisible
-                default { "0" }
-                menu {
-                    "None"                  "None"
-                    "DirectionalDerivative" "Directional Derivative"
-                    "FullFiniteDiff"        "Full Finite Diff"
-                }
-                help    "Debugging check: compare the analytic gradient against finite differences every iteration (Directional Derivative = one direction, cheap; Full Finite Diff = every unknown, extremely slow). Leave at None for normal runs."
-                parmtag { "script_callback_language" "python" }
-            }
-            parm {
-                name    "gradient_fd_eps"
-                label   "Finite-Difference Epsilon"
-                type    log
-                invisible
-                default { "1e-07" }
-                disablewhen "{ apply_gradient_fd == None }"
-                hidewhen "{ apply_gradient_fd == None }"
-                range   { 0 0.1 }
-                help    "Step size used by the finite-difference gradient check."
-                parmtag { "script_callback_language" "python" }
-            }
-        }
 
         group {
             name    "_folder0_2_2"
@@ -4065,12 +4058,43 @@
                 parmtag { "script_callback_language" "python" }
             }
             parm {
+                name    "rel_x_delta_tol"
+                label   "Relative X Delta Tolerance"
+                type    log
+                default { "0" }
+                range   { 0 1 }
+                help    "Stop when the change of the unknowns in one iteration has dropped to this fraction of the first iteration's change. 0 = do not use this criterion. Like X Delta, stopping this way is not proof of equilibrium, so it only counts as convergence when Allow Non-Gradient Convergence is on."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
                 name    "grad_norm"
                 label   "Gradient Norm Tolerance"
                 type    log
                 default { "1e-10" }
                 range   { 1e-20 1 }
                 help    "Main convergence criterion: stop when the gradient (residual force) norm, scaled by the problem's force scale, falls below this value. Smaller = more accurate equilibrium, more iterations; 1e-10 is tight, 1e-6 is loose."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "norm_type"
+                label   "Gradient Norm Type"
+                type    ordinal
+                default { "1" }
+                menu {
+                    "Euclidean" "Euclidean (unscaled)"
+                    "L2"        "L2 (scaled, default)"
+                    "Linf"      "Linf (largest component, scaled)"
+                }
+                help    "Which norm of the gradient (residual force) is compared with Gradient Norm Tolerance, and how PolyFEM scales it to be unit-free. L2 (default) is scaled by the characteristic force and length so the tolerance means the same on any mesh or unit system; Linf uses the largest single component, scaled by the characteristic force; Euclidean is the raw, unscaled vector norm and is only meaningful if you know the units of your gradient."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "rel_grad_norm_tol"
+                label   "Relative Gradient Norm Tolerance"
+                type    log
+                default { "1e-10" }
+                range   { 0 1 }
+                help    "Also stop when the gradient norm has dropped to this fraction of its value at the start of the solve (1e-10 = ten orders of magnitude). Works alongside the absolute Gradient Norm Tolerance: whichever is met first ends the solve, and both count as genuine convergence. 0 = do not use this criterion."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4086,7 +4110,6 @@
                 name    "iterations_per_strategy"
                 label   "Iterations per Strategy"
                 type    intlog
-                invisible
                 default { "5" }
                 range   { 1 100000 }
                 help    "How many iterations a fallback strategy (regularized Newton, gradient descent) runs before the solver tries to return to plain Newton."
@@ -4096,16 +4119,22 @@
                 name    "allow_out_of_iterations"
                 label   "Allow Out of Iterations"
                 type    toggle
-                invisible
                 default { "0" }
                 help    "Continue the simulation with the best available state when Max Iterations is reached instead of stopping with an error. The result of such a step is not converged; the log records it."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "allow_non_grad_convergence"
+                label   "Allow Non-Gradient Convergence"
+                type    toggle
+                default { "0" }
+                help    "Count a stop on the X Delta, Relative X Delta, f Delta or Newton Decrement criteria as a successful (converged) solve. Off (default): only a small gradient norm counts as convergence; a stop on those other criteria is logged as an error and the solve is reported as interrupted (not converged)."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
                 name    "force_psd_projection"
                 label   "Force PSD Projection"
                 type    toggle
-                invisible
                 default { "0" }
                 disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
                 hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
@@ -4116,7 +4145,6 @@
                 name    "use_psd_projection"
                 label   "Use PSD Projection"
                 type    toggle
-                invisible
                 default { "1" }
                 disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
                 hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
@@ -4127,7 +4155,6 @@
                 name    "use_psd_projection_reg"
                 label   "Use PSD Projection in Regularized"
                 type    toggle
-                invisible
                 default { "1" }
                 disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
                 hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
@@ -4166,6 +4193,15 @@
                 default { "1e-16" }
                 range   { 0 1e-15 }
                 help    "Stop with 'not a descent direction' when the directional derivative along the proposed step is above this negative threshold (i.e. the step would not lower the energy). The tiny default only catches genuine ascent."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "newton_decrement_tol"
+                label   "Newton Decrement Tolerance"
+                type    log
+                default { "0" }
+                range   { 0 1 }
+                help    "Stop when the Newton decrement 1/2 dx.H.dx (the energy decrease the quadratic model predicts for the next step) falls below this value. 0 = off (default); that is also why the log prints 1/2dx^THdx=nan on every solve: the quantity is simply not computed. Counts as convergence only when Allow Non-Gradient Convergence is on."
                 parmtag { "script_callback_language" "python" }
             }
         }
@@ -4230,10 +4266,21 @@
                 parmtag { "script_callback_language" "python" }
             }
             parm {
+                name    "al_lumping"
+                label   "Mass Lumping"
+                type    ordinal
+                default { "0" }
+                menu {
+                    "row_sum"   "row_sum (default)"
+                    "hrz"       "hrz (diagonal scaling)"
+                }
+                help    "How the mass matrix behind the boundary-condition penalty is reduced to a diagonal (lumped) matrix. row_sum adds up each row (standard); hrz (Hinton-Rock-Zienkiewicz) scales the diagonal to preserve the total mass and stays well conditioned for higher-order elements. PolyFEM switches to hrz by itself when row_sum turns out ill-conditioned, so this rarely needs changing."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
                 name    "al_max_iterations"
                 label   "Max Iterations (AL Phase)"
                 type    integer
-                invisible
                 default { "500" }
                 range   { 1 1000 }
                 help    "Newton iteration limit used during the boundary-condition (augmented Lagrangian) phase. Same as Max Iterations unless you change it."
@@ -4333,7 +4380,6 @@
                 name    "lagged_regularization_weight"
                 label   "Lagged Regularization Weight"
                 type    float
-                invisible
                 default { "0" }
                 range   { 0 10 }
                 help    "Adds a small stiffness proportional to this weight to static problems that are otherwise singular (e.g. a body with no boundary conditions floating in space). 0 = off."
@@ -4343,7 +4389,6 @@
                 name    "lagged_regularization_iterations"
                 label   "Lagged Regularization Iterations"
                 type    integer
-                invisible
                 default { "1" }
                 range   { 0 10 }
                 help    "Number of lagged updates of that regularization per solve."
@@ -4365,10 +4410,40 @@
                 name    "jacobian_threshold"
                 label   "Jacobian Threshold"
                 type    float
-                invisible
                 default { "0" }
                 range   { 0 10 }
                 help    "Elements whose Jacobian determinant falls below this value are treated as inverted (0 = only truly flipped elements). Raise it to reject nearly degenerate elements earlier."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "labelparm_debug"
+                label   "Debugging"
+                type    label
+                default { "Debugging" }
+                parmtag { "sidefx::look" "heading" }
+            }
+            parm {
+                name    "apply_gradient_fd"
+                label   "Gradient Finite-Difference Check"
+                type    ordinal
+                default { "0" }
+                menu {
+                    "None"                  "None"
+                    "DirectionalDerivative" "Directional Derivative"
+                    "FullFiniteDiff"        "Full Finite Diff"
+                }
+                help    "Debugging check: compare the analytic gradient against finite differences every iteration (Directional Derivative = one direction, cheap; Full Finite Diff = every unknown, extremely slow). Leave at None for normal runs."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "gradient_fd_eps"
+                label   "Finite-Difference Epsilon"
+                type    log
+                default { "1e-07" }
+                disablewhen "{ apply_gradient_fd == None }"
+                hidewhen "{ apply_gradient_fd == None }"
+                range   { 0 0.1 }
+                help    "Step size used by the finite-difference gradient check."
                 parmtag { "script_callback_language" "python" }
             }
         }
@@ -4548,7 +4623,6 @@
                     name    "high_order_mesh"
                     label   "High Order Mesh"
                     type    toggle
-                    invisible
                     default { "1" }
                     help    "Write higher-order elements as curved cells so ParaView/Read PVD can show their curvature. Only for isoparametric or linear meshes with higher-order solutions."
                     parmtag { "script_callback_language" "python" }
@@ -4577,7 +4651,6 @@
                         name    "validity_fields"
                         label   "Jacobian Validity"
                         type    toggle
-                        invisible
                         default { "0" }
                         help    "Run a robust check of every deformed element's Jacobian and mark inverted (flipped) elements in the output. Costs extra time per saved step."
                         parmtag { "export_disable" "1" }
