@@ -111,7 +111,7 @@ def main():
     assert generic_node.evalParm("mainOrder1_1") == 1
     assert abs(generic_node.evalParm("x_delta") - 2e-8) < 1e-15
     assert abs(generic_node.evalParm("grad_norm") - 3e-7) < 1e-15
-    assert generic_node.evalParm("method") == 5
+    assert generic_node.parm("method").evalAsString() == "None"
     print("PASS: generic older PolyFEM ids/selections import")
 
 

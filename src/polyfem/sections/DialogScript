@@ -738,6 +738,7 @@
             label   "PolyFEM Binary"
             type    file
             default { "" }
+            help    "Path to the PolyFEM executable (PolyFEM_bin) that will run the simulation. Point it at the binary you built; the Run buttons call it with the params.json this node writes."
             parmtag { "script_callback" "hou.pwd().hm().polyfem_bin_check(kwargs)" }
             parmtag { "script_callback_language" "python" }
         }
@@ -746,6 +747,7 @@
             label   "Working Directory"
             type    directory
             default { "" }
+            help    "Folder where this node writes everything: input/ (params.json, copied meshes, selection and fiber files) and output/ (results, log). Use one folder per simulation setup; results in it are overwritten on the next run."
             parmtag { "script_callback" "hou.pwd().hm().working_dir_check(kwargs)" }
             parmtag { "script_callback_language" "python" }
         }
@@ -761,7 +763,7 @@
             type    button
             joinnext
             default { "0" }
-            help    "Write params.json and launch PolyFEM in a terminal window."
+            help    "Write params.json and all input files, then launch PolyFEM in a terminal window so you can watch its progress. Use this for a first run; use Run in Background for long jobs."
             parmtag { "script_callback" "hou.pwd().hm().write_params(kwargs)" }
             parmtag { "script_callback_language" "python" }
         }
@@ -771,7 +773,7 @@
             type    button
             joinnext
             default { "0" }
-            help    "Write params.json and launch PolyFEM headless; output streams to <working_dir>/output/log.txt."
+            help    "Write the inputs and start PolyFEM as a background process without a terminal. Progress goes to <working_dir>/output/log.txt; read it with Show Log. Houdini stays responsive while the simulation runs."
             parmtag { "script_callback" "hou.pwd().hm().run_background(kwargs)" }
             parmtag { "script_callback_language" "python" }
         }
@@ -780,7 +782,7 @@
             label   "Show Log"
             type    button
             default { "0" }
-            help    "Open the most recent background-run log."
+            help    "Open the most recent background-run log (<working_dir>/output/log.txt) to check progress, warnings and errors."
             parmtag { "script_callback" "hou.pwd().hm().show_log(kwargs)" }
             parmtag { "script_callback_language" "python" }
         }
@@ -789,7 +791,7 @@
             label   "Write params.json Only"
             type    button
             default { "0" }
-            help    "Write params.json and the selection files without launching PolyFEM."
+            help    "Write params.json and the input files without running anything. Useful to inspect or hand-edit the setup, or to run PolyFEM yourself from a shell or on another machine."
             parmtag { "script_callback" "hou.pwd().hm().write_params_only(kwargs)" }
             parmtag { "script_callback_language" "python" }
         }
@@ -812,6 +814,7 @@
             joinnext
             default { "1" }
             range   { 1 20 }
+            help    "How many separate meshes (bodies) take part in the simulation. Each geometry gets its own tab below with its mesh file, transform, materials, boundary conditions and initial conditions. Obstacles (rigid, prescribed motion) also count as geometries."
             parmtag { "script_callback" "hou.pwd().hm().clear_geos(kwargs)" }
             parmtag { "script_callback_language" "python" }
         }
@@ -820,6 +823,7 @@
             label   "Clear All"
             type    button
             default { "0" }
+            help    "Remove every geometry and reset this node's internal network. Cannot be undone."
             parmtag { "script_callback" "hou.pwd().hm().clear_all_geos(kwargs)" }
             parmtag { "script_callback_language" "python" }
         }
@@ -836,6 +840,7 @@
                 label   "file_location"
                 type    geometry
                 default { "" }
+                help    "Volume mesh for this body: a Gmsh .msh file (tetrahedra or hexahedra; 2D triangles/quads also work). The file is copied into <working_dir>/input when selected. Physical groups in the file become the subdomains you can assign materials to."
                 parmtag { "filechooser_mode" "read" }
                 parmtag { "filechooser_pattern" "*.msh, *.obj, *.stl,*.ply" }
                 parmtag { "script_callback" "hou.pwd().hm().create_geo_nodes(kwargs)" }
@@ -854,6 +859,7 @@
                 type    toggle
                 joinnext
                 default { "0" }
+                help    "Turn this geometry into a rigid obstacle: it is not deformed by the solver, has no material, and only pushes on other bodies through contact. Give it a motion with Obstacle Disp (leave zero for a fixed wall or floor)."
                 parmtag { "script_callback" "hou.pwd().hm().create_geo_nodes(kwargs)" }
                 parmtag { "script_callback_language" "python" }
             }
@@ -862,6 +868,7 @@
                 label   "Duplicate Geometry"
                 type    button
                 default { "0" }
+                help    "Add a copy of this geometry (same mesh file and settings) as a new geometry entry. Handy for stacking several instances of one part."
                 parmtag { "script_callback" "hou.pwd().hm().geo_duplicate(kwargs)" }
                 parmtag { "script_callback_language" "python" }
             }
@@ -870,6 +877,7 @@
                 label   "Is enabled?"
                 type    toggle
                 default { "1" }
+                help    "Include this geometry in the simulation. Turn off to leave it in the scene but out of the exported params.json (useful to test setups with fewer bodies)."
                 parmtag { "script_callback_language" "python" }
             }
             groupcollapsible {
@@ -883,7 +891,7 @@
                     label   "Show Fiber Directions"
                     type    toggle
                     default { "0" }
-                    help    "Draw the exact PolyFEM reference direction a0 in simulation/world coordinates. The Geometry Transform moves the mesh but, matching PolyFEM, does not rotate or scale a0."
+                    help    "Draw the fiber directions that will actually be exported for this geometry (one short line per element). This is PolyFEM's reference direction a0 in simulation/world coordinates: the Geometry Transform moves the mesh but, exactly as in PolyFEM, does not rotate or scale a0. Only meaningful for fiber materials."
                     parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
                     parmtag { "script_callback_language" "python" }
                 }
@@ -894,6 +902,7 @@
                     default { "0.5" }
                     disablewhen "{ show_fibers# != 1 }"
                     range   { 0.01 5 }
+                    help    "Length of the drawn fiber lines as a fraction of the average element size. Display only."
                     parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
                     parmtag { "script_callback_language" "python" }
                 }
@@ -904,6 +913,7 @@
                     default { "0.2" }
                     disablewhen "{ show_fibers# != 1 }"
                     range   { 0 1 }
+                    help    "Transparency of the body's surface while fiber lines are shown (0 = invisible surface, 1 = opaque), so the fibers inside are visible. Display only."
                     parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
                     parmtag { "script_callback_language" "python" }
                 }
@@ -914,6 +924,7 @@
                     default { "20000" }
                     disablewhen "{ show_fibers# != 1 }"
                     range   { 100 200000 }
+                    help    "Upper limit on the number of fiber lines drawn. Larger meshes are decimated evenly down to this count to keep the viewport responsive. Display only."
                     parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
                     parmtag { "script_callback_language" "python" }
                 }
@@ -928,6 +939,7 @@
                         "family"        "Per Family"
                         "uniform"       "Uniform"
                     }
+                    help    "How fiber lines are colored: by their direction (x/y/z mapped to red/green/blue), by fiber family, or a single uniform color. Display only."
                     parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
                     parmtag { "script_callback_language" "python" }
                 }
@@ -939,6 +951,7 @@
                     default { "1" "1" "1" }
                     disablewhen "{ show_fibers# != 1 } { fiber_color_mode# != uniform }"
                     range   { 0 1 }
+                    help    "Color used for the fiber lines when Fiber Color is set to Uniform. Display only."
                     parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
                     parmtag { "script_callback_language" "python" }
                 }
@@ -952,6 +965,7 @@
                         "kappa"      "Fiber Dispersion (kappa)"
                         "fiber_rgb"  "Fiber Direction (RGB)"
                     }
+                    help    "What the body's surface color represents in the viewport: the subdomain (material region) colors, the fiber dispersion value kappa, or the fiber direction as RGB. Display only; no effect on the simulation."
                     parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
                     parmtag { "script_callback_language" "python" }
                 }
@@ -967,7 +981,7 @@
                     invisible
                     joinnext
                     default { "0" }
-                    help    "None"
+                    help    "Order in which scale, rotation and translation are applied when this geometry's transform is built. Leave at Scale-Rotate-Translate unless you need a specific composition."
                     menu {
                         "srt"   "Scale Rot Trans"
                         "str"   "Scale Trans Rot"
@@ -986,7 +1000,7 @@
                     invisible
                     nolabel
                     default { "0" }
-                    help    "None"
+                    help    "Order of the three rotation axes. Only matters when more than one rotation component is nonzero."
                     menu {
                         "xyz"   "Rx Ry Rz"
                         "xzy"   "Rx Rz Ry"
@@ -1004,7 +1018,7 @@
                     type    vector
                     size    3
                     default { "0" "0" "0" }
-                    help    "None"
+                    help    "Move the mesh by this offset (in mesh units) before it is exported. The transform is baked into the exported input, so PolyFEM sees the moved mesh. Fiber directions are not moved (they are simulation/world directions)."
                     range   { -1 1 }
                     parmtag { "cook_dependent" "1" }
                     parmtag { "spare_category" "Pre-Transform" }
@@ -1015,7 +1029,7 @@
                     type    vector
                     size    3
                     default { "0" "0" "0" }
-                    help    "Rotates the mesh geometry only. PolyFEM does not apply this rotation to material fiber_direction; fiber a0 values remain in simulation/world coordinates."
+                    help    "Rotate the mesh (degrees about x, y, z) before export. The rotation moves the mesh only: PolyFEM does not apply it to material fiber directions, which remain in simulation/world coordinates."
                     range   { -1 1 }
                     parmtag { "cook_dependent" "1" }
                     parmtag { "spare_category" "Pre-Transform" }
@@ -1026,7 +1040,7 @@
                     type    vector
                     size    3
                     default { "1" "1" "1" }
-                    help    "None"
+                    help    "Scale the mesh before export (1 = original size). Non-uniform values stretch it. Material and fiber directions are not scaled."
                     range   { -1 1 }
                     parmtag { "cook_dependent" "1" }
                     parmtag { "spare_category" "Pre-Transform" }
@@ -1043,7 +1057,7 @@
                     type    vector
                     size    3
                     default { "0" "0" "0" }
-                    help    "None"
+                    help    "Point about which the rotation and scale are applied. Use the buttons below to snap it to the body's centroid or the origin. Adjusting the pivot after setting a transform changes where the mesh ends up."
                     range   { -1 1 }
                     parmtag { "cook_dependent" "1" }
                     parmtag { "spare_category" "Transform" }
@@ -1054,7 +1068,7 @@
                     type    vector
                     size    3
                     default { "0" "0" "0" }
-                    help    "None"
+                    help    "Extra rotation of the pivot frame itself (degrees). Rarely needed; leave at zero."
                     range   { -1 1 }
                     parmtag { "cook_dependent" "1" }
                     parmtag { "spare_category" "Transform" }
@@ -1071,6 +1085,7 @@
                     type    button
                     joinnext
                     default { "0" }
+                    help    "Set translate, rotate and scale back to identity so the mesh is exported exactly as in the file."
                     parmtag { "script_callback" "hou.pwd().hm().reset_transform(kwargs)" }
                     parmtag { "script_callback_language" "python" }
                 }
@@ -1080,6 +1095,7 @@
                     type    button
                     joinnext
                     default { "0" }
+                    help    "Move the pivot to the centroid of this mesh, so rotations and scaling happen about its center."
                     parmtag { "script_callback" "hou.pwd().hm().pivot_to_centroid(kwargs)" }
                     parmtag { "script_callback_language" "python" }
                 }
@@ -1089,6 +1105,7 @@
                     type    button
                     joinnext
                     default { "0" }
+                    help    "Move the pivot to the world origin (0, 0, 0)."
                     parmtag { "script_callback" "hou.pwd().hm().pivot_to_origin(kwargs)" }
                     parmtag { "script_callback_language" "python" }
                 }
@@ -1097,6 +1114,7 @@
                     label   "Geometry to Origin"
                     type    button
                     default { "0" }
+                    help    "Translate the mesh so that its centroid sits at the world origin. A quick way to center a body before positioning it."
                     parmtag { "script_callback" "hou.pwd().hm().geometry_to_origin(kwargs)" }
                     parmtag { "script_callback_language" "python" }
                 }
@@ -1128,6 +1146,7 @@
                     label   "Elements"
                     type    string
                     default { "" }
+                    help    "Element (primitive) selection, e.g. 0-99 or a group pattern, that you want to move into another subdomain. Subdomains are the regions of one mesh that can carry different materials."
                     parmtag { "script_action" "import soputils\nparent = kwargs['node']\nparent.allowEditingOfContents(True)\ngeo_number = kwargs['script_multiparm_index']\ngroup_node = parent.node(\"elements_\"+str(geo_number))\n\n\n\nkwargs['node'] = group_node\nkwargs['geometrytype'] = kwargs['node'].parmTuple('grouptype')\nkwargs['inputindex'] = 0\nkwargs['ordered'] = kwargs['node'].parm('ordered').eval()\nsoputils.selectGroupParm(kwargs)\n\n\n" }
                     parmtag { "script_action_help" "Select geometry from an available viewport.\nShift-click to turn on Select Groups." }
                     parmtag { "script_action_icon" "BUTTONS_reselect" }
@@ -1139,6 +1158,7 @@
                     type    integer
                     default { "1" }
                     range   { 1 10 }
+                    help    "The subdomain number the selected elements should belong to after Apply Changes. Numbers above the current count create a new subdomain."
                     parmtag { "script_callback" "hou.pwd().hm().fetch_elements(kwargs)" }
                     parmtag { "script_callback_language" "python" }
                 }
@@ -1148,6 +1168,7 @@
                     type    button
                     joinnext
                     default { "0" }
+                    help    "Reassign the selected elements to the chosen subdomain number and rebuild the subdomain list below. Use this to split a single-region mesh into several material regions from inside Houdini."
                     parmtag { "script_callback" "hou.pwd().hm().update_entities(kwargs,0)" }
                     parmtag { "script_callback_language" "python" }
                 }
@@ -1156,6 +1177,7 @@
                     label   "Back to Original?"
                     type    button
                     default { "0" }
+                    help    "Discard the element reassignments and go back to the subdomains that came with the mesh file (its physical groups)."
                     parmtag { "script_callback" "hou.pwd().hm().revert_entities(kwargs)" }
                     parmtag { "script_callback_language" "python" }
                 }
@@ -1202,6 +1224,7 @@
                 default { "1" "0" "0" }
                 hidewhen "{ is_obstacle# != 1 }"
                 range   { 0 1 }
+                help    "Display color of this obstacle in the Houdini viewport. Has no effect on the simulation."
                 parmtag { "colortype" "hide" }
             }
             multiparm {
@@ -1226,6 +1249,7 @@
                     size    3
                     default { "1" "0" "0" }
                     range   { 0 1 }
+                    help    "Viewport color of this subdomain (material region). Display only."
                     parmtag { "colortype" "hide" }
                 }
                 parm {
@@ -1239,6 +1263,7 @@
                         "3" "3"
                         "4" "4"
                     }
+                    help    "Polynomial order of the finite elements in this subdomain. 1 = linear elements (fastest, coarsest); 2 or higher = higher-order elements that capture bending and curvature better per element but cost more. Start with 1; use 2 for accuracy studies."
                     parmtag { "script_callback_language" "python" }
                 }
                 groupcollapsible {
@@ -1273,6 +1298,7 @@
                             "ActiveFiber"                       "Active Fiber (muscle)"
                             "MaterialSum"                       "Composite (Matrix + Fiber Families)"
                         }
+                        help    "Constitutive model of this subdomain, i.e. how the material resists deformation. NeoHookean is the usual choice for soft, rubber-like or biological tissue; LinearElasticity is only valid for very small strains. The HGO / Active Fiber models add a stiff fiber direction; Composite lets you sum a matrix model with several fiber families."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1297,6 +1323,7 @@
                             "IsochoricNeoHookean"               "Isochoric NeoHookean"
                             "None"                              "None (fiber only)"
                         }
+                        help    "Isotropic base material of a Composite (the 'ground substance' the fibers are embedded in). Choose None to have only the fiber families and a volume penalty."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1305,6 +1332,7 @@
                         type    toggle
                         default { "0" }
                         hidewhen "@SHOW_FOR(NeoHookean LinearElasticity SaintVenant FixedCorotational)@"
+                        help    "Add viscous (rate-dependent) damping to this material, controlled by phi and psi. Only meaningful in dynamic (non-quasistatic) runs; it dissipates energy so vibrations die out."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1315,6 +1343,7 @@
                         disablewhen "@SHOW_FOR(NeoHookean LinearElasticity IncompressibleLinearElasticity FixedCorotational IsochoricNeoHookean)@"
                         hidewhen "@SHOW_FOR(NeoHookean LinearElasticity IncompressibleLinearElasticity FixedCorotational IsochoricNeoHookean)@"
                         range   { 0 1e+07 }
+                        help    "Young's modulus: the material's stiffness (stress per unit strain), in your force/area units (Pa if you use SI). Soft tissue is roughly 1e3-1e6 Pa, rubber ~1e6, steel ~2e11. Larger values make the body harder to deform and the solve stiffer."
                         parmtag { "script_callback_language" "python" }
                         parmtag { "units" "" }
                     }
@@ -1326,6 +1355,7 @@
                         disablewhen "@SHOW_FOR(NeoHookean LinearElasticity IncompressibleLinearElasticity FixedCorotational IsochoricNeoHookean)@"
                         hidewhen "@SHOW_FOR(NeoHookean LinearElasticity IncompressibleLinearElasticity FixedCorotational IsochoricNeoHookean)@"
                         range   { -1 0.5 }
+                        help    "Poisson's ratio: how much the material contracts sideways when stretched. 0 = no coupling, 0.5 = perfectly incompressible (volume preserving). Rubber and soft tissue are close to 0.45-0.49; values very near 0.5 make the solve harder."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1336,6 +1366,7 @@
                         disablewhen "@SHOW_FOR(MooneyRivlin MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
                         hidewhen "@SHOW_FOR(MooneyRivlin MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
                         range   { -10000 10000 }
+                        help    "Mooney-Rivlin coefficient C1 (stress units). Together with C2 it sets the shear stiffness; for small strains the shear modulus is about 2(C1 + C2)."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1346,6 +1377,7 @@
                         disablewhen "@SHOW_FOR(MooneyRivlin MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
                         hidewhen "@SHOW_FOR(MooneyRivlin MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
                         range   { -10000 10000 }
+                        help    "Mooney-Rivlin coefficient C2 (stress units). Controls the second-invariant part of the response; 0 reduces the model to Neo-Hookean-like behavior."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1356,6 +1388,7 @@
                         disablewhen "@SHOW_FOR(MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
                         hidewhen "@SHOW_FOR(MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
                         range   { -10000 10000 }
+                        help    "Third Mooney-Rivlin coefficient (stress units) of the 3-parameter model, adding a coupled invariant term."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1366,6 +1399,7 @@
                         disablewhen "@SHOW_FOR(MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
                         hidewhen "@SHOW_FOR(MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
                         range   { -10000 10000 }
+                        help    "Volumetric (bulk) coefficient d1 of the 3-parameter Mooney-Rivlin model; larger values resist volume change more strongly."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1376,6 +1410,7 @@
                         disablewhen "@SHOW_FOR(IncompressibleOgden)@"
                         hidewhen "@SHOW_FOR(IncompressibleOgden)@"
                         range   { -10000 10000 }
+                        help    "List of Ogden coefficients c_i (stress units) for the incompressible Ogden model, e.g. [0.0329e6]. One entry per term; must have the same length as m."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1386,6 +1421,7 @@
                         disablewhen "@SHOW_FOR(IncompressibleOgden)@"
                         hidewhen "@SHOW_FOR(IncompressibleOgden)@"
                         range   { -10000 10000 }
+                        help    "List of Ogden exponents m_i (dimensionless), e.g. [6.82]. Same length as C. Larger exponents give stronger strain-stiffening."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1396,6 +1432,7 @@
                         disablewhen "@SHOW_FOR(UnconstrainedOgden)@"
                         hidewhen "@SHOW_FOR(UnconstrainedOgden)@"
                         range   { -10000 10000 }
+                        help    "List of exponents alpha_i for the unconstrained (compressible) Ogden model, e.g. [2]. Same length as Mus and Ds."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1406,6 +1443,7 @@
                         disablewhen "@SHOW_FOR(UnconstrainedOgden)@"
                         hidewhen "@SHOW_FOR(UnconstrainedOgden)@"
                         range   { -10000 10000 }
+                        help    "List of shear-like coefficients mu_i (stress units) for the unconstrained Ogden model. Same length as alphas."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1416,6 +1454,7 @@
                         disablewhen "@SHOW_FOR(UnconstrainedOgden)@"
                         hidewhen "@SHOW_FOR(UnconstrainedOgden)@"
                         range   { -10000 10000 }
+                        help    "List of volumetric coefficients D_i for the unconstrained Ogden model, controlling resistance to volume change. Same length as alphas."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1426,6 +1465,7 @@
                         disablewhen "@SHOW_FOR(MooneyRivlin IncompressibleOgden)@"
                         hidewhen "@SHOW_FOR(MooneyRivlin IncompressibleOgden)@"
                         range   { -10000 10000 }
+                        help    "Bulk modulus k (stress units): resistance to volume change for Mooney-Rivlin and incompressible Ogden. Use a value much larger than the shear stiffness (100x or more) to approximate incompressibility."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1435,6 +1475,7 @@
                         default { "[E11,E22,E33,nu12,nu13,nu23,mu23,mu31,mu12]" }
                         disablewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@"
                         hidewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@"
+                        help    "The 9 orthotropic elastic constants for Hooke / Saint Venant materials as a list: [E11, E22, E33, nu12, nu13, nu23, mu23, mu31, mu12]. Moduli in stress units, Poisson's ratios dimensionless."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1444,6 +1485,7 @@
                         default { "[1,0,0,0,1,0,0,0,1]" }
                         disablewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@"
                         hidewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@"
+                        help    "Material coordinate frame for the orthotropic constants: a 3x3 rotation matrix written row by row as 9 numbers (identity = [1,0,0,0,1,0,0,0,1] aligns the material axes with x, y, z)."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1454,6 +1496,7 @@
                         disablewhen "@SHOW_FOR_DIRECT(HGOFiber HGODispersion)@"
                         hidewhen "@SHOW_FOR_DIRECT(HGOFiber HGODispersion)@"
                         range   { 0 1e+07 }
+                        help    "Fiber stiffness k1 (stress units) of the HGO fiber term: how strongly the fibers resist stretching along their direction. Fibers act only in tension."
                         parmtag { "script_callback_language" "python" }
                         parmtag { "units" "" }
                     }
@@ -1465,6 +1508,7 @@
                         disablewhen "@SHOW_FOR_DIRECT(HGOFiber HGODispersion)@"
                         hidewhen "@SHOW_FOR_DIRECT(HGOFiber HGODispersion)@"
                         range   { 0.0001 1000 }
+                        help    "Exponential stiffening k2 (dimensionless) of the HGO fiber term: how quickly the fiber stiffness grows with stretch. Must be > 0; larger values give a sharper 'locking' response typical of collagen."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1480,6 +1524,7 @@
                             "attribute"  "Per-Element Attribute"
                             "file"       "Per-Element File"
                         }
+                        help    "Where the fiber dispersion kappa comes from: one constant for the whole subdomain, an expression of position and time, a per-element attribute from a SOP, or a per-element file."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1490,6 +1535,7 @@
                         disablewhen "{ kappa_source#_# != constant } @SHOW_FOR_DIRECT(HGODispersion)@"
                         hidewhen "{ kappa_source#_# != constant } @SHOW_FOR_DIRECT(HGODispersion)@"
                         range   { 0 0.3333 }
+                        help    "Fiber dispersion kappa of the HGO Dispersion (GOH) model: 0 = all fibers perfectly aligned, 1/3 = fibers spread evenly in every direction (isotropic). Typical arterial tissue is 0.1-0.3."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1499,6 +1545,7 @@
                         default { "0" }
                         disablewhen "{ kappa_source#_# != expression } @SHOW_FOR_DIRECT(HGODispersion)@"
                         hidewhen "{ kappa_source#_# != expression } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        help    "Expression for kappa using x, y, z (position) and t (time), e.g. 0.1 + 0.05*z. Evaluated by PolyFEM at each element."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1508,6 +1555,7 @@
                         default { "" }
                         disablewhen "{ kappa_source#_# != attribute } @SHOW_FOR_DIRECT(HGODispersion)@"
                         hidewhen "{ kappa_source#_# != attribute } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        help    "SOP node whose primitives carry a per-element kappa attribute. Elements are matched to this mesh by centroid, so any SOP-authored field works."
                         parmtag { "opfilter" "!!SOP!!" }
                         parmtag { "oprelative" "." }
                         parmtag { "script_callback_language" "python" }
@@ -1519,6 +1567,7 @@
                         default { "kappa" }
                         disablewhen "{ kappa_source#_# != attribute } @SHOW_FOR_DIRECT(HGODispersion)@"
                         hidewhen "{ kappa_source#_# != attribute } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        help    "Name of the primitive attribute on the Dispersion SOP holding kappa for each element (values in [0, 1/3])."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1528,6 +1577,7 @@
                         default { "" }
                         disablewhen "{ kappa_source#_# != file } @SHOW_FOR_DIRECT(HGODispersion)@"
                         hidewhen "{ kappa_source#_# != file } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        help    "Text/CSV file with one kappa value per element (in PolyFEM's global element order), or a legacy .vtk with CELL_DATA. Copied into the input folder."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1538,6 +1588,7 @@
                         disablewhen "@SHOW_FOR_DIRECT(HGODispersion)@"
                         hidewhen "@SHOW_FOR_DIRECT(HGODispersion)@"
                         range   { 1 10000 }
+                        help    "Smoothness of the switch that turns the fiber term off in compression (fibers cannot push). Larger values make the switch sharper; 100 is the model default and a good choice."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1548,6 +1599,7 @@
                         disablewhen "@SHOW_FOR_DIRECT(ActiveFiber)@"
                         hidewhen "@SHOW_FOR_DIRECT(ActiveFiber)@"
                         range   { 0 1e+07 }
+                        help    "Maximum active tension (stress units) the muscle fibers can generate when fully activated."
                         parmtag { "script_callback_language" "python" }
                         parmtag { "units" "" }
                     }
@@ -1558,6 +1610,7 @@
                         default { "1" }
                         disablewhen "@SHOW_FOR_DIRECT(ActiveFiber)@"
                         hidewhen "@SHOW_FOR_DIRECT(ActiveFiber)@"
+                        help    "Activation level of the muscle fibers between 0 (relaxed) and 1 (fully active). Type a number, or an expression of time t such as 0.5*t to ramp the contraction."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1565,7 +1618,7 @@
                         label   "Fiber Direction Source"
                         type    ordinal
                         default { "constant" }
-                        help    "PolyFEM interprets these as reference directions a0 in simulation/world coordinates. A Geometry Transform changes mesh coordinates but does not transform these vector components."
+                        help    "Where the fiber direction comes from: one constant vector, an expression of x, y, z, t, a per-element attribute from a SOP, a per-element file, a cylindrical frame (radial/hoop/axial about an axis, e.g. a vessel wall), or the tangent of a curve (a tendon or muscle line of action). PolyFEM treats these as reference directions a0 in simulation/world coordinates; the Geometry Transform does not rotate them."
                         disablewhen "@SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
                         hidewhen "@SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
                         menu {
@@ -1584,7 +1637,7 @@
                         type    vector
                         size    3
                         default { "1" "0" "0" }
-                        help    "Reference direction a0 in simulation/world coordinates. It is not rotated or scaled by this geometry's Transform parameters."
+                        help    "Constant fiber direction vector for the whole subdomain (it is normalized). Reference direction a0 in simulation/world coordinates: it is not rotated or scaled by this geometry's Transform parameters."
                         disablewhen "{ fib_source#_# != constant } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
                         hidewhen "{ fib_source#_# != constant } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
                         range   { -1 1 }
@@ -1597,6 +1650,7 @@
                         default { "[1, 0, 0]" }
                         disablewhen "{ fib_source#_# != expression } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
                         hidewhen "{ fib_source#_# != expression } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        help    "Fiber direction as a 3-component expression list using x, y, z and t, e.g. [\"cos(z)\", \"sin(z)\", 0] for a helical layout. Evaluated by PolyFEM at each element."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1606,6 +1660,7 @@
                         default { "" }
                         disablewhen "{ fib_source#_# != attribute } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
                         hidewhen "{ fib_source#_# != attribute } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        help    "SOP node whose primitives carry a per-element fiber direction attribute. Elements are matched to this mesh by centroid."
                         parmtag { "opfilter" "!!SOP!!" }
                         parmtag { "oprelative" "." }
                         parmtag { "script_callback_language" "python" }
@@ -1617,6 +1672,7 @@
                         default { "fiber1" }
                         disablewhen "{ fib_source#_# != attribute } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
                         hidewhen "{ fib_source#_# != attribute } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        help    "Name of the vector primitive attribute on the Fiber SOP holding each element's fiber direction."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1626,6 +1682,7 @@
                         default { "" }
                         disablewhen "{ fib_source#_# != file } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
                         hidewhen "{ fib_source#_# != file } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        help    "File with one fiber direction per element: a legacy .vtk with a CELL_DATA VECTORS array, or a text/CSV file with three numbers per line in PolyFEM's global element order."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1636,6 +1693,7 @@
                         default { "0" "0" "0" }
                         disablewhen "{ fib_source#_# != cylindrical } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
                         hidewhen "{ fib_source#_# != cylindrical } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        help    "A point on the cylinder axis used for the cylindrical fiber frame (e.g. the centerline of a vessel)."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1646,6 +1704,7 @@
                         default { "0" "1" "0" }
                         disablewhen "{ fib_source#_# != cylindrical } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
                         hidewhen "{ fib_source#_# != cylindrical } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        help    "Direction of the cylinder axis for the cylindrical fiber frame (it is normalized)."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1660,6 +1719,7 @@
                             "radial"          "Radial (through wall)"
                             "longitudinal"    "Longitudinal (along axis)"
                         }
+                        help    "Which cylindrical direction the fibers follow: circumferential (around the axis, hoop direction), radial (through the wall), or longitudinal (along the axis)."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1669,6 +1729,7 @@
                         default { "" }
                         disablewhen "{ fib_source#_# != curve } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
                         hidewhen "{ fib_source#_# != curve } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        help    "SOP with a curve (polyline) whose tangent gives the fiber direction of each element (nearest curve point). Use for a tendon, ligament or muscle line of action."
                         parmtag { "opfilter" "!!SOP!!" }
                         parmtag { "oprelative" "." }
                         parmtag { "script_callback_language" "python" }
@@ -1680,6 +1741,7 @@
                         default { "FIB_DIR1" }
                         disablewhen "{ fib_source#_# != file } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
                         hidewhen "{ fib_source#_# != file } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        help    "Name of the VECTORS array to read from a legacy .vtk fiber file."
                         parmtag { "script_callback_language" "python" }
                     }
                     multiparm {
@@ -1699,6 +1761,7 @@
                                 "HGODispersion" "HGO Dispersion (GOH)"
                                 "ActiveFiber"   "Active Fiber (muscle)"
                             }
+                            help    "Model of this fiber family inside the composite: HGO Fiber (perfectly aligned, exponential), HGO Dispersion (GOH, with a dispersion kappa) or Active Fiber (muscle contraction)."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1709,6 +1772,7 @@
                             disablewhen "{ fam_model#_#_# == ActiveFiber }"
                             hidewhen "{ fam_model#_#_# == ActiveFiber }"
                             range   { 0 1e+07 }
+                            help    "Fiber stiffness k1 (stress units) of this family: how strongly its fibers resist stretching. Fibers act only in tension."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1719,6 +1783,7 @@
                             disablewhen "{ fam_model#_#_# == ActiveFiber }"
                             hidewhen "{ fam_model#_#_# == ActiveFiber }"
                             range   { 0.0001 1000 }
+                            help    "Exponential stiffening k2 (dimensionless) of this family. Must be > 0; larger values make the fibers lock up more sharply as they stretch."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1734,6 +1799,7 @@
                                 "attribute"  "Per-Element Attribute"
                                 "file"       "Per-Element File"
                             }
+                            help    "Where this family's dispersion kappa comes from: a constant, an expression of x, y, z, t, a per-element SOP attribute, or a per-element file."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1744,6 +1810,7 @@
                             disablewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != constant }"
                             hidewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != constant }"
                             range   { 0 0.3333 }
+                            help    "Dispersion kappa of this family: 0 = perfectly aligned fibers, 1/3 = isotropic spread. Typical arterial collagen is 0.1-0.3."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1753,6 +1820,7 @@
                             default { "0" }
                             disablewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != expression }"
                             hidewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != expression }"
+                            help    "Expression for this family's kappa using x, y, z and t."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1762,6 +1830,7 @@
                             default { "" }
                             disablewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != attribute }"
                             hidewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != attribute }"
+                            help    "SOP node with a per-element kappa primitive attribute for this family (matched by element centroid)."
                             parmtag { "opfilter" "!!SOP!!" }
                             parmtag { "oprelative" "." }
                             parmtag { "script_callback_language" "python" }
@@ -1773,6 +1842,7 @@
                             default { "kappa" }
                             disablewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != attribute }"
                             hidewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != attribute }"
+                            help    "Name of the primitive attribute holding this family's per-element kappa."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1782,6 +1852,7 @@
                             default { "" }
                             disablewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != file }"
                             hidewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != file }"
+                            help    "Per-element kappa file for this family (text/CSV, one value per element, or legacy .vtk CELL_DATA)."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1792,6 +1863,7 @@
                             disablewhen "{ fam_model#_#_# != HGODispersion }"
                             hidewhen "{ fam_model#_#_# != HGODispersion }"
                             range   { 1 10000 }
+                            help    "Smoothness of the tension-only switch for this family; 100 is the model default."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1802,6 +1874,7 @@
                             disablewhen "{ fam_model#_#_# != ActiveFiber }"
                             hidewhen "{ fam_model#_#_# != ActiveFiber }"
                             range   { 0 1e+07 }
+                            help    "Maximum active tension (stress units) this muscle family generates at full activation."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1811,6 +1884,7 @@
                             default { "1" }
                             disablewhen "{ fam_model#_#_# != ActiveFiber }"
                             hidewhen "{ fam_model#_#_# != ActiveFiber }"
+                            help    "Activation of this muscle family, 0 (relaxed) to 1 (fully active); a number or an expression of time t."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1818,7 +1892,7 @@
                             label   "Fiber Direction Source"
                             type    ordinal
                             default { "constant" }
-                            help    "PolyFEM interprets these as reference directions a0 in simulation/world coordinates. A Geometry Transform changes mesh coordinates but does not transform these vector components."
+                            help    "Where this family's fiber direction comes from: constant vector, expression, per-element SOP attribute, per-element file, cylindrical frame, or curve tangent. PolyFEM interprets these as reference directions a0 in simulation/world coordinates; the Geometry Transform does not rotate them."
                             menu {
                                 "constant"    "Constant Direction"
                                 "expression"  "Expression of x,y,z,t"
@@ -1835,7 +1909,7 @@
                             type    vector
                             size    3
                             default { "1" "0" "0" }
-                            help    "Reference direction a0 in simulation/world coordinates. It is not rotated or scaled by this geometry's Transform parameters."
+                            help    "Constant fiber direction of this family (normalized). Reference direction a0 in simulation/world coordinates: not rotated or scaled by the geometry's Transform."
                             disablewhen "{ fam_fib_source#_#_# != constant }"
                             hidewhen "{ fam_fib_source#_#_# != constant }"
                             range   { -1 1 }
@@ -1848,6 +1922,7 @@
                             default { "[1, 0, 0]" }
                             disablewhen "{ fam_fib_source#_#_# != expression }"
                             hidewhen "{ fam_fib_source#_#_# != expression }"
+                            help    "Fiber direction of this family as a 3-component expression list of x, y, z and t."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1857,6 +1932,7 @@
                             default { "" }
                             disablewhen "{ fam_fib_source#_#_# != attribute }"
                             hidewhen "{ fam_fib_source#_#_# != attribute }"
+                            help    "SOP node with a per-element fiber-direction attribute for this family (matched by element centroid)."
                             parmtag { "opfilter" "!!SOP!!" }
                             parmtag { "oprelative" "." }
                             parmtag { "script_callback_language" "python" }
@@ -1868,6 +1944,7 @@
                             default { "fiber1" }
                             disablewhen "{ fam_fib_source#_#_# != attribute }"
                             hidewhen "{ fam_fib_source#_#_# != attribute }"
+                            help    "Name of the vector primitive attribute holding this family's per-element fiber direction."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1877,6 +1954,7 @@
                             default { "" }
                             disablewhen "{ fam_fib_source#_#_# != file }"
                             hidewhen "{ fam_fib_source#_#_# != file }"
+                            help    "Per-element fiber-direction file for this family (legacy .vtk VECTORS or text/CSV with three numbers per element)."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1887,6 +1965,7 @@
                             default { "0" "0" "0" }
                             disablewhen "{ fam_fib_source#_#_# != cylindrical fam_axis_source#_#_# != cylindrical }"
                             hidewhen "{ fam_fib_source#_#_# != cylindrical fam_axis_source#_#_# != cylindrical }"
+                            help    "A point on the cylinder axis for this family's cylindrical fiber frame (also used when the rotation axis follows the cylinder wall normal)."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1897,6 +1976,7 @@
                             default { "0" "1" "0" }
                             disablewhen "{ fam_fib_source#_#_# != cylindrical fam_axis_source#_#_# != cylindrical }"
                             hidewhen "{ fam_fib_source#_#_# != cylindrical fam_axis_source#_#_# != cylindrical }"
+                            help    "Direction of the cylinder axis for this family's cylindrical frame."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1911,6 +1991,7 @@
                                 "radial"          "Radial (through wall)"
                                 "longitudinal"    "Longitudinal (along axis)"
                             }
+                            help    "Cylindrical direction this family follows: circumferential (hoop), radial (through the wall) or longitudinal (along the axis)."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1920,6 +2001,7 @@
                             default { "" }
                             disablewhen "{ fam_fib_source#_#_# != curve }"
                             hidewhen "{ fam_fib_source#_#_# != curve }"
+                            help    "SOP curve whose tangent gives this family's fiber direction (nearest curve point per element)."
                             parmtag { "opfilter" "!!SOP!!" }
                             parmtag { "oprelative" "." }
                             parmtag { "script_callback_language" "python" }
@@ -1931,6 +2013,7 @@
                             default { "FIB_DIR1" }
                             disablewhen "{ fam_fib_source#_#_# != file }"
                             hidewhen "{ fam_fib_source#_#_# != file }"
+                            help    "Name of the VECTORS array to read from this family's legacy .vtk file."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1940,6 +2023,7 @@
                             default { "0" }
                             disablewhen "{ fam_fib_source#_#_# == expression }"
                             hidewhen "{ fam_fib_source#_#_# == expression }"
+                            help    "Export this family twice, rotated by +theta and -theta about the rotation axis, sharing k1, k2 and kappa. This is the standard two-family (GOH) layout of arteries and other helically reinforced tissues."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1950,6 +2034,7 @@
                             disablewhen "{ fam_mirror#_#_# != 1 }"
                             hidewhen "{ fam_mirror#_#_# != 1 }"
                             range   { 0 90 }
+                            help    "Half angle in degrees between each of the two mirrored families and the base fiber direction (e.g. 30 gives fibers at +30 and -30 degrees)."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1964,6 +2049,7 @@
                                 "attribute"   "Per-Element Attribute"
                                 "cylindrical" "Cylinder Radial Direction (wall normal)"
                             }
+                            help    "Axis about which the two mirrored families are rotated: a constant vector, a per-element attribute, or the local radial direction of the cylindrical frame (the wall normal, which keeps the fibers in the wall surface of a vessel)."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1975,6 +2061,7 @@
                             disablewhen "{ fam_mirror#_#_# != 1 } { fam_axis_source#_#_# != constant }"
                             hidewhen "{ fam_mirror#_#_# != 1 } { fam_axis_source#_#_# != constant }"
                             range   { -1 1 }
+                            help    "Constant rotation axis (normalized) for the mirrored pair; should be perpendicular to the base fiber direction."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -1984,6 +2071,7 @@
                             default { "normal1" }
                             disablewhen "{ fam_mirror#_#_# != 1 } { fam_axis_source#_#_# != attribute }"
                             hidewhen "{ fam_mirror#_#_# != 1 } { fam_axis_source#_#_# != attribute }"
+                            help    "Name of the vector primitive attribute holding a per-element rotation axis for the mirrored pair (for example a surface normal)."
                             parmtag { "script_callback_language" "python" }
                         }
                     }
@@ -1994,6 +2082,7 @@
                         default { "0" }
                         disablewhen "{ materials#_# != MaterialSum }"
                         hidewhen "{ materials#_# != MaterialSum }"
+                        help    "Add a volume-preservation penalty to the composite (a VolumePenalty model). Use it when the matrix model is None or too soft to prevent the fibers from collapsing the volume."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -2004,6 +2093,7 @@
                         disablewhen "{ materials#_# != MaterialSum } { volume_penalty#_# != 1 }"
                         hidewhen "{ materials#_# != MaterialSum } { volume_penalty#_# != 1 }"
                         range   { 0 1e+10 }
+                        help    "Stiffness k of the volume penalty (stress units): the penalty energy grows with the squared deviation of the local volume ratio J from 1. Larger values enforce volume preservation more strictly."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -2013,6 +2103,7 @@
                         default { "" }
                         disablewhen "{ materials#_# != MaterialSum }"
                         hidewhen "{ materials#_# != MaterialSum }"
+                        help    "Optional advanced field: a JSON list of additional PolyFEM model objects appended verbatim to this composite's models, e.g. [{\"type\": \"NeoHookean\", \"E\": 1e5, \"nu\": 0.4}]. Leave empty unless you need a model the UI does not offer."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -2020,6 +2111,7 @@
                         label   "Refresh Per-Element Data"
                         type    button
                         default { "0" }
+                        help    "Re-read the per-element fiber/dispersion sources (SOP attributes, files, presets) and update the viewport preview. The exporter uses exactly the data shown."
                         parmtag { "script_callback" "hou.phm().refresh_material_data(kwargs)" }
                         parmtag { "script_callback_language" "python" }
                     }
@@ -2029,6 +2121,7 @@
                         type    float
                         default { "1000" }
                         range   { 0 5000 }
+                        help    "Mass density of this subdomain in mass per volume (kg/m^3 in SI; water and soft tissue ~1000). Only matters in dynamic runs (inertia) and for gravity via the Right-Hand-Side."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -2039,6 +2132,7 @@
                         disablewhen "{ damping#_# != 1 } @SHOW_FOR(NeoHookean LinearElasticity SaintVenant FixedCorotational)@"
                         hidewhen "{ damping#_# != 1 } @SHOW_FOR(NeoHookean LinearElasticity SaintVenant FixedCorotational)@"
                         range   { -10000 10000 }
+                        help    "Viscous damping coefficient phi (multiplies the rate of the first strain invariant). Larger values dissipate energy faster. Only used when Damping is on and the run is dynamic."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -2049,6 +2143,7 @@
                         disablewhen "{ damping#_# != 1 } @SHOW_FOR(NeoHookean LinearElasticity SaintVenant FixedCorotational)@"
                         hidewhen "{ damping#_# != 1 } @SHOW_FOR(NeoHookean LinearElasticity SaintVenant FixedCorotational)@"
                         range   { -10000 10000 }
+                        help    "Viscous damping coefficient psi (multiplies the rate of the second strain invariant). Only used when Damping is on and the run is dynamic."
                         parmtag { "script_callback_language" "python" }
                     }
                 }
@@ -2087,6 +2182,7 @@
                                 "primitive" "Primitives"
                                 "point"     "Points"
                             }
+                            help    "Whether the Base Group selects boundary faces (primitives) or points. Faces are the normal choice; a point selection is converted to the faces it touches."
                             parmtag { "autoscope" "0000000000000000" }
                             parmtag { "autoselect" "0000000000000000" }
                             parmtag { "script_callback_language" "python" }
@@ -2096,6 +2192,7 @@
                             label   "Base Group"
                             type    string
                             default { "" }
+                            help    "The boundary faces this sideset covers. Pick them in the viewport, type * for the whole surface of this subdomain, or type a native PolyFEM selection: axis:+z:0.99 (faces above z = 0.99), box:[x0,y0,z0],[x1,y1,z1], sphere:[cx,cy,cz],r or plane:[nx,ny,nz],[px,py,pz]. Native selections are exported directly and take precedence over picked faces."
                             parmtag { "script_action" "import soputils\nparent = kwargs['node']\nparent.allowEditingOfContents(True)\nbutton_number = kwargs['script_multiparm_index3']\nvolumn_number = kwargs['script_multiparm_index2']\nsurf_number = kwargs['script_multiparm_index']\ngroup_node = parent.node(\"group_\"+str(button_number)+\"_\"+str(volumn_number)+\"_\"+str(surf_number))\nif group_node:\n    kwargs['node'] = group_node\n    kwargs['geometrytype'] = kwargs['node'].parmTuple('grouptype')\n    kwargs['inputindex'] = 0\n    kwargs['ordered'] = kwargs['node'].parm('ordered').eval()\n    soputils.selectGroupParm(kwargs)\n\n\n" }
                             parmtag { "script_action_help" "Select geometry from an available viewport.\nShift-click to turn on Select Groups." }
                             parmtag { "script_action_icon" "BUTTONS_reselect" }
@@ -2135,6 +2232,7 @@
                                     "Pressure_Boundary"         "Pressure Boundary"
                                     "Pressure_Cavity"           "Pressure Cavity"
                                 }
+                                help    "What is imposed on this sideset. Dirichlet = prescribed displacement (fixes or moves the surface). Neumann = applied traction (force per area) with a fixed direction. Normal Aligned Neumann = traction along the surface normal (positive pushes inward). Pressure Boundary = pressure following the deforming surface. Pressure Cavity = pressure inside a closed cavity."
                                 parmtag { "script_callback_language" "python" }
                             }
                             parm {
@@ -2144,6 +2242,7 @@
                                 default { "[\"0*t\",\"0*t\",\"0*t\"]" }
                                 disablewhen "{ boundary_type#_#_#_# != Neumann boundary_type#_#_#_# != Dirichlet }"
                                 hidewhen "{ boundary_type#_#_#_# != Neumann boundary_type#_#_#_# != Dirichlet }"
+                                help    "The displacement (Dirichlet, length units) or traction (Neumann, force per area) as [x, y, z]. Each component is a number or an expression of time t in quotes: [\"0\",\"0\",\"-0.01*t\"] moves the surface down as time advances; [0,0,0] holds it fixed."
                                 parmtag { "script_callback_language" "python" }
                             }
                             parm {
@@ -2153,6 +2252,7 @@
                                 default { "\"0*t\"" }
                                 disablewhen "{ boundary_type#_#_#_# != Normal_Aligned_Neumann boundary_type#_#_#_# != Pressure_Boundary boundary_type#_#_#_# != Pressure_Cavity }"
                                 hidewhen "{ boundary_type#_#_#_# != Normal_Aligned_Neumann boundary_type#_#_#_# != Pressure_Boundary boundary_type#_#_#_# != Pressure_Cavity }"
+                                help    "Scalar magnitude (force per area) of the normal traction or pressure. A number or an expression of time t in quotes, e.g. \"1000*t\" ramps the load up."
                                 parmtag { "script_callback_language" "python" }
                             }
                             parm {
@@ -2162,6 +2262,7 @@
                                 joinnext
                                 default { "1" }
                                 hidewhen "{ boundary_type#_#_#_# == Neumann } { boundary_type#_#_#_# == Normal_Aligned_Neumann } { boundary_type#_#_#_# == Pressure_Boundary } { boundary_type#_#_#_# == Pressure_Cavity }"
+                                help    "Apply the Dirichlet condition to the x component. Turn off to leave x free (e.g. a roller support that only constrains z)."
                                 parmtag { "script_callback_language" "python" }
                             }
                             parm {
@@ -2171,6 +2272,7 @@
                                 joinnext
                                 default { "1" }
                                 hidewhen "{ boundary_type#_#_#_# == Neumann } { boundary_type#_#_#_# == Normal_Aligned_Neumann } { boundary_type#_#_#_# == Pressure_Boundary } { boundary_type#_#_#_# == Pressure_Cavity }"
+                                help    "Apply the Dirichlet condition to the y component. Turn off to leave y free."
                                 parmtag { "script_callback_language" "python" }
                             }
                             parm {
@@ -2179,6 +2281,7 @@
                                 type    toggle
                                 default { "1" }
                                 hidewhen "{ boundary_type#_#_#_# == Neumann } { boundary_type#_#_#_# == Normal_Aligned_Neumann } { boundary_type#_#_#_# == Pressure_Boundary } { boundary_type#_#_#_# == Pressure_Cavity }"
+                                help    "Apply the Dirichlet condition to the z component. Turn off to leave z free."
                                 parmtag { "script_callback_language" "python" }
                             }
                         }
@@ -2221,6 +2324,7 @@
                                 "vel"       "Velocity"
                                 "accel"     "Acceleration"
                             }
+                            help    "Which initial field this condition sets for the subdomain at the start time: the displacement (solution), the velocity, or the acceleration. Velocity is the usual one for a moving body in a dynamic run."
                             parmtag { "autoscope" "0000000000000000" }
                             parmtag { "autoselect" "0000000000000000" }
                             parmtag { "script_callback_language" "python" }
@@ -2230,6 +2334,7 @@
                             label   "vector"
                             type    string
                             default { "[0,0,0]" }
+                            help    "Initial value as [x, y, z]; numbers, or expressions of position x, y, z in quotes for a field that varies over the body."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -2261,6 +2366,7 @@
                 default { "[0,0,0]" }
                 disablewhen "{ is_obstacle# != 1 }"
                 hidewhen "{ is_obstacle# != 1 }"
+                help    "Prescribed motion of this obstacle as a 3-component displacement [x, y, z]. Each entry may be a number or an expression of time t in quotes, e.g. [\"0\", \"-0.1*t\", \"0\"] pushes it down over time. [0,0,0] keeps it fixed. Units follow your mesh and the optional Global units."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2282,6 +2388,7 @@
             label   "Right-Hand-Side"
             type    string
             default { "[0, 0, 0]" }
+            help    "Body force per unit mass applied everywhere, as [x, y, z] (PolyFEM multiplies it by each material's density). This is where gravity goes: [0, -9.81, 0] for SI units with y up. Entries may be expressions of x, y, z, t in quotes. [0, 0, 0] means no body force."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -2295,6 +2402,7 @@
             label   "Units (optional)"
             type    toggle
             default { "0" }
+            help    "Tell PolyFEM which physical units your mesh and material values use, so that tolerances and logs are scaled consistently. Optional: when off, everything is treated as dimensionless but self-consistent (e.g. all SI)."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -2303,6 +2411,7 @@
             type    string
             default { "m" }
             disablewhen "{ units == 0 }"
+            help    "Length unit of the mesh coordinates and displacements, e.g. m, mm, cm."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -2311,6 +2420,7 @@
             type    string
             default { "kg" }
             disablewhen "{ units == 0 }"
+            help    "Mass unit used by densities and forces, e.g. kg, g."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -2319,6 +2429,7 @@
             type    string
             default { "s" }
             disablewhen "{ units == 0 }"
+            help    "Time unit of dt, t and time expressions, e.g. s, ms."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -2328,6 +2439,7 @@
             default { "1" }
             disablewhen "{ units == 0 }"
             range   { 1e-09 1e+09 }
+            help    "A typical size of your model in the chosen length unit (roughly the diameter of the largest body). PolyFEM uses it to scale solver tolerances so the same settings work for a millimeter part and a meter part."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -2347,6 +2459,7 @@
             label   "Enable Adaptive Remeshing"
             type    toggle
             default { "0" }
+            help    "Let PolyFEM refine, coarsen and repair the mesh while it runs (adaptive remeshing), based on the energy of the deformation. Off = the mesh you provide is used unchanged. Turning this on forces the convergent (area-weighted) contact formulation."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -2360,6 +2473,7 @@
                 "0" "Physics"
                 "1" "Sizing Field"
             }
+            help    "What drives the remeshing decisions: Physics = accept an edit only if it lowers the elastic energy; Sizing Field = follow a target element-size field."
             parmtag { "oprelative" "/" }
             parmtag { "script_callback_language" "python" }
         }
@@ -2379,6 +2493,7 @@
                 label   "Enable Edge Splitting"
                 type    toggle
                 default { "1" }
+                help    "Allow edges to be split (mesh refinement where the deformation is strong)."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2388,6 +2503,7 @@
                 default { "0.001" }
                 disablewhen "{ split_enabled == 0 }"
                 range   { 0! 1 }
+                help    "A split is kept only if it lowers the energy by at least this amount (relative). Smaller values accept more splits and refine more aggressively."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2397,6 +2513,7 @@
                 default { "0.95" }
                 disablewhen "{ split_enabled == 0 }"
                 range   { 0! 1! }
+                help    "Only edges whose energy is in the top fraction (1 - threshold) of the mesh are considered for splitting. 0.95 = only the 5% most strained edges."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2406,6 +2523,7 @@
                 default { "3" }
                 disablewhen "{ split_enabled == 0 }"
                 range   { 1! 10 }
+                help    "How many times an edge may be split within one time step. Limits runaway refinement."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2415,6 +2533,7 @@
                 default { "1e-06" }
                 disablewhen "{ split_enabled == 0 }"
                 range   { 0! 1 }
+                help    "Edges shorter than this (length units) are never split, which stops refinement from producing tiny elements."
                 parmtag { "script_callback_language" "python" }
             }
         }
@@ -2428,6 +2547,7 @@
                 label   "Enable Collapsing"
                 type    toggle
                 default { "1" }
+                help    "Allow edges to be collapsed (mesh coarsening where the deformation is mild)."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2437,6 +2557,7 @@
                 default { "-1e-08" }
                 disablewhen "{ collapse_enabled == 0 }"
                 range   { -1 0! }
+                help    "A collapse is kept only if the energy does not rise by more than this amount (negative values allow a small increase). Coarsening is a trade of accuracy for speed."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2446,6 +2567,7 @@
                 default { "0.01" }
                 disablewhen "{ collapse_enabled == 0 }"
                 range   { 0! 1! }
+                help    "Only edges whose energy is in the bottom fraction of the mesh are considered for collapsing. 0.01 = only the 1% least strained edges."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2455,6 +2577,7 @@
                 default { "3" }
                 disablewhen "{ collapse_enabled == 0 }"
                 range   { 1! 10 }
+                help    "How many times an edge may be collapsed within one time step."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2464,6 +2587,7 @@
                 default { "1" }
                 disablewhen "{ collapse_enabled == 0 }"
                 range   { 0! 1 }
+                help    "Never create edges longer than this multiple of the mesh's initial shortest edge when collapsing. Keeps coarsening bounded."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2473,6 +2597,7 @@
                 default { "1e+100" }
                 disablewhen "{ collapse_enabled == 0 }"
                 range   { 0! 1e+09 }
+                help    "Never create edges longer than this absolute length when collapsing. Leave very large to disable this limit."
                 parmtag { "script_callback_language" "python" }
             }
         }
@@ -2486,6 +2611,7 @@
                 label   "Enable Edge/Face Swap"
                 type    toggle
                 default { "0" }
+                help    "Allow edge/face swaps (flips) that improve element shape without changing the element count."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2495,6 +2621,7 @@
                 default { "-1e-08" }
                 disablewhen "{ swap_enabled2 == 0 }"
                 range   { -1 0! }
+                help    "A swap is kept only if the energy does not rise by more than this amount (negative values allow a small increase)."
                 parmtag { "export_disable" "1" }
                 parmtag { "script_callback_language" "python" }
             }
@@ -2505,6 +2632,7 @@
                 default { "1" }
                 disablewhen "{ swap_enabled2 == 0 }"
                 range   { 1! 10 }
+                help    "How many swap passes may run within one time step."
                 parmtag { "script_callback_language" "python" }
             }
         }
@@ -2518,6 +2646,7 @@
                 label   "Enable Vertex Smoothing"
                 type    toggle
                 default { "0" }
+                help    "Allow vertex smoothing (moving interior vertices to improve element quality)."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2527,6 +2656,7 @@
                 default { "-1e-08" }
                 disablewhen "{ smooth_enabled == 0 }"
                 range   { -1 0! }
+                help    "A smoothing move is kept only if the energy does not rise by more than this amount (negative values allow a small increase)."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2536,6 +2666,7 @@
                 default { "1" }
                 disablewhen "{ smooth_enabled == 0 }"
                 range   { 1! 10 }
+                help    "How many smoothing iterations may run within one time step."
                 parmtag { "script_callback_language" "python" }
             }
         }
@@ -2550,6 +2681,7 @@
                 type    integer
                 default { "2" }
                 range   { 0 10 }
+                help    "Size of the neighborhood (number of element rings around an edit) that is re-solved locally to judge whether a mesh edit is accepted. Larger is more accurate but slower."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2558,6 +2690,7 @@
                 type    log
                 default { "0.01" }
                 range   { 0! 1 }
+                help    "Minimum area (relative to the whole mesh) of that local neighborhood."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2566,6 +2699,7 @@
                 type    integer
                 default { "1" }
                 range   { 1! 10 }
+                help    "Newton iterations spent on each local re-solve before the accept/reject check. 1 is usually enough."
                 parmtag { "script_callback_language" "python" }
             }
         }
@@ -2581,6 +2715,7 @@
             label   "Quasistatic?"
             type    toggle
             default { "0" }
+            help    "On = ignore inertia: each time step finds the static equilibrium for the loads at that time (good for slow loading, no vibrations, no mass needed). Off = full dynamics with inertia and the chosen integrator (needs density; bodies can move, bounce and oscillate)."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -2595,6 +2730,7 @@
             type    float
             default { "0" }
             range   { 0! 10 }
+            help    "Simulation time at the first step (time units). Expressions in boundary conditions see t starting from this value."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -2610,6 +2746,7 @@
             type    toggle
             joinnext
             default { "1" }
+            help    "Specify the end time. Choose exactly two of End Time, Time Increment and # of Timesteps; the third is derived (if all three are on, End Time and Time Increment win)."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -2621,6 +2758,7 @@
             disablewhen "{ end_time_bool != 1 }"
             hidewhen "{ end_time_bool != 1 }"
             range   { 0! 100 }
+            help    "Time at which the simulation stops (time units)."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -2629,6 +2767,7 @@
             type    toggle
             joinnext
             default { "1" }
+            help    "Specify the time step dt. Choose exactly two of End Time, Time Increment and # of Timesteps."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -2640,6 +2779,7 @@
             disablewhen "{ time_inc_bool != 1 }"
             hidewhen "{ time_inc_bool != 1 }"
             range   { 0! 10 }
+            help    "Size of each time step (time units). Smaller steps follow fast motion and hard contact more accurately but cost more steps; the semi-implicit contact mode tolerates larger steps than classic IPC."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -2648,6 +2788,7 @@
             type    toggle
             joinnext
             default { "0" }
+            help    "Specify the number of time steps instead of the end time or the step size. Choose exactly two of the three."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -2659,6 +2800,7 @@
             disablewhen "{ num_timesteps_bool != 1 }"
             hidewhen "{ num_timesteps_bool != 1 }"
             range   { 0! 10000 }
+            help    "Number of time steps to run (whole number)."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -2682,6 +2824,7 @@
                 "BDF6"              "BDF6"
                 "ImplicitNewmark"   "ImplicitNewmark"
             }
+            help    "Time-stepping scheme for dynamic runs (ignored when Quasistatic is on). ImplicitEuler = most stable, some numerical damping; BDF2 or higher = more accurate, less damping; ImplicitNewmark = classic structural dynamics with tunable beta/gamma."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -2692,6 +2835,7 @@
             disablewhen "{ integrator != ImplicitNewmark }"
             hidewhen "{ integrator != ImplicitNewmark }"
             range   { 0 0.5 }
+            help    "Newmark beta parameter. 0.25 (with gamma 0.5) is the standard unconditionally stable, non-dissipative average-acceleration scheme."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -2702,6 +2846,7 @@
             disablewhen "{ integrator != ImplicitNewmark }"
             hidewhen "{ integrator != ImplicitNewmark }"
             range   { 0 1 }
+            help    "Newmark gamma parameter. 0.5 introduces no numerical damping; larger values damp high-frequency vibrations."
             parmtag { "script_callback_language" "python" }
         }
     }
@@ -2715,6 +2860,7 @@
             label   "Enable Contact"
             type    toggle
             default { "1" }
+            help    "Detect and resolve collisions between bodies (and self-collisions) with the IPC barrier method: surfaces are kept a small gap apart and can never pass through each other. Turn off if nothing can touch, to save the collision-detection cost."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -2737,6 +2883,7 @@
                 type    toggle
                 joinnext
                 default { "0" }
+                help    "Let the barrier activation distance shrink locally where surfaces are already very close (adaptive dhat, used with the GCP formulation). Off = one global dhat everywhere."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2746,6 +2893,7 @@
                 default { "0.5" }
                 disablewhen "{ adapt_dhat == 0 }"
                 range   { 0! 1 }
+                help    "With adaptive dhat: the local activation distance is this fraction of the current gap. Smaller values let surfaces get closer before the barrier acts."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2755,6 +2903,7 @@
                 default { "0.001" }
                 disablewhen "{ enable == 0 }"
                 range   { 1e-12 10 }
+                help    "Barrier activation distance (length units): surfaces closer than dhat start repelling each other, so they always stay at least a fraction of dhat apart. Use about 1e-3 of your model size (Calc Min Edge shows the smallest mesh edge as a guide); much smaller values make contact harder to solve, much larger ones leave a visible gap."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2772,6 +2921,7 @@
                 joinnext
                 default { "0" }
                 disablewhen "{ enable == 0 }"
+                help    "Measure the shortest edge of all loaded meshes and show it in Min Edge Length, to help choose dhat (dhat should be well below the smallest edge)."
                 parmtag { "script_callback" "hou.pwd().hm().deter_min_edge(kwargs)" }
                 parmtag { "script_callback_language" "python" }
             }
@@ -2782,6 +2932,7 @@
                 nolabel
                 default { "-1" }
                 disablewhen "{ enable == 0 }"
+                help    "Shortest mesh edge found by Calc Min Edge (length units). Read-only reference; -1 means not computed yet."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2803,7 +2954,7 @@
                     "adaptive"      "Adaptive (classic IPC)"
                     "fixed"         "Fixed Value"
                 }
-                help    "Semi-implicit: per-contact stiffness from the local elastic Hessian [Ando 2024] with a gap-band trim controller and stall recovery -- robust for stiff/quasistatic contact. Adaptive: classic IPC heuristic. Fixed: user value."
+                help    "How the strength of the contact barrier is chosen. Semi-Implicit (recommended): each contact gets its own stiffness from the local material stiffness, kept in a healthy gap band by a global trim controller with stall recovery, and carried over between steps (force continuation) -- the robust choice for stiff or quasistatic contact. Adaptive: classic IPC heuristic that grows the stiffness when surfaces get too close. Fixed: one value you set."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2813,7 +2964,7 @@
                 default { "1e8" }
                 disablewhen "{ enable == 0 } { barrier_mode != fixed }"
                 range   { 1000 1e+30 }
-                help    "Used when mode is Fixed. Rule of thumb: 10-100x your largest Young's modulus."
+                help    "The single barrier stiffness used in Fixed mode (stress-like units). Rule of thumb: 10-100 times your largest Young's modulus. Too low lets surfaces get very close; too high makes the solve ill-conditioned."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2823,7 +2974,7 @@
                 default { "1" }
                 disablewhen "{ enable == 0 } { barrier_mode != adaptive }"
                 range   { 1 1e+30 }
-                help    "Starting stiffness for the classic adaptive heuristic."
+                help    "Starting stiffness for the classic Adaptive heuristic; PolyFEM then raises it automatically when the gap gets too small."
                 parmtag { "script_callback_language" "python" }
             }
             groupcollapsible {
@@ -2837,7 +2988,7 @@
                     type    log
                     default { "0.5" }
                     range   { 1e-08 1 }
-                    help    "Raise the global trim when the average active squared gap drops below this fraction of dhat^2. The default (0.5) actively centers the gap high in the dhat band, stiffening the barrier as the load grows -- essential for obstacle-driven contact. Lower values turn the controller into a collapse-only safety net."
+                    help    "Lower edge of the gap band, as a fraction of dhat^2. When the average active gap drops below it the global stiffness trim is raised, keeping contacts from being crushed. 0.5 actively centers the gap high in the band and stiffens the barrier as the load grows (essential for obstacle-driven contact); lower values turn the controller into a collapse-only safety net."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -2846,7 +2997,7 @@
                     type    float
                     default { "0.9" }
                     range   { 0.01 1 }
-                    help    "Lower the global trim when the average active squared gap exceeds this fraction of dhat^2."
+                    help    "Upper edge of the gap band, as a fraction of dhat^2. When the average active gap sits above it the global trim is lowered so the barrier stops dominating the elasticity."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -2855,6 +3006,7 @@
                     type    float
                     default { "2" }
                     range   { 1.1 16 }
+                    help    "Multiplier by which the global trim moves at each controller step (up when the gap collapses, down when it is pinned above the band). 2 doubles/halves; larger values react faster but less smoothly."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -2863,7 +3015,7 @@
                     type    log
                     default { "10000" }
                     range   { 10 1e+08 }
-                    help    "Cap each per-contact stiffness at this multiple of the batch median (guards against crushed-element Hessian blowups). For thin structures under extreme stretch, larger values (1e8) let taut-membrane hotspots keep their full local stiffness."
+                    help    "Allowed spread of the per-contact stiffnesses within one refresh: each is capped at this multiple of the batch median and floored at the median divided by it. Guards against crushed-element Hessian blow-ups. For thin structures under extreme stretch, larger values (1e8) let taut-membrane hotspots keep their full local stiffness."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -2872,7 +3024,7 @@
                     type    log
                     default { "1000" }
                     range   { 10 1e+06 }
-                    help    "On first (unloaded) contact, cap the effective barrier stiffness at this multiple of the max system-Hessian entry. Bounds the Newton system's dynamic range until the load provides a force-balance calibration."
+                    help    "When contact first appears unloaded (no force balance to calibrate against), cap the barrier's effective stiffness at this multiple of the largest system-Hessian entry. Bounds the dynamic range of the linear system until the load provides a calibration signal. Dimensionless; raise to loosen."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -2881,7 +3033,7 @@
                     type    integer
                     default { "30" }
                     range   { 0 200 }
-                    help    "Newton-iteration cadence of the in-solve downward stiffness step when the gap stays pinned above the band. 0 disables."
+                    help    "How many Newton iterations between downward trim steps while the gap stays pinned above the band inside a solve. 0 disables the in-solve downward step."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -2890,7 +3042,7 @@
                     type    integer
                     default { "0" }
                     range   { 0 50 }
-                    help    "0 = refresh per-contact stiffness only at solve starts and stall restarts (recommended); N > 0 also refreshes every N Newton iterations."
+                    help    "0 (recommended) = re-estimate per-contact stiffness only at the start of each solve and on stall restarts, keeping the objective fixed within a solve. N > 0 additionally refreshes every N Newton iterations (experimental)."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -2898,7 +3050,7 @@
                     label   "Stall Restart"
                     type    toggle
                     default { "1" }
-                    help    "Detect line-search stalls and restart the solve with retuned stiffness."
+                    help    "Detect a stalled line search (tiny steps for several iterations) and restart the solve with the barrier stiffness retuned. Leave on; it rescues solves that would otherwise grind to a halt."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -2908,6 +3060,7 @@
                     default { "0.01" }
                     disablewhen "{ si_restart_enabled == 0 }"
                     range   { 1e-08 0.1 }
+                    help    "A Newton iteration counts as stalled when its line-search step is smaller than this fraction of a full step (0.01 = 1%)."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -2917,6 +3070,7 @@
                     default { "5" }
                     disablewhen "{ si_restart_enabled == 0 }"
                     range   { 1 50 }
+                    help    "Number of consecutive stalled iterations before a restart is triggered."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -2926,7 +3080,7 @@
                     default { "100" }
                     disablewhen "{ si_restart_enabled == 0 }"
                     range   { -1 500 }
-                    help    "Restart with retuned stiffness after this many Newton iterations (-1 disables); keep below the solver's hard max_iterations."
+                    help    "Restart with retuned stiffness after this many Newton iterations even without a detected stall (-1 disables). Keep it below the solver's hard Max Iterations."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -2936,6 +3090,83 @@
                     default { "20" }
                     disablewhen "{ si_restart_enabled == 0 }"
                     range   { 0 50 }
+                    help    "Maximum number of stall restarts per solve. If nothing changes between two restarts the solver stops early instead of repeating identical attempts."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_min_iterations"
+                    label   "Stall Min Iterations"
+                    type    integer
+                    default { "5" }
+                    disablewhen "{ si_restart_enabled == 0 }"
+                    range   { 0 100 }
+                    help    "Newton iterations that must have run before a stall may trigger a restart, so a slow start is not mistaken for a stall."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_stall_trim_factor"
+                    label   "Stall Trim Factor"
+                    type    float
+                    default { "2" }
+                    disablewhen "{ si_restart_enabled == 0 }"
+                    range   { 1.1 16 }
+                    help    "Multiplier applied to the global trim at a stall restart (up when the gap is collapsed, down when the barrier is too stiff)."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_sep_continuation"
+                    label   "Spacer"
+                    type    separator
+                    default { "" }
+                    parmtag { "sidefx::layout_height" "small" }
+                    parmtag { "sidefx::look" "blank" }
+                }
+                parm {
+                    name    "si_force_continuation"
+                    label   "Force Continuation"
+                    type    toggle
+                    default { "1" }
+                    help    "Carry each contact's stiffness over from the end of the previous step instead of re-estimating it (on, recommended). This keeps the contact forces exactly continuous across steps -- the published result of a step is a true equilibrium of the state the next step starts from -- and removes the 5-50% force jumps re-estimation caused. New contacts still get the local-stiffness estimate when they first appear. Off restores the older re-estimating behavior."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_continuation_max_ratio"
+                    label   "Continuation Max Ratio"
+                    type    float
+                    default { "0" }
+                    disablewhen "{ si_force_continuation == 0 }"
+                    range   { 0 16 }
+                    help    "With Force Continuation: 0 = pure continuation (a contact's stiffness never changes once set). A value r > 1 lets the fresh local-stiffness estimate pull a carried-over stiffness by at most a factor r per step, e.g. 2 allows halving or doubling. Rarely needed."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_coefficient_identity"
+                    label   "Coefficient Identity"
+                    type    ordinal
+                    default { "0" }
+                    menu {
+                        "parent"    "Parent Candidate (recommended)"
+                        "stencil"   "Built Stencil (historical)"
+                    }
+                    help    "What a contact stiffness is attached to. Parent Candidate (recommended): the pair of mesh features (point/edge in 2D, point/triangle or edge/edge in 3D) that generated the contact, so the stiffness follows the contact when the closest sub-feature switches and the contact energy stays continuous. Built Stencil: the historical keying on the exact sub-feature, kept only for comparison."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_trial_displacement_cap"
+                    label   "Trial Displacement Cap"
+                    type    float
+                    default { "50" }
+                    range   { 1 1000 }
+                    help    "Largest surface displacement a single Newton trial step may propose, in multiples of dhat. Caps the collision-detection sweep so a wild step cannot cost enormous broad-phase time or memory. 50 is a safe default; the cap never affects converged results."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_kappa_min"
+                    label   "Minimum Contact Stiffness"
+                    type    log
+                    default { "0" }
+                    range   { 0 1e+12 }
+                    help    "Absolute lower bound on every per-contact stiffness coefficient (in the units the log reports for the refresh batch), applied after the batch cap and floor. 0 = no user floor; the relative floor from Stiffness Spread Cap usually makes this unnecessary."
                     parmtag { "script_callback_language" "python" }
                 }
             }
@@ -2953,6 +3184,7 @@
                 type    toggle
                 default { "0" }
                 disablewhen "{ enable == 0 }"
+                help    "Use the convergent (area-weighted) IPC formulation, where each contact is weighted by the surface area it represents so results converge under mesh refinement. Required for remeshing (turned on automatically then). The semi-implicit mode has been validated with this off."
                 parmtag { "script_callback_language" "python" }
             }
         }
@@ -2969,6 +3201,7 @@
                 type    toggle
                 default { "0" }
                 disablewhen "{ enable == 0 }"
+                help    "Use the Geometric Contact Potential (smooth, orientation-aware contact) instead of the standard IPC barrier. Experimental; not supported together with the semi-implicit barrier mode."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2978,6 +3211,7 @@
                 default { "0.5" }
                 disablewhen "{ enable == 0 } { gcp_enable == 0 }"
                 range   { -1! 1! }
+                help    "GCP: smoothness of the tangent-angle test that decides which surface pairs interact. Between -1 and 1; 0.5 is the reference value."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2987,6 +3221,7 @@
                 default { "0.5" }
                 disablewhen "{ enable == 0 } { gcp_enable == 0 }"
                 range   { -1! 1! }
+                help    "GCP: smoothness of the normal-angle test that decides which surface pairs interact. Between -1 and 1; 0.5 is the reference value."
                 parmtag { "script_callback_language" "python" }
             }
         }
@@ -3003,6 +3238,7 @@
                 default { "0" }
                 disablewhen "{ enable == 0 }"
                 range   { 0 1 }
+                help    "Coefficient of friction between all surfaces (0 = frictionless, 0.3-0.5 typical for dry contact, ~1 for rubber). The same value applies to every contact pair."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3012,6 +3248,7 @@
                 default { "0.001" }
                 disablewhen "{ enable == 0 }"
                 range   { 1e-06 1 }
+                help    "Friction smoothing velocity (length per time): sliding slower than this is treated as sticking with a smooth transition. Smaller values are closer to true stick/slip but harder to solve; a few percent of the typical sliding speed works well."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3021,6 +3258,7 @@
                 default { "1" }
                 disablewhen "{ enable == 0 }"
                 range   { 0 10 }
+                help    "Number of times per step the friction forces are updated with the new sliding state (lagged friction, as in the IPC paper). 1 is the standard; more iterations tighten the friction/contact coupling at extra cost."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3030,6 +3268,7 @@
                 default { "0.01" }
                 disablewhen "{ enable == 0 }"
                 range   { 0 1 }
+                help    "Stop the friction update iterations early when the solution changes by less than this relative amount."
                 parmtag { "script_callback_language" "python" }
             }
         }
@@ -3045,6 +3284,7 @@
                 label   "Enable"
                 type    toggle
                 default { "0" }
+                help    "Add adhesion (sticking) between surfaces that come within dhat active of each other, e.g. for wet or tacky contact. Off = contact only repels."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3054,6 +3294,7 @@
                 default { "0.001" }
                 disablewhen "{ adhesion_enable == 0 }"
                 range   { 0! 1 }
+                help    "Distance (length units) at which the normal adhesion force is strongest. Must be smaller than dhat active."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3063,6 +3304,7 @@
                 default { "0.01" }
                 disablewhen "{ adhesion_enable == 0 }"
                 range   { 0! 1 }
+                help    "Distance (length units) at which adhesion starts to act; beyond it surfaces do not attract each other."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3072,6 +3314,7 @@
                 default { "0.001" }
                 disablewhen "{ adhesion_enable == 0 }"
                 range   { 0 1 }
+                help    "Strength of the normal (pull-together) adhesion force, in stress-like units."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3081,6 +3324,7 @@
                 default { "0" }
                 disablewhen "{ adhesion_enable == 0 }"
                 range   { 0! 1 }
+                help    "Coefficient of tangential adhesion: resistance to sliding while adhered, analogous to a friction coefficient. 0 = no tangential adhesion."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3090,6 +3334,7 @@
                 default { "1" }
                 disablewhen "{ adhesion_enable == 0 }"
                 range   { 1e-06! 1 }
+                help    "Smoothing velocity for tangential adhesion, like epsv for friction: slower sliding is treated as stuck with a smooth transition."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3099,6 +3344,7 @@
                 default { "1" }
                 disablewhen "{ adhesion_enable == 0 }"
                 range   { 0! 10 }
+                help    "Number of lagged updates per step of the tangential adhesion forces (like Friction Iterations)."
                 parmtag { "script_callback_language" "python" }
             }
         }
@@ -3124,6 +3370,7 @@
                     "sweep_and_prune"               "Sweep and Prune"
                     "sweep_and_tiniest_queue_gpu"   "Sweep and Tiniest Queue (GPU)"
                 }
+                help    "Method used to quickly find candidate pairs of nearby surface elements before exact collision detection. BVH and Hash Grid are fast general choices; Brute Force checks everything (only for tiny meshes); GPU variants need a CUDA build."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3133,6 +3380,7 @@
                 default { "1e-06" }
                 disablewhen "{ enable == 0 }"
                 range   { 0 10 }
+                help    "Accuracy of continuous collision detection when computing how far a step may move before surfaces would touch. Smaller = more accurate but slower; 1e-6 is standard."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3142,6 +3390,7 @@
                 default { "1e+06" }
                 disablewhen "{ enable == 0 }"
                 range   { 1000 1e+12 }
+                help    "Iteration cap for the continuous collision detection root finder. The default is large enough for all practical cases."
                 parmtag { "script_callback_language" "python" }
             }
         }
@@ -3161,28 +3410,30 @@
                 name    "solver"
                 label   "Solver"
                 type    ordinal
-                default { "5" }
+                default { "0" }
                 menu {
-                    "Eigen:SparseLU"                        "Eigen:SparseLU"
-                    "Eigen::SimplicialLDLT"                 "Eigen::SimplicialLDLT"
-                    "Eigen::SuperLU"                        "Eigen::SuperLU"
-                    "Eigen::CholmodSupernodalLLT"           "Eigen::CholmodSupernodalLLT"
-                    "Eigen::UmfPackLU"                      "Eigen::UmfPackLU"
-                    "Eigen::PardisoLDLT"                    "Eigen::PardisoLDLT"
-                    "Eigen::PardisoLLT"                     "Eigen::PardisoLLT"
-                    "Eigen:PardisoLU"                       "Eigen:PardisoLU"
-                    "Pardiso"                               "Pardiso"
-                    "Hypre"                                 "Hypre"
-                    "AMGCL"                                 "AMGCL"
-                    "Eigen::LeastSquaresConjugateGradient"  "Eigen::LeastSquaresConjugateGradient"
-                    "Eigen::DGMRES"                         "Eigen::DGMRES"
-                    "Eigen::ConjugateGradient"              "Eigen::ConjugateGradient"
-                    "Eigen::BiCGSTAB"                       "Eigen::BiCGSTAB"
-                    "Eigen::GMRES"                          "Eigen::GMRES"
-                    "Eigen::MINRES"                         "Eigen::MINRES"
-                    "Eigen::AccelerateLLT"                  "Eigen::AccelerateLLT"
-                    "Eigen::AccelerateLDLT"                 "Eigen::AccelerateLDLT"
+                    "auto"                                  "Automatic (PolyFEM default)"
+                    "Eigen::SimplicialLDLT"                 "Eigen::SimplicialLDLT (direct)"
+                    "Eigen::SparseLU"                       "Eigen::SparseLU (direct)"
+                    "Eigen::CholmodSupernodalLLT"           "Eigen::CholmodSupernodalLLT (direct)"
+                    "Eigen::AccelerateLLT"                  "Eigen::AccelerateLLT (direct, macOS)"
+                    "Eigen::AccelerateLDLT"                 "Eigen::AccelerateLDLT (direct, macOS)"
+                    "Eigen::UmfPackLU"                      "Eigen::UmfPackLU (direct)"
+                    "Eigen::SuperLU"                        "Eigen::SuperLU (direct)"
+                    "Eigen::PardisoLDLT"                    "Eigen::PardisoLDLT (direct, MKL)"
+                    "Eigen::PardisoLLT"                     "Eigen::PardisoLLT (direct, MKL)"
+                    "Eigen::PardisoLU"                      "Eigen::PardisoLU (direct, MKL)"
+                    "Pardiso"                               "Pardiso (direct, MKL)"
+                    "Hypre"                                 "Hypre (iterative, multigrid)"
+                    "AMGCL"                                 "AMGCL (iterative, multigrid)"
+                    "Eigen::ConjugateGradient"              "Eigen::ConjugateGradient (iterative)"
+                    "Eigen::LeastSquaresConjugateGradient"  "Eigen::LeastSquaresConjugateGradient (iterative)"
+                    "Eigen::BiCGSTAB"                       "Eigen::BiCGSTAB (iterative)"
+                    "Eigen::GMRES"                          "Eigen::GMRES (iterative)"
+                    "Eigen::DGMRES"                         "Eigen::DGMRES (iterative)"
+                    "Eigen::MINRES"                         "Eigen::MINRES (iterative)"
                 }
+                help    "Direct or iterative method for the linear system solved at each Newton iteration. Automatic lets PolyFEM pick the best direct solver compiled into your binary (recommended). Direct solvers (LDLT/LLT/LU) are robust and exact; iterative ones (CG, GMRES, Hypre, AMGCL) use less memory on very large meshes but need a preconditioner and tolerance. Options marked MKL or macOS only exist in builds with that library."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3190,9 +3441,10 @@
                 label   "Max Iterations"
                 type    intlog
                 default { "1000" }
-                disablewhen "{ solver != AMGCL solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
-                hidewhen "{ solver != AMGCL solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
+                disablewhen "{ solver != Eigen::ConjugateGradient solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
+                hidewhen "{ solver != Eigen::ConjugateGradient solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
                 range   { 1 100000 }
+                help    "Maximum iterations of the iterative linear solver per Newton step. If it is reached the step is inaccurate; raise it or tighten the preconditioner."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3200,9 +3452,10 @@
                 label   "Tolerance"
                 type    log
                 default { "1e-12" }
-                disablewhen "{ solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
-                hidewhen "{ solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
+                disablewhen "{ solver != Eigen::ConjugateGradient solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
+                hidewhen "{ solver != Eigen::ConjugateGradient solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
                 range   { 1e-20 1 }
+                help    "Relative residual at which the iterative Eigen solver stops (smaller = more accurate linear solves; 1e-12 keeps Newton's convergence intact)."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3210,8 +3463,8 @@
                 label   "Preconditioner"
                 type    ordinal
                 default { "0" }
-                disablewhen "{ solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
-                hidewhen "{ solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
+                disablewhen "{ solver != Eigen::ConjugateGradient solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
+                hidewhen "{ solver != Eigen::ConjugateGradient solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
                 menu {
                     "Eigen::IdentityPreconditioner"             "Eigen::IdentityPreconditioner"
                     "Eigen::DiagonalPreconditioner"             "Eigen::DiagonalPreconditioner"
@@ -3219,6 +3472,7 @@
                     "Eigen::LeastSquareDiagonalPreconditioner"  "Eigen::LeastSquareDiagonalPreconditioner"
                     "Eigen::IncompleteLUT"                      "Eigen::IncompleteLUT"
                 }
+                help    "Preconditioner for the iterative Eigen solvers. Diagonal is cheap; Incomplete Cholesky (symmetric) or Incomplete LUT usually converge in far fewer iterations."
                 parmtag { "export_disable" "1" }
                 parmtag { "script_callback_language" "python" }
             }
@@ -3240,6 +3494,7 @@
                     "11"    "11"
                     "13"    "13"
                 }
+                help    "Pardiso matrix type code: 2 = symmetric positive definite, -2 = symmetric indefinite (safe for regularized Newton), 11 = general nonsymmetric. Only for the Pardiso solver (MKL builds)."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3250,6 +3505,7 @@
                 disablewhen "{ solver != Hypre }"
                 hidewhen "{ solver != Hypre }"
                 range   { 0 100000 }
+                help    "Maximum iterations of the Hypre algebraic-multigrid solver per Newton step."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3260,6 +3516,7 @@
                 disablewhen "{ solver != Hypre }"
                 hidewhen "{ solver != Hypre }"
                 range   { 0 10 }
+                help    "Number of Hypre pre-smoothing sweeps per multigrid cycle."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3270,6 +3527,7 @@
                 disablewhen "{ solver != Hypre solver != AMGCL }"
                 hidewhen "{ solver != Hypre solver != AMGCL }"
                 range   { 1e-20 1 }
+                help    "Relative residual at which the Hypre or AMGCL iterative solver stops."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3282,6 +3540,7 @@
                 menu {
                     "cg"    "cg"
                 }
+                help    "Krylov method AMGCL wraps around its multigrid preconditioner (cg = conjugate gradient, for symmetric positive-definite systems)."
                 parmtag { "script_callback_language" "python" }
             }
             groupcollapsible {
@@ -3300,6 +3559,7 @@
                     menu {
                         "amg"   "amg"
                     }
+                    help    "AMGCL preconditioner class (amg = algebraic multigrid)."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -3310,6 +3570,7 @@
                     disablewhen "{ solver != AMGCL }"
                     hidewhen "{ solver != AMGCL }"
                     range   { 0 10 }
+                    help    "Maximum number of multigrid levels AMGCL builds. More levels coarsen further and usually converge faster on large meshes."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -3319,6 +3580,7 @@
                     default { "0" }
                     disablewhen "{ solver != AMGCL }"
                     hidewhen "{ solver != AMGCL }"
+                    help    "Solve AMGCL's coarsest level exactly with a direct solver instead of more smoothing."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -3329,6 +3591,7 @@
                     disablewhen "{ solver != AMGCL }"
                     hidewhen "{ solver != AMGCL }"
                     range   { 0 10 }
+                    help    "Number of multigrid cycles AMGCL performs per preconditioner application (1 = V-cycle, 2 = W-cycle)."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -3357,6 +3620,7 @@
                     menu {
                         "smoothed_aggregation"  "smoothed_aggregation"
                     }
+                    help    "How AMGCL builds coarser levels (smoothed aggregation groups strongly connected unknowns)."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -3366,6 +3630,7 @@
                     default { "1" }
                     disablewhen "{ solver != AMGCL }"
                     hidewhen "{ solver != AMGCL }"
+                    help    "Let AMGCL estimate the matrix spectral radius for its Chebyshev smoother instead of using a fixed guess (usually better)."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -3376,14 +3641,18 @@
                     disablewhen "{ solver != AMGCL }"
                     hidewhen "{ solver != AMGCL }"
                     range   { 0 10 }
+                    help    "AMGCL aggregation strength threshold: connections weaker than this fraction are ignored when grouping unknowns. 0 = use all connections."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
                     name    "coarse_relax"
-                    label   "Relax"
+                    label   "Coarsening Relax"
                     type    float
                     default { "1" }
                     range   { 0 10 }
+                    disablewhen "{ solver != AMGCL }"
+                    hidewhen "{ solver != AMGCL }"
+                    help    "Relaxation factor of AMGCL's smoothed aggregation (1 = standard)."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -3408,6 +3677,7 @@
                         disablewhen "{ solver != AMGCL }"
                         hidewhen "{ solver != AMGCL }"
                         range   { 0 32 }
+                        help    "Polynomial degree of AMGCL's Chebyshev smoother. Higher degrees smooth more per application at more cost."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -3420,6 +3690,7 @@
                         menu {
                             "chebyshev" "chebyshev"
                         }
+                        help    "Smoother used on each AMGCL level (Chebyshev polynomial smoothing)."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -3430,6 +3701,7 @@
                         disablewhen "{ solver != AMGCL }"
                         hidewhen "{ solver != AMGCL }"
                         range   { 0 10 }
+                        help    "Power iterations AMGCL uses to estimate the largest eigenvalue for the Chebyshev smoother."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -3440,6 +3712,7 @@
                         disablewhen "{ solver != AMGCL }"
                         hidewhen "{ solver != AMGCL }"
                         range   { 0 10 }
+                        help    "Upper safety factor applied to AMGCL's estimated largest eigenvalue (2 = smooth up to twice the estimate)."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -3450,6 +3723,7 @@
                         disablewhen "{ solver != AMGCL }"
                         hidewhen "{ solver != AMGCL }"
                         range   { -1e-06 1 }
+                        help    "Lower fraction of the spectrum the Chebyshev smoother targets (as a fraction of the largest eigenvalue)."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -3460,6 +3734,7 @@
                         disablewhen "{ solver != AMGCL }"
                         hidewhen "{ solver != AMGCL }"
                         range   { 0 10 }
+                        help    "Scale the matrix before building the AMGCL hierarchy (improves robustness for badly scaled systems)."
                         parmtag { "script_callback_language" "python" }
                     }
                 }
@@ -3472,20 +3747,20 @@
             name    "solver_nl"
             label   "Solver"
             type    ordinal
-            invisible
             default { "0" }
             menu {
-                "Newton"                    "Newton"
+                "Newton"                    "Newton (recommended)"
                 "DenseNewton"               "Dense Newton"
                 "GradientDescent"           "Gradient Descent"
                 "ADAM"                      "ADAM"
-                "StochasticADAM"            "Stocastic ADAM"
+                "StochasticADAM"            "Stochastic ADAM"
                 "StochasticGradientDescent" "Stochastic Gradient Descent"
                 "L-BFGS"                    "L-BFGS"
                 "BFGS"                      "BFGS"
                 "L-BFGS-B"                  "L-BFGS-B"
                 "MMA"                       "MMA"
             }
+            help    "Method used to minimize the total energy at each step. Newton (recommended) uses second derivatives and converges in few iterations; it falls back to regularized Newton and gradient descent automatically when a step fails. The other methods are first-order or quasi-Newton alternatives that need many more iterations and are provided for experiments."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -3496,7 +3771,8 @@
             default { "6" }
             disablewhen "{ solver_nl != L-BFGS solver_nl != L-BFGS-B }"
             hidewhen "{ solver_nl != L-BFGS solver_nl != L-BFGS-B }"
-            range   { 0 10 }
+            range   { 1 50 }
+            help    "Number of previous steps L-BFGS keeps to approximate curvature. 6-20 is typical; more memory, better steps."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -3504,10 +3780,11 @@
             label   "Residual Tolerance"
             type    log
             invisible
-            default { "1e+200" }
-            disablewhen "{ solver_nl != DenseRegularizedNewton solver_nl != DenseNewton solver_nl != RegularizedProjectedNewton solver_nl != RegularizedProjected Newton == solver_nl != == Newton solver_nl != ProjectedNewton solver_nl != RegularizedNewton }"
-            hidewhen "{ solver_nl != DenseRegularizedNewton solver_nl != DenseNewton solver_nl != RegularizedProjectedNewton solver_nl != Newton solver_nl != ProjectedNewton solver_nl != RegularizedNewton }"
-            range   { 1e-10 1 }
+            default { "1e-05" }
+            disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
+            hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
+            range   { 1e-12 1 }
+            help    "Newton: accept the linear solve when its relative residual is below this value. The default 1e-5 is fine for direct solvers; loosen it only for iterative solvers."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -3515,10 +3792,11 @@
             label   "Min Reg Weight"
             type    log
             invisible
-            default { "-1" }
-            disablewhen "{ solver_nl != DenseRegularizedNewton solver_nl != RegularizedProjectedNewton solver_nl != Newton solver_nl != RegularizedNewton }"
-            hidewhen "{ solver_nl != DenseRegularizedNewton solver_nl != RegularizedProjectedNewton solver_nl != Newton solver_nl != RegularizedNewton }"
+            default { "1e-08" }
+            disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
+            hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
             range   { 1e-15 1 }
+            help    "Newton: smallest regularization (identity added to the Hessian, in Hessian units) tried when a plain Newton step fails. Regularization makes steps shorter but safer."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -3526,32 +3804,24 @@
             label   "Max Reg Weight"
             type    log
             invisible
-            default { "-1" }
-            disablewhen "{ solver_nl != DenseRegularizedNewton solver_nl != RegularizedProjectedNewton solver_nl != Newton solver_nl != RegularizedNewton }"
-            hidewhen "{ solver_nl != DenseRegularizedNewton solver_nl != RegularizedProjectedNewton solver_nl != Newton solver_nl != RegularizedNewton }"
+            default { "1e+08" }
+            disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
+            hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
             range   { 1 1e+15 }
+            help    "Newton: largest regularization tried before giving up on the regularized strategy and falling back to gradient descent."
             parmtag { "script_callback_language" "python" }
         }
         parm {
             name    "reg_weight_inc"
             label   "Reg Weight Increment"
-            type    integer
+            type    float
             invisible
             default { "10" }
-            disablewhen "{ solver_nl != DenseRegularizedNewton solver_nl != RegularizedProjectedNewton solver_nl != Newton solver_nl != RegularizedNewton }"
-            hidewhen "{ solver_nl != DenseRegularizedNewton solver_nl != RegularizedProjectedNewton solver_nl != Newton solver_nl != RegularizedNewton }"
-            range   { 1 100 }
+            disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
+            hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
+            range   { 1.5 100 }
+            help    "Newton: factor by which the regularization grows after each failed regularized step (10 = one decade at a time)."
             parmtag { "export_disable" "1" }
-            parmtag { "script_callback_language" "python" }
-        }
-        parm {
-            name    "use_psd_projection_in_regularized"
-            label   "Use PSD Projection in Reg"
-            type    toggle
-            invisible
-            default { "1" }
-            disablewhen "{ solver_nl != Newton }"
-            hidewhen "{ solver_nl != Newton }"
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -3562,51 +3832,56 @@
             default { "0.001" }
             disablewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
             hidewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
-            range   { 0 10 }
+            range   { 0 1 }
+            help    "ADAM learning rate (step size). Larger moves faster but may overshoot."
             parmtag { "script_callback_language" "python" }
         }
         parm {
             name    "adam_beta1"
-            label   "Beta1"
+            label   "Beta 1"
             type    float
             invisible
             default { "0.9" }
             disablewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
             hidewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
-            range   { 0 10 }
+            range   { 0 1 }
+            help    "ADAM decay rate of the first-moment (gradient average) estimate; 0.9 is standard."
             parmtag { "script_callback_language" "python" }
         }
         parm {
             name    "adam_beta2"
-            label   "Beta2"
+            label   "Beta 2"
             type    float
             invisible
             default { "0.999" }
             disablewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
             hidewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
-            range   { 0 10 }
+            range   { 0 1 }
+            help    "ADAM decay rate of the second-moment (squared gradient) estimate; 0.999 is standard."
             parmtag { "script_callback_language" "python" }
         }
         parm {
             name    "adam_epsilon"
-            label   "epsilon"
+            label   "Epsilon"
             type    float
             invisible
             default { "1e-08" }
             disablewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
             hidewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
-            range   { 0 10 }
+            range   { 0 1 }
+            help    "ADAM small constant that prevents division by zero in the update; 1e-8 is standard."
             parmtag { "script_callback_language" "python" }
         }
         parm {
             name    "erase_component_probability"
-            label   "Erase Comp. Prob."
+            label   "Erase Component Probability"
             type    float
             invisible
-            default { "1e-08" }
+            default { "0.3" }
             disablewhen "{ solver_nl != StochasticADAM solver_nl != StochasticGradientDescent }"
             hidewhen "{ solver_nl != StochasticADAM solver_nl != StochasticGradientDescent }"
-            range   { 0 10 }
+            range   { 0 1 }
+            help    "Stochastic methods: probability that each unknown is left out of a given update, which randomizes the descent. 0.3 = update ~70% of the unknowns per iteration."
             parmtag { "script_callback_language" "python" }
         }
         group {
@@ -3621,6 +3896,7 @@
                 type    log
                 default { "1e-06" }
                 range   { 1e-15 0.1 }
+                help    "When the gradient norm is already below this value (times the problem's force scale), the line search judges steps by the gradient norm instead of the energy, because energy differences near convergence are lost to floating-point roundoff. 1e-6 is standard; 0 disables the switch."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3629,6 +3905,7 @@
                 type    log
                 default { "1e-10" }
                 range   { 1e-15 1e-05 }
+                help    "Smallest fraction of a Newton step the line search will try before declaring the step failed (which triggers the next fallback strategy)."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3637,6 +3914,7 @@
                 type    integer
                 default { "30" }
                 range   { 1 100 }
+                help    "Maximum number of step-halvings the line search performs in normal strategies."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3645,6 +3923,7 @@
                 type    log
                 default { "1e-20" }
                 range   { 1e-30 1e-05 }
+                help    "Smallest step fraction allowed on the last-resort strategy (gradient descent), before the solve is declared failed."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3653,6 +3932,7 @@
                 type    intlog
                 default { "100" }
                 range   { 1 1000 }
+                help    "Maximum number of step-halvings on the last-resort strategy."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3661,6 +3941,7 @@
                 type    float
                 default { "1" }
                 range   { 0 1 }
+                help    "Fraction of the full Newton step the line search tries first (1 = the full step, always right for Newton)."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3669,31 +3950,32 @@
                 type    log
                 default { "0.5" }
                 range   { 0.01 1 }
+                help    "Factor by which the step is shrunk each time the line search rejects it (0.5 = halve it)."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
                 name    "method"
                 label   "Method"
                 type    ordinal
-                default { "2" }
+                default { "1" }
                 menu {
                     "Armijo"        "Armijo"
-                    "ArmijoAlt"     "Armijo Alt"
-                    "RobustArmijo"  "Robust Armijo"
+                    "RobustArmijo"  "Robust Armijo (recommended)"
                     "Backtracking"  "Backtracking"
-                    "MoreThuente"   "MoreThuente"
-                    "none"          "none"
+                    "None"          "None (full steps, unsafe)"
                 }
+                help    "Rule the line search uses to accept a trial step. Robust Armijo (recommended) is Armijo's sufficient-decrease test made safe against roundoff near convergence. Armijo is the plain test; Backtracking only asks for any energy decrease; None takes full steps blindly and can pass through contact or diverge -- use it only for experiments."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
                 name    "armijo_c"
-                label   "c"
+                label   "Armijo c"
                 type    log
                 default { "0.0001" }
-                disablewhen "{ method != Armijo }"
-                hidewhen "{ method != Armijo }"
+                disablewhen "{ method != Armijo method != RobustArmijo }"
+                hidewhen "{ method != Armijo method != RobustArmijo }"
                 range   { 0 1 }
+                help    "Armijo constant c: a step is accepted if the energy drops by at least c times the drop predicted by the gradient. 1e-4 is the textbook value; larger is stricter."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3704,6 +3986,18 @@
                 disablewhen "{ method != RobustArmijo }"
                 hidewhen "{ method != RobustArmijo }"
                 range   { 0 1 }
+                help    "Robust Armijo: when the energy change is smaller than this fraction of the energy itself, the test switches to a gradient-based estimate that is not swamped by roundoff. 0.1 is standard."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "armijo_roundoff_tolerance"
+                label   "Roundoff Tolerance"
+                type    log
+                default { "2.220446049250313e-16" }
+                disablewhen "{ method != Armijo method != RobustArmijo }"
+                hidewhen "{ method != Armijo method != RobustArmijo }"
+                range   { 0 1e-08 }
+                help    "Roundoff floor of the energy for Armijo and Robust Armijo: if the energy change is within this fraction of (1 + |energy|), it cannot be trusted and the step is instead accepted when the gradient norm decreases. The default is machine precision (2.2e-16); 0 disables this fallback. Together with Grad Norm Tol this prevents solves from stalling on floating-point noise."
                 parmtag { "script_callback_language" "python" }
             }
         }
@@ -3715,7 +4009,7 @@
 
             parm {
                 name    "apply_gradient_fd"
-                label   "Apply Gradient FD"
+                label   "Gradient Finite-Difference Check"
                 type    ordinal
                 invisible
                 default { "0" }
@@ -3724,17 +4018,19 @@
                     "DirectionalDerivative" "Directional Derivative"
                     "FullFiniteDiff"        "Full Finite Diff"
                 }
+                help    "Debugging check: compare the analytic gradient against finite differences every iteration (Directional Derivative = one direction, cheap; Full Finite Diff = every unknown, extremely slow). Leave at None for normal runs."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
                 name    "gradient_fd_eps"
-                label   "Gradient FD EPS"
+                label   "Finite-Difference Epsilon"
                 type    log
                 invisible
                 default { "1e-07" }
                 disablewhen "{ apply_gradient_fd == None }"
                 hidewhen "{ apply_gradient_fd == None }"
                 range   { 0 0.1 }
+                help    "Step size used by the finite-difference gradient check."
                 parmtag { "script_callback_language" "python" }
             }
         }
@@ -3745,58 +4041,64 @@
 
             parm {
                 name    "labelparm2"
-                label   "Stoppage criteria"
+                label   "Stopping criteria"
                 type    label
-                default { "Stoppage criteria" }
+                default { "Stopping criteria" }
                 parmtag { "sidefx::look" "heading" }
             }
             parm {
                 name    "first_grad_norm_tol"
-                label   "1st Grad Norm Tol"
+                label   "First Gradient Norm Tolerance"
                 type    log
                 default { "1e-12" }
                 range   { 1e-20 1 }
+                help    "Skip the solve entirely when the initial gradient norm is already below this value (the state is already in equilibrium)."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
                 name    "x_delta"
-                label   "X_delta"
+                label   "X Delta Tolerance"
                 type    log
                 default { "0" }
                 range   { 1e-15 1 }
+                help    "Stop when the change of the unknowns in one iteration is smaller than this (scaled by the problem size). 0 = do not use this criterion."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
                 name    "grad_norm"
-                label   "Grad Norm"
+                label   "Gradient Norm Tolerance"
                 type    log
                 default { "1e-10" }
                 range   { 1e-20 1 }
+                help    "Main convergence criterion: stop when the gradient (residual force) norm, scaled by the problem's force scale, falls below this value. Smaller = more accurate equilibrium, more iterations; 1e-10 is tight, 1e-6 is loose."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
                 name    "max_iterations"
-                label   "Max iteration"
+                label   "Max Iterations"
                 type    intlog
                 default { "500" }
                 range   { 1 100000 }
+                help    "Hard limit on Newton iterations per solve. If it is reached without convergence the run fails (unless Allow Out of Iterations is on)."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
                 name    "iterations_per_strategy"
-                label   "iter per strategy"
+                label   "Iterations per Strategy"
                 type    intlog
                 invisible
                 default { "5" }
                 range   { 1 100000 }
+                help    "How many iterations a fallback strategy (regularized Newton, gradient descent) runs before the solver tries to return to plain Newton."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
                 name    "allow_out_of_iterations"
-                label   "Allow out of iterations"
+                label   "Allow Out of Iterations"
                 type    toggle
                 invisible
                 default { "0" }
+                help    "Continue the simulation with the best available state when Max Iterations is reached instead of stopping with an error. The result of such a step is not converged; the log records it."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3805,8 +4107,9 @@
                 type    toggle
                 invisible
                 default { "0" }
-                disablewhen "{ solver_nl != Newton }"
-                hidewhen "{ solver_nl != Newton }"
+                disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
+                hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
+                help    "Always project element Hessians to positive semi-definite, even on the first attempt. Guarantees a descent direction at the cost of slower (linear) convergence near the solution."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3815,8 +4118,9 @@
                 type    toggle
                 invisible
                 default { "1" }
-                disablewhen "{ solver_nl != Newton }"
-                hidewhen "{ solver_nl != Newton }"
+                disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
+                hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
+                help    "Allow projecting element Hessians to positive semi-definite when a plain Newton step is not a descent direction (standard IPC practice). Turning this off can make solves fail on buckling or snapping configurations."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3825,39 +4129,43 @@
                 type    toggle
                 invisible
                 default { "1" }
-                disablewhen "{ solver_nl != Newton }"
-                hidewhen "{ solver_nl != Newton }"
+                disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
+                hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
+                help    "Also project element Hessians to positive semi-definite inside the regularized-Newton fallback strategy."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
                 name    "labelparm"
-                label   "Advanced Stoppage Critera"
+                label   "Advanced stopping criteria"
                 type    label
-                default { "Advanced Stoppage criteria" }
+                default { "Advanced stopping criteria" }
                 parmtag { "sidefx::look" "heading" }
             }
             parm {
                 name    "f_delta"
-                label   "f Delta"
+                label   "f Delta Tolerance"
                 type    log
                 default { "0" }
                 range   { 0 0.1 }
+                help    "Stop when the energy changes by less than this over f Delta Step Count consecutive iterations. 0 = do not use this criterion."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
                 name    "f_delta_step_tol"
-                label   "f Delta Step Tol"
+                label   "f Delta Step Count"
                 type    intlog
                 default { "100" }
                 range   { 1 1000 }
+                help    "Number of consecutive iterations the energy change must stay below f Delta before stopping on that criterion."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
                 name    "derivative_along_delta_x_tol"
-                label   "Derivative along deltaX tol"
+                label   "Descent Direction Tolerance"
                 type    log
                 default { "1e-16" }
                 range   { 0 1e-15 }
+                help    "Stop with 'not a descent direction' when the directional derivative along the proposed step is above this negative threshold (i.e. the step would not lower the energy). The tiny default only catches genuine ascent."
                 parmtag { "script_callback_language" "python" }
             }
         }
@@ -3871,7 +4179,7 @@
                 label   "Hessian-Scaled Initial Weight"
                 type    toggle
                 default { "1" }
-                help    "Set the initial AL weight to multiplier * max|H| of the elastic Hessian at solve start so the boundary-condition penalty dominates the problem curvature."
+                help    "Set the initial penalty weight of the boundary-condition (augmented Lagrangian) phase from the elastic stiffness: multiplier times the largest Hessian entry, so the penalty dominates the problem curvature regardless of units. Recommended; otherwise a fixed Initial Weight is used."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3881,6 +4189,7 @@
                 default { "10" }
                 disablewhen "{ al_hessian_scaled == 0 }"
                 range   { 0.1 1e+06 }
+                help    "Multiplier applied to the largest elastic Hessian entry to get the initial penalty weight when Hessian-Scaled is on. 10 is a good default; raise it if boundary conditions are not being met."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3890,6 +4199,7 @@
                 default { "1e6" }
                 disablewhen "{ al_hessian_scaled == 1 }"
                 range   { 1 1e+20 }
+                help    "Fixed initial penalty weight of the boundary-condition phase (stress-like units) when Hessian-Scaled is off."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3898,6 +4208,7 @@
                 type    float
                 default { "2" }
                 range   { 0 10 }
+                help    "Factor by which the penalty weight grows each time the boundary conditions are still not satisfied (2 = doubling)."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3906,6 +4217,7 @@
                 type    log
                 default { "1e+30" }
                 range   { 1 1e+30 }
+                help    "Ceiling for the penalty weight growth; if it is reached the boundary conditions cannot be enforced more strictly."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3914,23 +4226,17 @@
                 type    float
                 default { "0.99" }
                 range   { 0 1 }
+                help    "Progress ratio: if the boundary-condition error shrinks by less than this fraction between rounds, the weight is increased instead of the Lagrange multipliers. 0.99 favors updating the multipliers."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
                 name    "al_max_iterations"
-                label   "Max Iterations"
+                label   "Max Iterations (AL Phase)"
                 type    integer
                 invisible
                 default { "500" }
                 range   { 1 1000 }
-                parmtag { "script_callback_language" "python" }
-            }
-            parm {
-                name    "force_al"
-                label   "Force?"
-                type    toggle
-                invisible
-                default { "0" }
+                help    "Newton iteration limit used during the boundary-condition (augmented Lagrangian) phase. Same as Max Iterations unless you change it."
                 parmtag { "script_callback_language" "python" }
             }
         }
@@ -3949,9 +4255,11 @@
                     type    ordinal
                     default { "0" }
                     menu {
-                        "elasticity"    "elasticity"
-                        "contact"       "contact"
+                        "elasticity"    "Elasticity"
+                        "contact"       "Contact"
+                        "friction"      "Friction"
                     }
+                    help    "Which energy this damping term acts on: the elastic deformation, the contact forces, or friction."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -3960,6 +4268,7 @@
                     type    float
                     default { "0.75" }
                     range   { 0 1 }
+                    help    "Amount of stiffness-proportional (Rayleigh) damping: the damping matrix is 0.75 * ratio * dt^3 times the stiffness matrix, which mainly damps high-frequency vibrations. 0 = none."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -3968,6 +4277,7 @@
                     type    integer
                     default { "1" }
                     range   { 0 10 }
+                    help    "Number of lagged updates per step of the damping term (it is evaluated with the previous iteration's state)."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -3999,6 +4309,7 @@
                 type    integer
                 default { "0" }
                 range   { 0 64 }
+                help    "Number of CPU threads PolyFEM may use. 0 = all available cores. Note: with more than one thread, results can differ in the last digits between runs (floating-point summation order); use 1 for bit-reproducible logs."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4007,6 +4318,7 @@
                 type    intlog
                 default { "900000" }
                 range   { 1 1e+16 }
+                help    "Maximum number of elements whose assembly values are cached between iterations. Larger uses more memory but avoids recomputation; the default suits most meshes."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4014,36 +4326,39 @@
                 label   "Lump Mass Matrix"
                 type    toggle
                 default { "0" }
+                help    "Replace the consistent mass matrix by a diagonal one (row sums). Slightly less accurate dynamics but a cheaper, better-conditioned system."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
                 name    "lagged_regularization_weight"
-                label   "Lagged Reg Weight"
+                label   "Lagged Regularization Weight"
                 type    float
                 invisible
                 default { "0" }
                 range   { 0 10 }
+                help    "Adds a small stiffness proportional to this weight to static problems that are otherwise singular (e.g. a body with no boundary conditions floating in space). 0 = off."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
                 name    "lagged_regularization_iterations"
-                label   "Lagged Reg Iterations"
+                label   "Lagged Regularization Iterations"
                 type    integer
                 invisible
                 default { "1" }
                 range   { 0 10 }
+                help    "Number of lagged updates of that regularization per solve."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
                 name    "inversion_method"
                 label   "Inversion Detection"
                 type    ordinal
-                invisible
                 default { "0" }
                 menu {
-                    "0" "Discrete"
-                    "1" "Conservative"
+                    "Discrete"      "Discrete (sample points)"
+                    "Conservative"  "Conservative (exact, needs MISO build)"
                 }
+                help    "How PolyFEM checks that no element turns inside-out. Discrete tests the element Jacobians at sample points and is what this build uses; Conservative uses an exact continuous check but requires a PolyFEM build with the MISO library (otherwise Discrete is used with a warning)."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4053,6 +4368,7 @@
                 invisible
                 default { "0" }
                 range   { 0 10 }
+                help    "Elements whose Jacobian determinant falls below this value are treated as inverted (0 = only truly flipped elements). Raise it to reject nearly degenerate elements earlier."
                 parmtag { "script_callback_language" "python" }
             }
         }
@@ -4081,6 +4397,7 @@
                     "critical"  "critical"
                     "off"       "off"
                 }
+                help    "How much PolyFEM prints: trace and debug show every solver iteration (large logs, useful for diagnosing contact problems); info shows per-step progress; warning/error only report problems."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4088,6 +4405,7 @@
                 label   "Save Log"
                 type    toggle
                 default { "0" }
+                help    "Also write the log to <working_dir>/output/log.txt (always on for background runs)."
                 parmtag { "filechooser_mode" "write" }
                 parmtag { "script_callback_language" "python" }
             }
@@ -4096,6 +4414,7 @@
                 label   "Quiet"
                 type    toggle
                 default { "0" }
+                help    "Suppress console output entirely; combine with Save Log to keep a file."
                 parmtag { "script_callback_language" "python" }
             }
         }
@@ -4109,6 +4428,7 @@
                 label   "Output JSON"
                 type    toggle
                 default { "0" }
+                help    "Write output/output.json with per-run statistics (timings, iteration counts, errors) that other tools can parse."
                 parmtag { "filechooser_mode" "write" }
                 parmtag { "script_callback_language" "python" }
             }
@@ -4117,6 +4437,7 @@
                 label   "Restart JSON"
                 type    toggle
                 default { "0" }
+                help    "Write output/restart.json after each step: a small JSON describing the last completed state (time, file index, remesh limits) that can be merged with params.json to continue a run. Restarting also needs the State and Rest Mesh data files."
                 parmtag { "filechooser_mode" "write" }
                 parmtag { "script_callback_language" "python" }
             }
@@ -4131,6 +4452,7 @@
                 label   "File Name"
                 type    string
                 default { "sim.pvd" }
+                help    "Name of the ParaView collection file written in output/ (each step is a .vtu referenced from it). Load this file with the Read PVD node."
                 parmtag { "filechooser_mode" "write" }
                 parmtag { "script_callback_language" "python" }
             }
@@ -4140,6 +4462,7 @@
                 type    log
                 default { "1e-05" }
                 range   { 1e-10 1 }
+                help    "Resolution of the visualization mesh for higher-order elements, as a relative area: smaller values subdivide curved elements more finely for display (more, larger files). Has no effect on the solve."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4148,6 +4471,7 @@
                 type    integer
                 default { "1" }
                 range   { 0 10 }
+                help    "Write every Nth time step to the ParaView output (1 = every step, 2 = every other step). Reduces output size for long runs."
                 parmtag { "script_callback_language" "python" }
             }
             groupcollapsible {
@@ -4159,6 +4483,7 @@
                     label   "Use HDF5"
                     type    toggle
                     default { "0" }
+                    help    "Write the ParaView data in HDF5 format instead of XML .vtu (smaller for large meshes). The Read PVD node expects .vtu, so leave this off for the Houdini workflow."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -4166,6 +4491,7 @@
                     label   "Material"
                     type    toggle
                     default { "0" }
+                    help    "Export the material parameter fields (E, nu, fiber directions, dispersion ...) with the results. Turning this on disables Minimal Fields, because material array names cannot be whitelisted in advance."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -4173,23 +4499,7 @@
                     label   "Body IDs"
                     type    toggle
                     default { "0" }
-                    parmtag { "script_callback_language" "python" }
-                }
-                parm {
-                    name    "traction_force_fields"
-                    label   "Traction Force"
-                    type    toggle
-                    invisible
-                    default { "0" }
-                    parmtag { "script_callback_language" "python" }
-                }
-                parm {
-                    name    "pressure_fields"
-                    label   "Pressure"
-                    type    toggle
-                    invisible
-                    default { "0" }
-                    parmtag { "export_disable" "1" }
+                    help    "Export each element's body id, so the Read PVD node can show or hide individual bodies."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -4197,6 +4507,7 @@
                     label   "Discretization Order"
                     type    toggle
                     default { "1" }
+                    help    "Export the polynomial order of each element."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -4204,6 +4515,7 @@
                     label   "Force High Order"
                     type    toggle
                     default { "0" }
+                    help    "Force writing of the high-order mesh even for output types where PolyFEM would normally refuse (may break the output; leave off)."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -4211,7 +4523,7 @@
                     label   "Minimal Fields (derive in readPVD)"
                     type    toggle
                     default { "1" }
-                    help    "Export only the derivation basis (solution, F, Cauchy stress) plus enabled force/surface arrays. Von Mises, PK1/PK2, and the *_avg variants are omitted; the readPVD HDA derives them on load. Disable to write every field like upstream."
+                    help    "Export only what the Read PVD node needs to derive everything else (displacement, deformation gradient F, Cauchy stress) plus the surface/force arrays you enable. Von Mises, PK1/PK2 and the *_avg variants are skipped, making files much smaller and faster to write; Read PVD computes them on load. Turn off to write every field like upstream PolyFEM."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -4220,6 +4532,7 @@
                     type    toggle
                     default { "1" }
                     disablewhen "{ minimal_fields == 1 }"
+                    help    "Export scalar result fields such as von Mises stress (ignored under Minimal Fields, which derives them later)."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -4228,6 +4541,7 @@
                     type    toggle
                     default { "1" }
                     disablewhen "{ minimal_fields == 1 }"
+                    help    "Export tensor result fields such as the deformation gradient and Cauchy stress (always exported under Minimal Fields)."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -4236,6 +4550,7 @@
                     type    toggle
                     invisible
                     default { "1" }
+                    help    "Write higher-order elements as curved cells so ParaView/Read PVD can show their curvature. Only for isoparametric or linear meshes with higher-order solutions."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -4243,6 +4558,7 @@
                     label   "Wireframe"
                     type    toggle
                     default { "0" }
+                    help    "Also write a wireframe (edge) block of the mesh."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -4250,6 +4566,7 @@
                     label   "Points"
                     type    toggle
                     default { "0" }
+                    help    "Also write the FEM nodes as a separate points block (turned on automatically by Jacobian Validity)."
                     parmtag { "script_callback_language" "python" }
                 }
                 group {
@@ -4262,6 +4579,7 @@
                         type    toggle
                         invisible
                         default { "0" }
+                        help    "Run a robust check of every deformed element's Jacobian and mark inverted (flipped) elements in the output. Costs extra time per saved step."
                         parmtag { "export_disable" "1" }
                         parmtag { "script_callback_language" "python" }
                     }
@@ -4270,6 +4588,7 @@
                         label   "Velocity"
                         type    toggle
                         default { "0" }
+                        help    "Export the nodal velocity (dynamic runs)."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -4277,6 +4596,7 @@
                         label   "Nodes"
                         type    toggle
                         default { "1" }
+                        help    "Export the FEM node positions as a field."
                         parmtag { "export_disable" "1" }
                         parmtag { "script_callback_language" "python" }
                     }
@@ -4285,6 +4605,7 @@
                         label   "Acceleration"
                         type    toggle
                         default { "0" }
+                        help    "Export the nodal acceleration (dynamic runs)."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -4292,6 +4613,7 @@
                         label   "Forces"
                         type    toggle
                         default { "0" }
+                        help    "Export the nodal force vectors of the elastic, inertia and external terms."
                         parmtag { "export_disable" "1" }
                         parmtag { "script_callback_language" "python" }
                     }
@@ -4306,6 +4628,7 @@
                         label   "Normals"
                         type    toggle
                         default { "0" }
+                        help    "Export the surface normals of the boundary mesh (both reference and displaced normals)."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -4313,6 +4636,7 @@
                         label   "Displaced Normals"
                         type    toggle
                         default { "0" }
+                        help    "Export the normals of the deformed boundary surface (already included when Normals is on)."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -4320,6 +4644,7 @@
                         label   "Sidesets"
                         type    toggle
                         default { "0" }
+                        help    "Export the sideset (boundary id) of every surface face, so Read PVD can show which faces carry boundary conditions."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -4327,6 +4652,7 @@
                         label   "Solution Gradient"
                         type    toggle
                         default { "0" }
+                        help    "Export the gradient of the displacement on the surface block."
                         parmtag { "export_disable" "1" }
                         parmtag { "script_callback_language" "python" }
                     }
@@ -4341,6 +4667,7 @@
                         label   "Contact Forces"
                         type    toggle
                         default { "0" }
+                        help    "Export the contact (barrier) force on every surface node into the Contact block -- the field to inspect when validating contact behavior."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -4348,6 +4675,7 @@
                         label   "Adaptive dhat"
                         type    toggle
                         default { "0" }
+                        help    "Export the local barrier activation distance used with adaptive dhat."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -4355,6 +4683,7 @@
                         label   "Friction Forces"
                         type    toggle
                         default { "0" }
+                        help    "Export the friction force on every surface node into the Contact block."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -4362,6 +4691,7 @@
                         label   "Normal Adhesion Forces"
                         type    toggle
                         default { "0" }
+                        help    "Export the normal adhesion force on every surface node."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -4369,6 +4699,7 @@
                         label   "Tangential Adhesion Forces"
                         type    toggle
                         default { "0" }
+                        help    "Export the tangential adhesion force on every surface node."
                         parmtag { "export_disable" "1" }
                         parmtag { "script_callback_language" "python" }
                     }
@@ -4383,6 +4714,7 @@
                         label   "Solution"
                         type    toggle
                         default { "0" }
+                        help    "Also write the raw displacement vector to output/solution.txt (one number per line)."
                         parmtag { "filechooser_mode" "write" }
                         parmtag { "script_callback_language" "python" }
                     }
@@ -4391,6 +4723,7 @@
                         label   "Stress"
                         type    toggle
                         default { "0" }
+                        help    "Also write the stress tensors to output/stress_mat.txt."
                         parmtag { "filechooser_mode" "write" }
                         parmtag { "script_callback_language" "python" }
                     }
@@ -4399,6 +4732,7 @@
                         label   "State"
                         type    toggle
                         default { "0" }
+                        help    "Write the complete solver state to output/state (PolyFEM's state format, used to restart a run)."
                         parmtag { "filechooser_mode" "write" }
                         parmtag { "script_callback_language" "python" }
                     }
@@ -4407,6 +4741,7 @@
                         label   "Rest Mesh (.msh file)"
                         type    toggle
                         default { "0" }
+                        help    "Write the rest (undeformed, possibly remeshed) mesh to output/rest_mesh.msh; needed to restart remeshing runs."
                         parmtag { "filechooser_mode" "write" }
                         parmtag { "script_callback_language" "python" }
                     }
@@ -4415,6 +4750,7 @@
                         label   "von Mises"
                         type    toggle
                         default { "0" }
+                        help    "Also write per-node von Mises stress to output/mises.txt."
                         parmtag { "filechooser_mode" "write" }
                         parmtag { "script_callback_language" "python" }
                     }
@@ -4423,6 +4759,7 @@
                         label   "nodes"
                         type    toggle
                         default { "0" }
+                        help    "Also write the FEM node coordinates to output/nodes.txt."
                         parmtag { "filechooser_mode" "write" }
                         parmtag { "script_callback_language" "python" }
                     }
@@ -4441,6 +4778,7 @@
                 label   "Timestep Prefix"
                 type    string
                 default { "step_" }
+                help    "Prefix of the per-step result files (step_0.vtu, step_1.vtu, ...). Change only if another tool expects different names."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4449,6 +4787,7 @@
                 type    float
                 default { "-1" }
                 range   { 0 10 }
+                help    "Also sample the solution on a regular grid with this spacing (length units) and write it out. -1 = off."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4456,6 +4795,7 @@
                 label   "compute_error"
                 type    toggle
                 default { "1" }
+                help    "Compute and log error norms of the solution (against an exact solution when the problem has one, otherwise reference norms). Cheap; leave on."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4464,6 +4804,7 @@
                 type    integer
                 default { "-1" }
                 range   { 0 10 }
+                help    "Write the solution value at this node index into the output JSON. -1 = off."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4471,6 +4812,7 @@
                 label   "vis_boundary_only"
                 type    toggle
                 default { "0" }
+                help    "Write only the elements touching the boundary to the visualization output (smaller files; interior elements are omitted)."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4478,6 +4820,7 @@
                 label   "curved_mesh_size"
                 type    toggle
                 default { "0" }
+                help    "When computing the mesh size for curved (higher-order) meshes, upsample the curved edges for a more accurate measure."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4485,6 +4828,7 @@
                 label   "save_solve_sequence_debug"
                 type    toggle
                 default { "0" }
+                help    "Save the intermediate states of the boundary-condition (augmented Lagrangian) phase for debugging. Produces many files."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4492,6 +4836,7 @@
                 label   "save_ccd_debug_meshes"
                 type    toggle
                 default { "0" }
+                help    "Save the meshes handed to continuous collision detection whenever it limits a step, for debugging contact problems. Produces many files."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4499,6 +4844,7 @@
                 label   "save_time_sequence"
                 type    toggle
                 default { "1" }
+                help    "Write a result file for every saved time step (on) or only the final state (off)."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4506,6 +4852,7 @@
                 label   "save_nl_solve_sequence"
                 type    toggle
                 default { "0" }
+                help    "Save the state after every Newton iteration for debugging. Produces many files and slows the run."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4513,23 +4860,11 @@
                 label   "spectrum"
                 type    toggle
                 default { "0" }
+                help    "Compute and record the eigenvalue spectrum of the system matrix in the output JSON (only in builds with Spectra; expensive)."
                 parmtag { "script_callback_language" "python" }
             }
         }
 
-        group {
-            name    "folder1_4"
-            label   "Restart?"
-
-            parm {
-                name    "restart_input"
-                label   "Restart?"
-                type    toggle
-                default { "0" }
-                parmtag { "filechooser_mode" "read" }
-                parmtag { "script_callback_language" "python" }
-            }
-        }
 
         group {
             name    "folder1_5"
@@ -4540,6 +4875,7 @@
                 label   "Input Directory"
                 type    directory
                 default { "" }
+                help    "Folder of a previous simulation (its root or its input/ folder) whose params.json you want to load into this node. Older PolyFEM files are converted as far as possible."
                 parmtag { "filechooser_mode" "read" }
                 parmtag { "filechooser_pattern" "" }
                 parmtag { "script_callback_language" "python" }
@@ -4549,6 +4885,7 @@
                 label   "Import"
                 type    button
                 default { "0" }
+                help    "Read the params.json found in Input Directory and set this node's parameters from it. Geometry, transforms, materials, time, contact and solver settings are restored; anything that could not be mapped is listed in the Import Report."
                 parmtag { "export_disable" "1" }
                 parmtag { "script_callback" "hou.pwd().hm().read_params(kwargs)" }
                 parmtag { "script_callback_language" "python" }
@@ -4566,6 +4903,7 @@
                 type    string
                 default { "No parameter folder has been imported." }
                 disablewhen "{ old_input_dir != __polyfem_report_edit_sentinel__ }"
+                help    "Notes from the last import: values that were converted, dropped or could not be reconstructed. Read-only."
                 parmtag { "editor" "1" }
                 parmtag { "sidefx::look" "block" }
             }

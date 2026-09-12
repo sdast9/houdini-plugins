@@ -60,20 +60,25 @@ def build(out_dir):
         string_type=hou.stringParmType.FileReference,
         file_type=hou.fileType.Geometry,
         tags={"filechooser_pattern": "*.msh"},
-        help="Gmsh .msh file (v2.2 or v4.1, ASCII or binary; fTetWild "
-             "output in any mode). Parsed natively with numpy; no gmsh "
-             "installation required.")
+        help="The Gmsh mesh file to load (.msh version 2.2 or 4.1, text or "
+             "binary, including fTetWild output). Nothing needs to be "
+             "installed: the file is read directly. Tetrahedra/hexahedra "
+             "become Houdini primitives, and the file's physical groups "
+             "become the 'Entity' attribute that the PolyFEM node uses as "
+             "subdomains.")
     reload_parm = hou.ButtonParmTemplate(
         "reload", "Reload",
         script_callback="hou.phm().reload(kwargs)",
         script_callback_language=hou.scriptLanguage.Python,
-        help="Re-read the file from disk.")
+        help="Read the file again, e.g. after regenerating the mesh with "
+             "the same name.")
     surf_parm = hou.ToggleParmTemplate(
         "import_surfaces", "Import Physical Surfaces", default_value=False,
-        help="For 3D meshes, also import 2D physical groups "
-             "(gmsh-authored sidesets) as polygons with a surface_entity "
-             "attribute. Triangles and quads are always imported as primary "
-             "elements for 2D meshes.")
+        help="For a 3D mesh, also load any 2D physical groups (surface "
+             "patches you tagged in Gmsh, e.g. for boundary conditions) as "
+             "polygons carrying a 'surface_entity' attribute, so you can see "
+             "and select them in Houdini. 2D meshes always load their "
+             "triangles/quads as the main elements.")
     ptg.append(file_parm)
     ptg.append(reload_parm)
     ptg.append(surf_parm)

@@ -291,6 +291,46 @@ Targets the current build's strict-validated schema — the old fork keys
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
 
+### Solver wiring, new contact controls and tooltips (2026-09-11)
+
+* **Every parameter now has a tooltip** written for a first-time user (what the
+  control does, when to change it, units and typical values) on all three
+  assets — 336 controls on PolyFEM 2.0, 133 on readPVD 1.0, 3 on MSH Reader
+  3.0. Houdini's stock Transform/Render/Misc object parameters keep Houdini's
+  own documentation.
+* **The Solver folder is fully wired.** The linear solver (Automatic default,
+  direct/iterative choice, preconditioner, per-solver iterations/tolerance,
+  Pardiso matrix type, Hypre and AMGCL settings), the nonlinear method
+  (Newton/Dense Newton regularization and PSD toggles, L-BFGS history, ADAM,
+  stochastic erase probability), iterations per strategy, allow-out-of-
+  iterations, the finite-difference gradient check, lagged regularization,
+  inversion detection and the Jacobian threshold are now exported to
+  `params.json` and restored on import. Previously these controls existed in
+  the UI but were never read; they also carried invalid defaults
+  (`residual_tolerance` 1e200, regularization weights −1) that were replaced
+  by the PolyFEM spec defaults, so an untouched scene exports the same run as
+  before. The AL folder's *Max Iterations* maps to the AL phase's own
+  `nonlinear.max_iterations`. The line-search menu lost `ArmijoAlt` and
+  `MoreThuente`, which this PolyFEM rejects; imports of old files map them to
+  Armijo/Backtracking with a note.
+* **New semi-implicit controls** (Contact ▸ Barrier ▸ Semi-Implicit Options):
+  *Force Continuation* (default on) carries each contact's stiffness across
+  steps so contact forces are continuous at step boundaries; *Continuation Max
+  Ratio*; *Coefficient Identity* (parent candidate vs. historical stencil);
+  *Trial Displacement Cap*; *Minimum Contact Stiffness*; and the stall
+  restart's *Min Iterations* and *Stall Trim Factor*. The line search gained
+  *Roundoff Tolerance* (PolySolve's energy-roundoff fallback). Rayleigh damping
+  can now target friction.
+* **Removed four dead controls** that had no PolyFEM key in this fork:
+  `Force?` (AL), the `Traction Force` and `Pressure` output toggles, and the
+  `Restart?` toggle (restart-from-state is not implemented for the elastic
+  form; *Restart JSON* output remains). A duplicate PSD-projection toggle in
+  the Solver folder was merged into the one under Nonlinear Settings.
+  *Displaced Normals* is now honored on its own (before it only came along
+  with *Normals*).
+* Validation: the 13 HDA test scripts pass, including the end-to-end run of
+  the real `PolyFEM_bin` with the fully exported solver block.
+
 ### Constraint floor retired (2026-09-07)
 
 The Constraint Floor control and JSON export have been removed. Old saved/spare

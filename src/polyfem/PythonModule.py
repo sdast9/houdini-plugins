@@ -2723,10 +2723,64 @@ def build_space(parent, data, orders):
     data["space"] = space
 
 
-def build_solver(parent, data):
-    ls_method_dict = {0: "Armijo", 1: "ArmijoAlt", 2: "RobustArmijo",
-                      3: "Backtracking", 4: "MoreThuente", 5: "None"}
-    ls = {"method": ls_method_dict[parent.evalParm("method")],
+def _menu_token(parent, name):
+    """Token string of an ordinal menu parameter (evalParm gives the index)."""
+    return parent.parm(name).evalAsString()
+
+
+def build_linear_solver(parent):
+    """The /solver/linear block: only what the chosen solver actually reads.
+
+    "auto" leaves the choice to PolyFEM/PolySolve (the best direct solver
+    compiled into the binary), which is what every scene got before the
+    linear settings were wired at all.
+    """
+    solver = _menu_token(parent, "solver")
+    if solver == "auto":
+        return None
+    linear = {"solver": solver}
+    iterative_eigen = ("Eigen::ConjugateGradient",
+                       "Eigen::LeastSquaresConjugateGradient", "Eigen::DGMRES",
+                       "Eigen::BiCGSTAB", "Eigen::GMRES", "Eigen::MINRES")
+    if solver in iterative_eigen:
+        linear["precond"] = _menu_token(parent, "precond")
+        linear[solver] = {"max_iter": parent.evalParm("max_iter"),
+                          "tolerance": parent.evalParm("tolerance")}
+    elif solver == "Pardiso":
+        linear["Pardiso"] = {"mtype": int(_menu_token(parent, "mtype"))}
+    elif solver == "Hypre":
+        linear["Hypre"] = {
+            "max_iter": parent.evalParm("max_iter_hypre"),
+            "pre_max_iter": parent.evalParm("pre_max_iter_hypre"),
+            "tolerance": parent.evalParm("tolerance_hypre_AMGCL")}
+    elif solver == "AMGCL":
+        linear["AMGCL"] = {
+            "solver": {"maxiter": parent.evalParm("max_iter"),
+                       "tol": parent.evalParm("tolerance_hypre_AMGCL"),
+                       "type": _menu_token(parent, "solver_type")},
+            "precond": {
+                "class": _menu_token(parent, "class"),
+                "max_levels": parent.evalParm("max_levels"),
+                "direct_coarse": bool(parent.evalParm("direct_coarse")),
+                "ncycle": parent.evalParm("ncycle"),
+                "relax": {"degree": parent.evalParm("degree"),
+                          "type": _menu_token(parent, "relax_type"),
+                          "power_iters": parent.evalParm("power_iters"),
+                          "higher": parent.evalParm("higher"),
+                          "lower": parent.evalParm("lower"),
+                          "scale": bool(parent.evalParm("scale_amgcl"))},
+                "coarsening": {
+                    "type": _menu_token(parent, "coarsening_type"),
+                    "estimate_spectral_radius":
+                        bool(parent.evalParm("estimate_spectral_radius")),
+                    "relax": parent.evalParm("coarse_relax"),
+                    "aggr": {"eps_strong": parent.evalParm("eps_strong")}}}}
+    return linear
+
+
+def build_nonlinear_solver(parent):
+    """The /solver/nonlinear block (rescaled-tolerances polysolve spec)."""
+    ls = {"method": _menu_token(parent, "method"),
           "use_grad_norm_tol": parent.evalParm("use_grad_norm_tol"),
           "min_step_size": parent.evalParm("min_step_size"),
           "max_step_size_iter": parent.evalParm("max_step_size_iter"),
@@ -2734,14 +2788,19 @@ def build_solver(parent, data):
           "max_step_size_iter_final": parent.evalParm("max_step_size_iter_final"),
           "default_init_step_size": parent.evalParm("default_init_step_size"),
           "step_ratio": parent.evalParm("step_ratio"),
-          "Armijo": {"c": parent.evalParm("armijo_c")},
+          "Armijo": {"c": parent.evalParm("armijo_c"),
+                     "roundoff_tolerance":
+                         parent.evalParm("armijo_roundoff_tolerance")},
           "RobustArmijo": {"delta_relative_tolerance":
                            parent.evalParm("delta_relative_tolerance")}}
 
-    # tolerance names follow the rescaled-tolerances polysolve spec
+    method = _menu_token(parent, "solver_nl")
     nonlinear = {
-        "solver": "Newton",
+        "solver": method,
         "max_iterations": parent.evalParm("max_iterations"),
+        "iterations_per_strategy": parent.evalParm("iterations_per_strategy"),
+        "allow_out_of_iterations":
+            bool(parent.evalParm("allow_out_of_iterations")),
         "x_delta_tol": parent.evalParm("x_delta"),
         "grad_norm_tol": parent.evalParm("grad_norm"),
         "first_grad_norm_tol": parent.evalParm("first_grad_norm_tol"),
@@ -2749,7 +2808,41 @@ def build_solver(parent, data):
         "advanced": {"f_delta_tol": parent.evalParm("f_delta"),
                      "f_delta_step_tol": parent.evalParm("f_delta_step_tol"),
                      "derivative_along_delta_x_tol":
-                         parent.evalParm("derivative_along_delta_x_tol")}}
+                         parent.evalParm("derivative_along_delta_x_tol"),
+                     "apply_gradient_fd":
+                         _menu_token(parent, "apply_gradient_fd"),
+                     "gradient_fd_eps": parent.evalParm("gradient_fd_eps")}}
+    # Per-method settings: written only for the chosen method so the file
+    # says exactly what the run used.
+    if method in ("Newton", "DenseNewton"):
+        nonlinear[method] = {
+            "residual_tolerance": parent.evalParm("residual_tolerance"),
+            "reg_weight_min": parent.evalParm("reg_weight_min"),
+            "reg_weight_max": parent.evalParm("reg_weight_max"),
+            "reg_weight_inc": parent.evalParm("reg_weight_inc"),
+            "force_psd_projection":
+                bool(parent.evalParm("force_psd_projection")),
+            "use_psd_projection": bool(parent.evalParm("use_psd_projection")),
+            "use_psd_projection_in_regularized":
+                bool(parent.evalParm("use_psd_projection_reg"))}
+    elif method in ("L-BFGS", "L-BFGS-B"):
+        nonlinear[method] = {"history_size": parent.evalParm("history_size")}
+    elif method in ("ADAM", "StochasticADAM"):
+        nonlinear[method] = {"alpha": parent.evalParm("adam_alpha"),
+                             "beta_1": parent.evalParm("adam_beta1"),
+                             "beta_2": parent.evalParm("adam_beta2"),
+                             "epsilon": parent.evalParm("adam_epsilon")}
+        if method == "StochasticADAM":
+            nonlinear[method]["erase_component_probability"] = \
+                parent.evalParm("erase_component_probability")
+    elif method == "StochasticGradientDescent":
+        nonlinear[method] = {"erase_component_probability":
+                             parent.evalParm("erase_component_probability")}
+    return nonlinear
+
+
+def build_solver(parent, data):
+    nonlinear = build_nonlinear_solver(parent)
 
     # augmented lagrangian (un-hardcoded vs 1.2)
     if parent.evalParm("al_hessian_scaled"):
@@ -2761,6 +2854,11 @@ def build_solver(parent, data):
     al.update({"scaling": parent.evalParm("al_scaling"),
                "max_weight": parent.evalParm("al_max_weight"),
                "eta": parent.evalParm("al_eta")})
+    # The AL (boundary-condition preparation) phase reuses the nonlinear
+    # settings with its own iteration budget.
+    if parent.evalParm("al_max_iterations") != nonlinear["max_iterations"]:
+        al["nonlinear"] = {
+            "max_iterations": parent.evalParm("al_max_iterations")}
 
     # contact solver block -- current-branch schema
     broad_phase_dict = {0: "hash_grid", 1: "brute_force", 2: "spatial_hash",
@@ -2784,15 +2882,27 @@ def build_solver(parent, data):
             "trim_upper": parent.evalParm("si_trim_upper"),
             "trim_factor": parent.evalParm("si_trim_factor"),
             "kappa_spread": parent.evalParm("si_kappa_spread"),
+            "kappa_min": parent.evalParm("si_kappa_min"),
             "conditioning_cap": parent.evalParm("si_conditioning_cap"),
             "controller_interval": parent.evalParm("si_controller_interval"),
+            "trial_displacement_cap":
+                parent.evalParm("si_trial_displacement_cap"),
+            "force_continuation":
+                bool(parent.evalParm("si_force_continuation")),
+            "continuation_max_ratio":
+                parent.evalParm("si_continuation_max_ratio"),
+            "coefficient_identity":
+                _menu_token(parent, "si_coefficient_identity"),
             "restart": {
                 "enabled": bool(parent.evalParm("si_restart_enabled")),
                 "alpha_threshold": parent.evalParm("si_alpha_threshold"),
                 "patience": parent.evalParm("si_patience"),
+                "min_iterations": parent.evalParm("si_min_iterations"),
                 "soft_iteration_limit":
                     parent.evalParm("si_soft_iteration_limit"),
-                "max_restarts": parent.evalParm("si_max_restarts")}}
+                "max_restarts": parent.evalParm("si_max_restarts"),
+                "stall_trim_factor":
+                    parent.evalParm("si_stall_trim_factor")}}
     elif barrier_mode == 1:  # classic adaptive
         contact["barrier_stiffness"] = "adaptive"
         contact["initial_barrier_stiffness"] = \
@@ -2815,7 +2925,17 @@ def build_solver(parent, data):
               "advanced": {
                   "cache_size": parent.evalParm("cache_size"),
                   "lump_mass_matrix":
-                      bool(parent.evalParm("lump_mass_matrix"))}}
+                      bool(parent.evalParm("lump_mass_matrix")),
+                  "lagged_regularization_weight":
+                      parent.evalParm("lagged_regularization_weight"),
+                  "lagged_regularization_iterations":
+                      parent.evalParm("lagged_regularization_iterations"),
+                  "check_inversion": _menu_token(parent, "inversion_method"),
+                  "jacobian_threshold":
+                      parent.evalParm("jacobian_threshold")}}
+    linear = build_linear_solver(parent)
+    if linear is not None:
+        solver["linear"] = linear
     if rayleigh:
         solver["rayleigh_damping"] = rayleigh
     data["solver"] = solver
@@ -2829,7 +2949,8 @@ def build_output(parent, data):
     friction_forces = b("friction_forces_fields")
     normal_adh = b("normal_adhesion_forces_fields")
     tang_adh = b("tangential_adhesion_forces_fields")
-    surface = (b("normals_fields") or b("sidesets_fields")
+    surface = (b("normals_fields") or b("displaced_normals_fields")
+               or b("sidesets_fields")
                or b("solution_grad_fields") or contact_forces
                or friction_forces or normal_adh or tang_adh
                or b("adaptive_dhat"))
@@ -2854,6 +2975,8 @@ def build_output(parent, data):
             export_fields += ["F", "cauchy_stess"]  # [sic] PolyFEM spelling
         if b("normals_fields"):
             export_fields += ["normals", "displaced_normals"]
+        elif b("displaced_normals_fields"):
+            export_fields.append("displaced_normals")
         if b("sidesets_fields"):
             export_fields.append("sidesets")
         if b("solution_grad_fields"):
@@ -3950,34 +4073,90 @@ def _restore_solver(parent, data, legacy, warnings):
                 "Newton", "DenseNewton", "GradientDescent", "ADAM",
                 "StochasticADAM", "StochasticGradientDescent", "L-BFGS",
                 "BFGS", "L-BFGS-B", "MMA"))}
+        if isinstance(nonlinear_type, list):
+            # polysolve also accepts an explicit strategy list; the UI holds
+            # the single method, so take the first entry's type.
+            first = nonlinear_type[0] if nonlinear_type else {}
+            nonlinear_type = first.get("type", "Newton") \
+                if isinstance(first, dict) else "Newton"
+            warnings.append(
+                "solver.nonlinear.solver was a strategy list; only its first "
+                "method was restored.")
         if nonlinear_type in nonlinear_types \
                 and parent.parm("solver_nl") is not None:
             parms["solver_nl"] = nonlinear_types[nonlinear_type]
-        if nonlinear_type != "Newton":
+        elif nonlinear_type not in nonlinear_types:
             warnings.append(
-                f"Nonlinear solver '{nonlinear_type}' was restored in the UI, "
-                "but the current HDA exporter supports Newton only.")
+                f"Nonlinear solver '{nonlinear_type}' is not offered by the "
+                "HDA; Newton was kept.")
+        # Per-method blocks: read whichever the file carries into the shared
+        # UI parameters (Newton/DenseNewton, L-BFGS variants, ADAM variants).
+        for block in ("Newton", "DenseNewton"):
+            newton = nonlinear.get(block, {})
+            if isinstance(newton, dict):
+                for key, parm in (
+                        ("residual_tolerance", "residual_tolerance"),
+                        ("reg_weight_min", "reg_weight_min"),
+                        ("reg_weight_max", "reg_weight_max"),
+                        ("reg_weight_inc", "reg_weight_inc"),
+                        ("force_psd_projection", "force_psd_projection"),
+                        ("use_psd_projection", "use_psd_projection"),
+                        ("use_psd_projection_in_regularized",
+                         "use_psd_projection_reg")):
+                    if key in newton:
+                        parms[parm] = newton[key]
+        for block in ("L-BFGS", "L-BFGS-B"):
+            lbfgs = nonlinear.get(block, {})
+            if isinstance(lbfgs, dict) and "history_size" in lbfgs:
+                parms["history_size"] = lbfgs["history_size"]
+        for block in ("ADAM", "StochasticADAM"):
+            adam = nonlinear.get(block, {})
+            if isinstance(adam, dict):
+                for key, parm in (("alpha", "adam_alpha"),
+                                  ("beta_1", "adam_beta1"),
+                                  ("beta_2", "adam_beta2"),
+                                  ("epsilon", "adam_epsilon"),
+                                  ("erase_component_probability",
+                                   "erase_component_probability")):
+                    if key in adam:
+                        parms[parm] = adam[key]
+        sgd = nonlinear.get("StochasticGradientDescent", {})
+        if isinstance(sgd, dict) and "erase_component_probability" in sgd:
+            parms["erase_component_probability"] = \
+                sgd["erase_component_probability"]
         advanced = nonlinear.get("advanced", {})
         if isinstance(advanced, dict):
             for keys, parm in (
                     (("f_delta_tol", "f_delta"), "f_delta"),
                     (("f_delta_step_tol",), "f_delta_step_tol"),
                     (("derivative_along_delta_x_tol",),
-                     "derivative_along_delta_x_tol")):
+                     "derivative_along_delta_x_tol"),
+                    (("gradient_fd_eps",), "gradient_fd_eps")):
                 key = next(
                     (candidate for candidate in keys if candidate in advanced),
                     None)
                 if key is not None:
                     parms[parm] = advanced[key]
+            fd_modes = {name: index for index, name in enumerate((
+                "None", "DirectionalDerivative", "FullFiniteDiff"))}
+            if advanced.get("apply_gradient_fd") in fd_modes:
+                parms["apply_gradient_fd"] = \
+                    fd_modes[advanced["apply_gradient_fd"]]
         line_search = nonlinear.get("line_search", {})
         if isinstance(line_search, dict):
             methods = {
                 name: index for index, name in enumerate((
-                    "Armijo", "ArmijoAlt", "RobustArmijo", "Backtracking",
-                    "MoreThuente", "None"))}
+                    "Armijo", "RobustArmijo", "Backtracking", "None"))}
             method = line_search.get("method")
             if method == "none":
                 method = "None"
+            aliases = {"ArmijoAlt": "Armijo", "MoreThuente": "Backtracking",
+                       "ResidualBacktracking": "Backtracking"}
+            if method in aliases:
+                warnings.append(
+                    f"Line search '{method}' is not available in this "
+                    f"PolyFEM; '{aliases[method]}' was restored instead.")
+                method = aliases[method]
             if method in methods:
                 parms["method"] = methods[method]
             for key, parm in (
@@ -3994,6 +4173,8 @@ def _restore_solver(parent, data, legacy, warnings):
             robust = line_search.get("RobustArmijo", {})
             if isinstance(armijo, dict) and "c" in armijo:
                 parms["armijo_c"] = armijo["c"]
+            if isinstance(armijo, dict) and "roundoff_tolerance" in armijo:
+                parms["armijo_roundoff_tolerance"] = armijo["roundoff_tolerance"]
             if isinstance(robust, dict) \
                     and "delta_relative_tolerance" in robust:
                 parms["delta_relative_tolerance"] = \
@@ -4033,19 +4214,35 @@ def _restore_solver(parent, data, legacy, warnings):
                         ("trim_upper", "si_trim_upper"),
                         ("trim_factor", "si_trim_factor"),
                         ("kappa_spread", "si_kappa_spread"),
+                        ("kappa_min", "si_kappa_min"),
                         ("refresh_interval", "si_refresh_interval"),
                         ("conditioning_cap", "si_conditioning_cap"),
-                        ("controller_interval", "si_controller_interval")):
+                        ("controller_interval", "si_controller_interval"),
+                        ("trial_displacement_cap",
+                         "si_trial_displacement_cap"),
+                        ("force_continuation", "si_force_continuation"),
+                        ("continuation_max_ratio",
+                         "si_continuation_max_ratio")):
                     if key in semi:
                         parms[parm] = semi[key]
+                identities = {"parent": 0, "stencil": 1}
+                if semi.get("coefficient_identity") in identities:
+                    parms["si_coefficient_identity"] = \
+                        identities[semi["coefficient_identity"]]
+                if semi.get("gap_floor", 0) != 0:
+                    warnings.append(
+                        "gap_floor is experimental and not exposed by the "
+                        "HDA; it was dropped on import.")
                 restart = semi.get("restart", {})
                 if isinstance(restart, dict):
                     for key, parm in (
                             ("enabled", "si_restart_enabled"),
                             ("alpha_threshold", "si_alpha_threshold"),
                             ("patience", "si_patience"),
+                            ("min_iterations", "si_min_iterations"),
                             ("soft_iteration_limit", "si_soft_iteration_limit"),
-                            ("max_restarts", "si_max_restarts")):
+                            ("max_restarts", "si_max_restarts"),
+                            ("stall_trim_factor", "si_stall_trim_factor")):
                         if key in restart:
                             parms[parm] = restart[key]
         elif stiffness == "adaptive":
@@ -4077,14 +4274,30 @@ def _restore_solver(parent, data, legacy, warnings):
                 ("eta", "al_eta")):
             if key in al:
                 parms[parm] = al[key]
+        al_nonlinear = al.get("nonlinear", {})
+        if isinstance(al_nonlinear, dict) \
+                and "max_iterations" in al_nonlinear:
+            parms["al_max_iterations"] = al_nonlinear["max_iterations"]
 
     advanced = solver.get("advanced", {})
     if isinstance(advanced, dict):
         for key, parm in (
                 ("cache_size", "cache_size"),
-                ("lump_mass_matrix", "lump_mass_matrix")):
+                ("lump_mass_matrix", "lump_mass_matrix"),
+                ("lagged_regularization_weight",
+                 "lagged_regularization_weight"),
+                ("lagged_regularization_iterations",
+                 "lagged_regularization_iterations"),
+                ("jacobian_threshold", "jacobian_threshold")):
             if key in advanced:
                 parms[parm] = advanced[key]
+        inversion = {"Discrete": 0, "Conservative": 1}
+        if advanced.get("check_inversion") in inversion:
+            parms["inversion_method"] = inversion[advanced["check_inversion"]]
+
+    linear = solver.get("linear", {})
+    if isinstance(linear, dict):
+        _restore_linear_solver(parent, linear, parms, warnings)
     parent.setParms(parms)
 
     rayleigh = solver.get("rayleigh_damping", [])
@@ -4106,6 +4319,86 @@ def _restore_solver(parent, data, legacy, warnings):
                     entry["lagging_iterations"]
             if values:
                 parent.setParms(values)
+
+
+def _restore_linear_solver(parent, linear, parms, warnings):
+    """Map /solver/linear back onto the Linear folder (menu tokens by name)."""
+    solver_parm = parent.parm("solver")
+    tokens = list(solver_parm.menuItems())
+    name = linear.get("solver", "")
+    if isinstance(name, list):
+        name = name[0] if name else ""
+        warnings.append(
+            "solver.linear.solver listed several solvers; only the first "
+            "was restored.")
+    aliases = {"Eigen:SparseLU": "Eigen::SparseLU",
+               "Eigen:PardisoLU": "Eigen::PardisoLU"}
+    name = aliases.get(name, name)
+    if not name:
+        parms["solver"] = tokens.index("auto")
+    elif name in tokens:
+        parms["solver"] = tokens.index(name)
+    else:
+        warnings.append(
+            f"Linear solver '{name}' is not offered by the HDA; the "
+            "automatic choice was kept.")
+        return
+    precond = linear.get("precond")
+    precond_tokens = list(parent.parm("precond").menuItems())
+    if precond in precond_tokens:
+        parms["precond"] = precond_tokens.index(precond)
+    block = linear.get(name, {}) if isinstance(linear.get(name), dict) else {}
+    if name.startswith("Eigen::") and block:
+        if "max_iter" in block:
+            parms["max_iter"] = block["max_iter"]
+        if "tolerance" in block:
+            parms["tolerance"] = block["tolerance"]
+    pardiso = linear.get("Pardiso", {})
+    if isinstance(pardiso, dict) and "mtype" in pardiso:
+        mtypes = list(parent.parm("mtype").menuItems())
+        if str(pardiso["mtype"]) in mtypes:
+            parms["mtype"] = mtypes.index(str(pardiso["mtype"]))
+    hypre = linear.get("Hypre", {})
+    if isinstance(hypre, dict):
+        for key, parm in (("max_iter", "max_iter_hypre"),
+                          ("pre_max_iter", "pre_max_iter_hypre"),
+                          ("tolerance", "tolerance_hypre_AMGCL")):
+            if key in hypre:
+                parms[parm] = hypre[key]
+    amgcl = linear.get("AMGCL", {})
+    if isinstance(amgcl, dict):
+        amg_solver = amgcl.get("solver", {})
+        if isinstance(amg_solver, dict):
+            if "maxiter" in amg_solver:
+                parms["max_iter"] = amg_solver["maxiter"]
+            if "tol" in amg_solver:
+                parms["tolerance_hypre_AMGCL"] = amg_solver["tol"]
+        precond_block = amgcl.get("precond", {})
+        if isinstance(precond_block, dict):
+            for key, parm in (("max_levels", "max_levels"),
+                              ("direct_coarse", "direct_coarse"),
+                              ("ncycle", "ncycle")):
+                if key in precond_block:
+                    parms[parm] = precond_block[key]
+            relax = precond_block.get("relax", {})
+            if isinstance(relax, dict):
+                for key, parm in (("degree", "degree"),
+                                  ("power_iters", "power_iters"),
+                                  ("higher", "higher"), ("lower", "lower"),
+                                  ("scale", "scale_amgcl")):
+                    if key in relax:
+                        parms[parm] = relax[key]
+            coarsening = precond_block.get("coarsening", {})
+            if isinstance(coarsening, dict):
+                for key, parm in (
+                        ("estimate_spectral_radius",
+                         "estimate_spectral_radius"),
+                        ("relax", "coarse_relax")):
+                    if key in coarsening:
+                        parms[parm] = coarsening[key]
+                aggr = coarsening.get("aggr", {})
+                if isinstance(aggr, dict) and "eps_strong" in aggr:
+                    parms["eps_strong"] = aggr["eps_strong"]
 
 
 def _restore_output(parent, data):
@@ -4153,6 +4446,15 @@ def _restore_output(parent, data):
         parms["minimal_fields"] = int(
             isinstance(paraview.get("fields"), list)
             and not bool(options.get("material", False)))
+        fields = paraview.get("fields")
+        if isinstance(fields, list):
+            # The surface field toggles only leave a trace in the whitelist.
+            parms["normals_fields"] = int("normals" in fields)
+            parms["displaced_normals_fields"] = int(
+                "displaced_normals" in fields and "normals" not in fields)
+            parms["sidesets_fields"] = int("sidesets" in fields)
+            parms["solution_grad_fields"] = int("solution_gradient" in fields)
+            parms["adaptive_dhat"] = int("adaptive_dhat" in fields)
 
     output_data = output.get("data", {})
     if isinstance(output_data, dict):

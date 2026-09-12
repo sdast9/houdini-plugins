@@ -666,27 +666,38 @@ def _parms():
         tags={"filechooser_pattern": "*.pvd"},
         script_callback="hou.phm().start(kwargs)",
         script_callback_language=hou.scriptLanguage.Python,
-        help="PolyFEM ParaView collection (.pvd); timesteps map to frames."))
+        help="The .pvd file PolyFEM wrote in its output folder (sim.pvd by "
+             "default). It lists one result file per saved time step; those "
+             "steps are mapped to Houdini frames when you press Refresh / Set "
+             "Playbar."))
     main.addParmTemplate(hou.ButtonParmTemplate(
         "refresh", "Refresh / Set Playbar",
         script_callback="hou.phm().refresh(kwargs)",
-        script_callback_language=hou.scriptLanguage.Python))
+        script_callback_language=hou.scriptLanguage.Python,
+        help="Re-read the PVD file (e.g. while a simulation is still writing "
+             "steps), rebuild the field menus, and set the playbar range to "
+             "the available time steps."))
     source_block = hou.StringParmTemplate(
         "source_block", "Source Block", 1, default_value=("Volume",),
         menu_type=hou.menuType.StringReplace,
         script_callback="hou.phm().source_changed(kwargs)",
         script_callback_language=hou.scriptLanguage.Python,
-        help="Which block of the multi-block output to load. Enable the "
-             "matching options in the PolyFEM Output tab to produce the "
-             "Surface and Contact blocks. Only blocks present in the active "
-             "PVD frame are listed.")
+        help="Which part of the result to load as the main geometry: Volume "
+             "(the solid elements), Surface (boundary faces with normals, "
+             "sidesets, tractions), Contact (contact and friction forces per "
+             "surface node) or Points (FEM nodes). Only blocks present in the "
+             "current PVD frame are listed; enable the matching options in "
+             "the PolyFEM node's Output tab to produce the others.")
     source_block.setItemGeneratorScript(
         "hou.phm().source_block_menu(kwargs)")
     source_block.setItemGeneratorScriptLanguage(hou.scriptLanguage.Python)
     main.addParmTemplate(source_block)
     main.addParmTemplate(hou.StringParmTemplate(
         "availability_status", "Available Data", 1,
-        default_value=("Select a PVD file to inspect its renderable data.",)))
+        default_value=("Select a PVD file to inspect its renderable data.",),
+        help="Read-only summary of what the loaded result contains (blocks, "
+             "fields, bodies, fibers) and therefore which controls below are "
+             "usable."))
     main.addParmTemplate(hou.MenuParmTemplate(
         "field_time_scope", "Field Availability Scope",
         ("current", "every", "any"),
@@ -713,34 +724,44 @@ def _parms():
              "changes over time. Off = topology parsed once and cached."))
     main.addParmTemplate(hou.IntParmTemplate(
         "topo_frame", "Topology Frame", 1, default_value=(0,),
-        help="Frame whose topology is used when Remeshing Mode is off."))
+        help="When Remeshing Mode is off, the mesh connectivity is read once "
+             "from this frame and reused for every other frame (only "
+             "positions and fields change). Leave at 0 unless the first "
+             "frame is missing or damaged."))
     main.addParmTemplate(hou.ToggleParmTemplate(
         "cache", "Cache Frames", default_value=False,
         script_callback="hou.phm().toggle_cache(kwargs)",
         script_callback_language=hou.scriptLanguage.Python,
-        help="Cache each frame after its PVD geometry, raw attributes, and "
-             "enabled derived mechanics are calculated. Deformation display, "
-             "colors, reference comparison, smoothing, body visibility, "
-             "glyphs, fibers, and clipping remain live downstream controls "
-             "and reuse the calculated cached data. Changing the PVD source, "
-             "source block, topology/surface mode, remeshing settings, or the "
-             "Derived toggle intentionally rebuilds affected cache entries."))
+        help="Keep each frame in memory once it has been read and its "
+             "derived fields computed, so scrubbing back and forth is "
+             "instant. Display settings (deformation, colors, comparison, "
+             "smoothing, visibility, glyphs, fibers, clipping) still update "
+             "live on the cached data. The cache is rebuilt automatically "
+             "when the PVD file, source block, topology mode, remeshing "
+             "settings or Derived toggle change; Clear Cache empties it."))
     main.addParmTemplate(hou.ButtonParmTemplate(
         "clear_cache", "Clear Cache",
         script_callback="hou.phm().clear_cache(kwargs)",
-        script_callback_language=hou.scriptLanguage.Python))
+        script_callback_language=hou.scriptLanguage.Python,
+        help="Drop every cached frame so the next frame change re-reads the "
+             "files. Use it after a simulation has been re-run into the same "
+             "output folder."))
     ptg.append(main)
 
     disp = hou.FolderParmTemplate("display_folder", "Display",
                                   folder_type=hou.folderType.Tabs)
     disp.addParmTemplate(hou.ToggleParmTemplate(
         "surface_only", "Display Boundary Surface Only", default_value=True,
-        help="Extract and draw only the boundary faces (recommended for "
-             "large meshes)."))
+        help="Show only the outer surface of the volume mesh instead of "
+             "every solid element. Much faster to display for large meshes "
+             "and looks the same from outside; turn off when you need to "
+             "clip into the interior or probe interior points."))
     show_deformed = hou.ToggleParmTemplate(
         "show_deformed", "Show Deformed", default_value=True,
-        help="Displace points by the solution field (rest positions kept "
-             "in the 'rest' attribute).")
+        help="Move the mesh by the computed displacement so you see the "
+             "deformed shape. Off shows the undeformed (rest) mesh with the "
+             "fields painted on it. The rest positions are always kept in "
+             "the 'rest' point attribute.")
     show_deformed.setConditional(
         hou.parmCondType.DisableWhen, "{ has_solution_data == 0 }")
     disp.addParmTemplate(show_deformed)
@@ -749,11 +770,11 @@ def _parms():
         menu_type=hou.menuType.StringToggle,
         script_callback="hou.phm().analysis_options_changed(kwargs)",
         script_callback_language=hou.scriptLanguage.Python,
-        help="Show only the toggled PolyFEM bodies (by body id). Leave empty "
-             "to show every body. Use it to isolate a body or hide an "
-             "obstacle; the range, probe, glyphs, and clipping all act on the "
-             "visible bodies. Only enabled when the data has more than one "
-             "body.")
+        help="Pick which bodies to show (by PolyFEM body id); leave empty "
+             "to show all of them. Handy to hide an obstacle or isolate one "
+             "part. The color range, probe, glyphs and clipping only consider "
+             "the visible bodies. Needs Body IDs exported from the PolyFEM "
+             "node and more than one body in the result.")
     visible_bodies.setItemGeneratorScript("hou.phm().body_id_menu(kwargs)")
     visible_bodies.setItemGeneratorScriptLanguage(hou.scriptLanguage.Python)
     visible_bodies.setConditional(
@@ -764,9 +785,10 @@ def _parms():
         menu_type=hou.menuType.StringReplace,
         script_callback="hou.phm().color_selection_changed(kwargs)",
         script_callback_language=hou.scriptLanguage.Python,
-        help="Point field used to color the result. Only fields that can be "
-             "rendered from the active PVD block are listed. Derived mechanics "
-             "fields appear only when their required source data exists.")
+        help="Which result field colors the mesh (displacement, stress, "
+             "strain, contact force ...). Only fields that exist in the "
+             "loaded block are listed; derived fields appear when the data "
+             "they need was exported.")
     color_attrib.setItemGeneratorScript(
         "hou.phm().color_field_menu(kwargs)")
     color_attrib.setItemGeneratorScriptLanguage(hou.scriptLanguage.Python)
@@ -776,9 +798,13 @@ def _parms():
         default_value=("auto",), menu_type=hou.menuType.StringReplace,
         script_callback="hou.phm().color_selection_changed(kwargs)",
         script_callback_language=hou.scriptLanguage.Python,
-        help="Reduces a vector or tensor field to the scalar value shown by "
-             "the color map. Only reductions valid for the selected field are "
-             "listed. Principal values are sorted maximum to minimum.")
+        help="A color can only show one number per point, so vector and "
+             "tensor fields must be reduced: magnitude or a component for "
+             "vectors; von Mises-style norm, a diagonal entry, a principal "
+             "value (principal values are ordered maximum to minimum), trace "
+             "or determinant for tensors. "
+             "Only reductions that make sense for the chosen field are "
+             "listed.")
     color_reduction.setItemGeneratorScript(
         "hou.phm().color_reduction_menu(kwargs)")
     color_reduction.setItemGeneratorScriptLanguage(hou.scriptLanguage.Python)
@@ -795,41 +821,69 @@ def _parms():
              "vismesh sampling or element order for that."))
     disp.addParmTemplate(hou.StringParmTemplate(
         "color_status", "Color Field Status", 1,
-        default_value=("Cook the result to validate the selected field.",)))
+        default_value=("Cook the result to validate the selected field.",),
+        help="Read-only: whether the chosen Color Field was found in the "
+             "current frame, and the reduction that is actually displayed."))
     missing = hou.FloatParmTemplate(
         "missing_color", "Unavailable Field Color", 3,
-        default_value=(0.35, 0.35, 0.35))
+        default_value=(0.35, 0.35, 0.35),
+        help="Flat color painted on the mesh when the selected Color Field "
+             "does not exist in the current frame (for example a field that "
+             "PolyFEM only wrote for some steps).")
     disp.addParmTemplate(missing)
     invalid = hou.FloatParmTemplate(
         "invalid_color", "Invalid / NaN Value Color", 3,
-        default_value=(1.0, 0.0, 1.0))
+        default_value=(1.0, 0.0, 1.0),
+        help="Color used for points whose value is not a number (NaN), "
+             "infinite, or not allowed by the color scale (e.g. zero or "
+             "negative with a logarithmic scale), so they stand out instead "
+             "of being hidden.")
     disp.addParmTemplate(invalid)
     disp.addParmTemplate(hou.MenuParmTemplate(
         "color_scale", "Color Scale", ("linear", "log10"),
         menu_labels=("Linear", "Logarithmic (Base 10)"), default_value=0,
-        help="Logarithmic color requires positive displayed values. Zero, "
-             "negative, NaN, and infinite values use the invalid-value color."))
+        help="Linear maps values evenly between the displayed minimum and "
+             "maximum. Logarithmic spreads the colors by powers of ten, which "
+             "helps when values span several orders of magnitude (stress "
+             "concentrations). Log needs positive values: zero, negative, "
+             "NaN and infinite values get the Invalid Value Color."))
     disp.addParmTemplate(hou.ToggleParmTemplate(
         "range_lock", "Lock Displayed Range", default_value=False,
-        help="Prevents Auto Range buttons from changing the displayed range."))
+        help="Freeze the displayed minimum and maximum so the Auto Range "
+             "buttons and frame changes cannot alter them. Use it to compare "
+             "frames or runs with an identical color scale."))
     disp.addParmTemplate(hou.ToggleParmTemplate(
         "range_percentile", "Ignore Range Outliers", default_value=False,
-        help="Use percentile limits instead of absolute minimum and maximum."))
+        help="When auto-ranging, ignore the most extreme values and use "
+             "percentile limits instead of the absolute minimum and maximum, "
+             "so a few outliers (a single hot element) do not wash out the "
+             "colors everywhere else."))
     disp.addParmTemplate(hou.FloatParmTemplate(
         "range_percentiles", "Range Percentiles", 2,
-        default_value=(1.0, 99.0), min=0.0, max=100.0))
+        default_value=(1.0, 99.0), min=0.0, max=100.0,
+        help="Lower and upper percentiles used by Ignore Range Outliers: "
+             "1 and 99 map the color range to the middle 98% of the values."))
     disp.addParmTemplate(hou.ToggleParmTemplate(
         "range_symmetric", "Symmetric Range Around Zero", default_value=False,
-        help="Sets equal-magnitude negative and positive limits for signed "
-             "fields."))
+        help="Make the displayed range symmetric around zero (e.g. -5 to +5) "
+             "so that a diverging ramp puts zero exactly in the middle. "
+             "Useful for signed fields such as principal stresses."))
     disp.addParmTemplate(hou.FloatParmTemplate(
-        "color_min", "Displayed Minimum", 1, default_value=(0.0,)))
+        "color_min", "Displayed Minimum", 1, default_value=(0.0,),
+        help="Value mapped to the left end of the color ramp. Values below "
+             "it are clamped to that color. Set by the Auto Range buttons or "
+             "type your own."))
     disp.addParmTemplate(hou.FloatParmTemplate(
-        "color_max", "Displayed Maximum", 1, default_value=(1.0,)))
+        "color_max", "Displayed Maximum", 1, default_value=(1.0,),
+        help="Value mapped to the right end of the color ramp. Values above "
+             "it are clamped to that color."))
     disp.addParmTemplate(hou.ButtonParmTemplate(
         "autoscale", "Auto Range: Current Frame",
         script_callback="hou.phm().autoscale(kwargs)",
-        script_callback_language=hou.scriptLanguage.Python))
+        script_callback_language=hou.scriptLanguage.Python,
+        help="Set Displayed Minimum/Maximum from the values in the frame "
+             "currently shown (instant). Respects Ignore Range Outliers and "
+             "Symmetric Range; blocked by Lock Displayed Range."))
     disp.addParmTemplate(hou.ButtonParmTemplate(
         "autoscale_all", "Auto Range: All Frames (scans sequence)",
         script_callback="hou.phm().autoscale_all(kwargs)",
@@ -840,13 +894,18 @@ def _parms():
              "the values live inside each file. Use Auto Range: Current Frame "
              "for an instant range from the displayed frame."))
     ramp = hou.RampParmTemplate(
-        "color_ramp", "Displayed Color Ramp", hou.rampParmType.Color)
+        "color_ramp", "Displayed Color Ramp", hou.rampParmType.Color,
+        help="Colors used from Displayed Minimum (left) to Displayed Maximum "
+             "(right). Edit it like any Houdini color ramp, or use the "
+             "Set Signed Diverging Ramp button for blue-white-red.")
     disp.addParmTemplate(ramp)
     disp.addParmTemplate(hou.ButtonParmTemplate(
         "set_diverging_ramp", "Set Signed Diverging Ramp",
         script_callback="hou.phm().set_diverging_ramp(kwargs)",
         script_callback_language=hou.scriptLanguage.Python,
-        help="Sets a blue-white-red ramp suited to signed values."))
+        help="Replace the ramp with blue-white-red, the usual choice for "
+             "signed values (negative = blue, zero = white, positive = red). "
+             "Pair it with Symmetric Range Around Zero."))
     ptg.append(disp)
 
     ana = hou.FolderParmTemplate("analysis_folder", "Analysis",
@@ -855,19 +914,22 @@ def _parms():
         "derived", "Compute Derived Quantities", default_value=True,
         script_callback="hou.phm().analysis_options_changed(kwargs)",
         script_callback_language=hou.scriptLanguage.Python,
-        help="Compute deformation, strain, and stress measures from the "
-             "deformation gradient and Cauchy stress. Includes Right "
-             "Cauchy-Green, Green-Lagrange strain, infinitesimal strain, "
-             "first/second Piola-Kirchhoff stress, principal values, and "
-             "stress invariants.")
+        help="Compute extra mechanics fields from the exported deformation "
+             "gradient and stress so you can color and probe them: volume "
+             "ratio, the Cauchy-Green tensors, Green-Lagrange / Almansi / "
+             "logarithmic / small strains, both Piola-Kirchhoff stresses, "
+             "principal values, von Mises, invariants and more. Turn off to "
+             "load faster when you only need the exported fields.")
     ana.addParmTemplate(derived_toggle)
     glyph_toggle = hou.ToggleParmTemplate(
         "add_glyphs", "Show Principal-Direction Glyphs", default_value=False,
         script_callback="hou.phm().auto_glyph_scale(kwargs)",
         script_callback_language=hou.scriptLanguage.Python,
-        help="Draw line glyphs along the selected tensor's three principal "
-             "directions. Line length is proportional to principal value. "
-             "Enabling glyphs auto-estimates a scale sized to the mesh.")
+        help="Draw small line glyphs at the nodes showing the three "
+             "principal directions of the chosen tensor (e.g. the directions "
+             "of largest and smallest stress). By default the line length "
+             "is proportional to the principal value; enabling glyphs picks "
+             "a length scale that fits the mesh.")
     glyph_toggle.setConditional(
         hou.parmCondType.DisableWhen, "{ has_glyph_data == 0 }")
     ana.addParmTemplate(glyph_toggle)
@@ -876,8 +938,10 @@ def _parms():
         menu_type=hou.menuType.StringReplace,
         script_callback="hou.phm().auto_glyph_scale(kwargs)",
         script_callback_language=hou.scriptLanguage.Python,
-        help="Only tensors computable from the active PVD block are listed. "
-             "Switching tensors re-estimates the glyph scale.")
+        help="Which tensor the glyphs represent: Cauchy stress, second "
+             "Piola-Kirchhoff stress, Green-Lagrange strain or the right/left "
+             "Cauchy-Green tensor. Only tensors that can be computed from the "
+             "loaded data are listed; switching re-estimates the glyph scale.")
     glyph_tensor.setItemGeneratorScript(
         "hou.phm().glyph_tensor_menu(kwargs)")
     glyph_tensor.setItemGeneratorScriptLanguage(hou.scriptLanguage.Python)
@@ -902,37 +966,59 @@ def _parms():
     ana.addParmTemplate(hou.FloatParmTemplate(
         "tensor_scale", "Principal-Value Length Scale", 1,
         default_value=(0.01,),
-        help="Multiplies principal values to produce glyph line lengths."))
+        help="Multiplier from principal value to line length (scene units "
+             "per unit of the tensor). Press Auto-Estimate Glyph Scale to get "
+             "a value that fits the mesh; then adjust by eye."))
     ana.addParmTemplate(hou.MenuParmTemplate(
         "glyph_length_mode", "Glyph Length Mode",
         ("value", "normalized", "clamped"),
         menu_labels=("Scale by Principal Value", "Normalized Directions",
                      "Scale by Value with Maximum Length"),
-        default_value=0))
+        default_value=0,
+        help="How long each glyph line is. Scale by Principal Value: length "
+             "proportional to the magnitude (shows where the field is "
+             "strong). Normalized: all lines the same length (shows only "
+             "direction). Scale by Value with Maximum Length: proportional "
+             "but capped, so a few huge values do not hide everything else."))
     ana.addParmTemplate(hou.FloatParmTemplate(
         "glyph_max_length", "Maximum Glyph Length", 1, default_value=(1.0,),
-        min=0.0, max=1e9))
-    for name, label in (
-            ("glyph_scale_first", "First Direction Length Multiplier"),
-            ("glyph_scale_second", "Second Direction Length Multiplier"),
-            ("glyph_scale_third", "Third Direction Length Multiplier")):
+        min=0.0, max=1e9,
+        help="Longest line allowed (scene units) when Glyph Length Mode is "
+             "Scale by Value with Maximum Length."))
+    for name, label, which in (
+            ("glyph_scale_first", "First Direction Length Multiplier",
+             "largest"),
+            ("glyph_scale_second", "Second Direction Length Multiplier",
+             "middle"),
+            ("glyph_scale_third", "Third Direction Length Multiplier",
+             "smallest")):
         ana.addParmTemplate(hou.FloatParmTemplate(
-            name, label, 1, default_value=(1.0,), min=0.0, max=1e9))
+            name, label, 1, default_value=(1.0,), min=0.0, max=1e9,
+            help=f"Extra length factor for the glyphs of the {which} "
+                 "principal value only, e.g. to emphasize one direction "
+                 "(1 = no change)."))
     ana.addParmTemplate(hou.ToggleParmTemplate(
-        "glyph_arrowheads", "Show Glyph Arrowheads", default_value=False))
+        "glyph_arrowheads", "Show Glyph Arrowheads", default_value=False,
+        help="Draw a small arrowhead at both ends of each glyph line so the "
+             "direction reads clearly from a distance."))
     ana.addParmTemplate(hou.FloatParmTemplate(
         "glyph_arrow_size", "Glyph Arrowhead Size", 1,
-        default_value=(0.08,), min=0.001, max=0.5))
+        default_value=(0.08,), min=0.001, max=0.5,
+        help="Size of the arrowheads as a fraction of the glyph length."))
     ana.addParmTemplate(hou.IntParmTemplate(
         "glyph_stride", "Glyph Sampling Stride", 1, default_value=(1,),
         min=1, max=100000,
-        help="Draw glyphs at every Nth point to control viewport density."))
+        help="Draw a glyph only at every Nth point, to thin them out on "
+             "dense meshes (1 = every point)."))
     ana.addParmTemplate(hou.ToggleParmTemplate(
         "glyph_sign_color", "Stress Sign Colors", default_value=True,
-        help="For stress tensors, draw positive principal stress red and "
-             "negative principal stress blue."))
+        help="For stress tensors, color glyphs red where the principal "
+             "stress is tension (positive) and blue where it is compression "
+             "(negative). Strain tensors use the uniform color."))
     glyph_color = hou.FloatParmTemplate(
-        "glyph_color", "Uniform Glyph Color", 3, default_value=(1, 1, 1))
+        "glyph_color", "Uniform Glyph Color", 3, default_value=(1, 1, 1),
+        help="Color of the glyph lines when Stress Sign Colors is off (or "
+             "for strain tensors, which have no sign coloring).")
     ana.addParmTemplate(glyph_color)
     ana.addParmTemplate(hou.ButtonParmTemplate(
         "autoglyph", "Auto-Estimate Glyph Scale",
@@ -946,10 +1032,12 @@ def _parms():
         "fiber_folder", "Fibers", folder_type=hou.folderType.Simple)
     show_fibers = hou.ToggleParmTemplate(
         "show_fibers", "Show Fiber Directions", default_value=False,
-        help="Draw each material fiber as a short line. PolyFEM's exported a0 "
-             "is the unchanged simulation/world reference direction; choose "
-             "Current to draw normalize(F a0). Material fields are preferred, "
-             "with the preprocessing companion used as a fallback.")
+        help="Draw the material fiber direction at each node as a short "
+             "line (only for results whose materials have fibers). Fiber "
+             "Frame chooses between the direction you set up (a0) and the "
+             "direction after deformation. The fiber data comes from the "
+             "result's material fields, or from the PolyFEM node's fiber "
+             "file when those were not exported.")
     show_fibers.setConditional(
         hou.parmCondType.DisableWhen, "{ has_fiber_data == 0 }")
     fiber_folder.addParmTemplate(show_fibers)
@@ -959,8 +1047,9 @@ def _parms():
         menu_items=("all",), menu_labels=("All Families",),
         item_generator_script="hou.phm().fiber_family_menu(kwargs)",
         item_generator_script_language=hou.scriptLanguage.Python,
-        help="Which fiber family to draw. Composite materials with several "
-             "families export one field each.")
+        help="Which fiber family to draw when a composite material has "
+             "several (each family is exported as its own field). All "
+             "Families draws every one.")
     family.setConditional(hou.parmCondType.DisableWhen, "{ show_fibers == 0 }")
     fiber_folder.addParmTemplate(family)
 
@@ -970,28 +1059,43 @@ def _parms():
                      "Current normalize(F a0)",
                      "Both (reference dimmed)"),
         default_value=1,
-        help="The geometry input transform does not rotate a0 in PolyFEM. "
-             "Reference draws that unchanged input direction. Current draws "
-             "normalize(F a0), the direction implied by the constitutive "
-             "kinematics for this output frame.")
+        help="Reference draws the fiber direction as it was defined for "
+             "the simulation (a0; PolyFEM does not rotate it with the "
+             "geometry transform). Current draws where that fiber points "
+             "after the deformation of this frame (the direction a0 is "
+             "carried to by the deformation gradient F). Both shows the two "
+             "together with the reference dimmed.")
     frame.setConditional(hou.parmCondType.DisableWhen, "{ show_fibers == 0 }")
     fiber_folder.addParmTemplate(frame)
 
     for template in (
             hou.FloatParmTemplate("fiber_scale", "Fiber Line Length", 1,
-                                  default_value=(0.01,), min=0.0, max=1e9),
+                                  default_value=(0.01,), min=0.0, max=1e9,
+                                  help="Length of each drawn fiber line in "
+                                       "scene units. Press Auto-Estimate "
+                                       "Fiber Scale for a value that fits "
+                                       "the mesh."),
             hou.IntParmTemplate("fiber_stride", "Fiber Sampling Stride", 1,
                                 default_value=(1,), min=1, max=100000,
-                                help="Draw a fiber at every Nth node."),
+                                help="Draw a fiber line only at every Nth "
+                                     "node, to thin them out on dense "
+                                     "meshes (1 = every node)."),
             hou.MenuParmTemplate(
                 "fiber_color_mode", "Fiber Color",
                 ("direction_rgb", "family", "uniform", "stretch", "angle"),
                 menu_labels=("Direction (RGB)", "Per Family", "Uniform",
                              "Fiber Stretch |F a0|",
                              "Direction Change Angle"),
-                default_value=0),
+                default_value=0,
+                help="How fiber lines are colored: by direction (x/y/z as "
+                     "red/green/blue), by fiber family, one uniform color, "
+                     "by how much each fiber has stretched (|F a0|, 1 = "
+                     "unstretched), or by the angle between its current and "
+                     "reference direction."),
             hou.FloatParmTemplate("fiber_color", "Uniform Fiber Color", 3,
-                                  default_value=(1, 1, 1))):
+                                  default_value=(1, 1, 1),
+                                  help="Color of the fiber lines when Fiber "
+                                       "Color is set to Uniform.")):
         template.setConditional(
             hou.parmCondType.DisableWhen, "{ show_fibers == 0 }")
         fiber_folder.addParmTemplate(template)
@@ -1013,8 +1117,10 @@ def _parms():
     multi.addParmTemplate(hou.ToggleParmTemplate(
         "show_multi_blocks", "Show Additional PVD Blocks",
         default_value=False,
-        help="Merges selected supplementary blocks with the primary Source "
-             "Block. Each supplementary block has independent coloring."))
+        help="Show other parts of the result (Volume, Surface, Contact, "
+             "Points) together with the main Source Block, e.g. the contact "
+             "forces drawn over the deformed volume. Each extra block has its "
+             "own field, range and color ramp in the folders below."))
     for slug, label in (
             ("volume", "Volume"), ("surface", "Surface"),
             ("contact", "Contact"), ("points", "Points")):
@@ -1026,12 +1132,16 @@ def _parms():
         show = hou.ToggleParmTemplate(
             f"multi_{slug}_show", f"Show Additional {label}",
             default_value=False,
-            help=f"Available only when the PVD contains a {label} block.")
+            help=f"Draw the {label} block on top of the main result, with "
+                 "its own field, range and ramp below. Only available when "
+                 "the PVD actually contains a {label} block.")
         show.setConditional(hou.parmCondType.DisableWhen, absent)
         folder.addParmTemplate(show)
         field = hou.StringParmTemplate(
             f"multi_{slug}_field", f"{label} Color Field", 1,
-            default_value=("",), menu_type=hou.menuType.StringReplace)
+            default_value=("",), menu_type=hou.menuType.StringReplace,
+            help=f"Field used to color the additional {label} block. Only "
+                 "fields present in that block are listed.")
         field.setItemGeneratorScript(
             "hou.phm().multi_block_field_menu(kwargs)")
         field.setItemGeneratorScriptLanguage(hou.scriptLanguage.Python)
@@ -1043,19 +1153,26 @@ def _parms():
             f"multi_{slug}_reduction", f"{label} Field Value",
             ("magnitude", "x", "y", "z"),
             menu_labels=("Magnitude / Scalar", "X Component", "Y Component",
-                         "Z Component"), default_value=0)
+                         "Z Component"), default_value=0,
+            help=f"For a vector field on the {label} block, show its length "
+                 "(magnitude) or one component; scalar fields always show "
+                 "their value.")
         reduction.setConditional(
             hou.parmCondType.DisableWhen, f"{{ multi_{slug}_show == 0 }}")
         folder.addParmTemplate(reduction)
         rng = hou.FloatParmTemplate(
             f"multi_{slug}_range", f"{label} Displayed Range", 2,
-            default_value=(0.0, 1.0))
+            default_value=(0.0, 1.0),
+            help=f"Minimum and maximum value mapped to the {label} color "
+                 "ramp. This block has its own range, independent of the "
+                 "main result's.")
         rng.setConditional(
             hou.parmCondType.DisableWhen, f"{{ multi_{slug}_show == 0 }}")
         folder.addParmTemplate(rng)
         block_ramp = hou.RampParmTemplate(
             f"multi_{slug}_ramp", f"{label} Color Ramp",
-            hou.rampParmType.Color)
+            hou.rampParmType.Color,
+            help=f"Color ramp used for the additional {label} block.")
         folder.addParmTemplate(block_ramp)
         multi.addParmTemplate(folder)
     ptg.append(multi)
@@ -1070,15 +1187,22 @@ def _parms():
              "addition to the current one, so each frame change does a little "
              "more work while this is on."))
     compare.addParmTemplate(hou.IntParmTemplate(
-        "reference_frame", "Reference Frame", 1, default_value=(0,), min=0))
+        "reference_frame", "Reference Frame", 1, default_value=(0,), min=0,
+        help="Houdini frame to compare against (0 is usually the undeformed "
+             "start). The mesh must have the same points in both frames."))
     compare.addParmTemplate(hou.MenuParmTemplate(
         "reference_mode", "Comparison Value",
         ("difference", "absolute", "percent"),
         menu_labels=("Current Minus Reference", "Absolute Difference",
-                     "Percentage Change"), default_value=0))
+                     "Percentage Change"), default_value=0,
+        help="What to color: the signed change since the reference frame, "
+             "its magnitude, or the change as a percentage of the reference "
+             "value."))
     compare.addParmTemplate(hou.StringParmTemplate(
         "reference_status", "Reference Comparison Status", 1,
-        default_value=("Comparison is disabled.",)))
+        default_value=("Comparison is disabled.",),
+        help="Read-only: whether the reference frame could be loaded and "
+             "matched to the current one."))
     ptg.append(compare)
 
     probe = hou.FolderParmTemplate("probe_folder", "Probe",
@@ -1092,10 +1216,16 @@ def _parms():
              "this activates the node's viewer state (no need to press Enter "
              "in the viewport); the probe works while that state is active."))
     probe.addParmTemplate(hou.IntParmTemplate(
-        "probe_point", "Probed Point Number", 1, default_value=(-1,), min=-1))
+        "probe_point", "Probed Point Number", 1, default_value=(-1,), min=-1,
+        help="Point number of the last probed vertex (-1 = none). The marker "
+             "follows this point as frames change; you can also type a point "
+             "number to probe it directly."))
     probe.addParmTemplate(hou.StringParmTemplate(
         "probe_readout", "Probe Readout", 1,
-        default_value=("Enable the viewport probe and click the result.",)))
+        default_value=("Enable the viewport probe and click the result.",),
+        help="Read-only text with the probed point's position, displacement, "
+             "field value, body and sideset ids, principal values and "
+             "reference comparison."))
     ptg.append(probe)
 
     section = hou.FolderParmTemplate("section_folder", "Clip / Slice",
@@ -1103,7 +1233,11 @@ def _parms():
     section.addParmTemplate(hou.MenuParmTemplate(
         "clip_mode", "Section Mode", ("off", "clip", "slice"),
         menu_labels=("Off", "Clipping Plane", "Thin Slice"),
-        default_value=0))
+        default_value=0,
+        help="Cut into the model to see inside. Clipping Plane removes one "
+             "side of a plane; Thin Slice keeps only a slab around the plane. "
+             "Glyphs and fibers are added after the cut and are never "
+             "removed by it."))
     section.addParmTemplate(hou.FloatParmTemplate(
         "clip_origin", "Plane Origin", 3, default_value=(0, 0, 0),
         help="Auto-set to the scene's bounding-box center when a PVD file "
@@ -1115,13 +1249,16 @@ def _parms():
              "edits are kept)."))
     section.addParmTemplate(hou.MenuParmTemplate(
         "clip_keep", "Clip Side To Keep", ("above", "below"),
-        menu_labels=("Above Plane", "Below Plane"), default_value=0))
+        menu_labels=("Above Plane", "Below Plane"), default_value=0,
+        help="Which side of the clipping plane stays visible (above = the "
+             "side the Plane Normal points to)."))
     section.addParmTemplate(hou.ToggleParmTemplate(
         "clip_fill", "Fill Clipped Surface", default_value=True,
         help="Creates a colored cut surface when clipping closed geometry."))
     section.addParmTemplate(hou.FloatParmTemplate(
         "slice_thickness", "Slice Thickness", 1, default_value=(0.01,),
-        min=1e-8, max=1e9))
+        min=1e-8, max=1e9,
+        help="Thickness of the kept slab (scene units) in Thin Slice mode."))
     ptg.append(section)
 
     diagnostics = hou.FolderParmTemplate(
@@ -1137,7 +1274,10 @@ def _parms():
              "-- unavoidable, the values live inside each file."))
     diagnostics.addParmTemplate(hou.ToggleParmTemplate(
         "diagnostics_show", "Show Renderable Timeline Plot",
-        default_value=False))
+        default_value=False,
+        help="Add a plot of the computed minimum/mean/maximum curves to the "
+             "scene as real geometry (it renders). Compute Selected Field "
+             "Over Time must have been run first."))
     diagnostics.addParmTemplate(hou.MenuParmTemplate(
         "diagnostics_x_axis", "Horizontal Axis", ("time", "frame"),
         menu_labels=("Simulation Time", "Frame Index"), default_value=0,
@@ -1147,21 +1287,27 @@ def _parms():
         "diagnostics_time_units", "Time Units", 1, default_value=("s",),
         help="Label appended to the time axis title (e.g. s, ms)."))
     diagnostics.addParmTemplate(hou.ToggleParmTemplate(
-        "diagnostics_grid", "Show Gridlines", default_value=True))
+        "diagnostics_grid", "Show Gridlines", default_value=True,
+        help="Draw horizontal and vertical gridlines on the timeline plot."))
     diagnostics.addParmTemplate(hou.ToggleParmTemplate(
         "diagnostics_band", "Shade Min-Max Range", default_value=False,
         help="Fill the area between the minimum and maximum curves."))
     diagnostics.addParmTemplate(hou.FloatParmTemplate(
         "diagnostics_translate", "Timeline Plot Translation", 3,
-        default_value=(0, 0, 0)))
+        default_value=(0, 0, 0),
+        help="Where in the scene the timeline plot geometry is placed."))
     diagnostics.addParmTemplate(hou.FloatParmTemplate(
         "diagnostics_scale", "Timeline Plot Scale", 1,
-        default_value=(1.0,), min=1e-8, max=1e9))
+        default_value=(1.0,), min=1e-8, max=1e9,
+        help="Overall size of the timeline plot geometry."))
     diagnostics.addParmTemplate(hou.StringParmTemplate(
         "diagnostics_status", "Timeline Diagnostic Status", 1,
-        default_value=("No timeline diagnostic has been computed.",)))
+        default_value=("No timeline diagnostic has been computed.",),
+        help="Read-only: which field and reduction were scanned, over how "
+             "many frames, and when."))
     diagnostics_data = hou.StringParmTemplate(
-        "diagnostics_data", "diagnostics_data", 1, default_value=("",))
+        "diagnostics_data", "diagnostics_data", 1, default_value=("",),
+        help="Internal: the computed min/mean/max curves (JSON).")
     diagnostics_data.setConditional(hou.parmCondType.HideWhen, "{ 1 == 1 }")
     diagnostics.addParmTemplate(diagnostics_data)
     ptg.append(diagnostics)
@@ -1200,20 +1346,29 @@ def _parms():
         help="Leave empty to use the resolved color field and displayed value."))
     legend.addParmTemplate(hou.IntParmTemplate(
         "legend_ticks", "Number of Tick Labels", 1, default_value=(6,),
-        min=2, max=21))
+        min=2, max=21,
+        help="How many labeled values are written along the color bar "
+             "(including both ends)."))
     legend.addParmTemplate(hou.IntParmTemplate(
         "legend_digits", "Significant Digits", 1, default_value=(5,),
-        min=1, max=12))
+        min=1, max=12,
+        help="Number of significant digits shown in the legend labels and "
+             "probe values."))
     legend.addParmTemplate(hou.MenuParmTemplate(
         "legend_number_format", "Legend Number Format",
         ("automatic", "scientific", "engineering", "fixed"),
         menu_labels=("Automatic", "Scientific", "Engineering", "Fixed"),
-        default_value=0))
+        default_value=0,
+        help="How legend numbers are written: Automatic picks per value; "
+             "Scientific uses powers of ten (1.2e+05); Engineering uses "
+             "powers of a thousand (120e+03); Fixed uses plain decimals."))
     legend.addParmTemplate(hou.StringParmTemplate(
         "field_units", "Displayed Field Units", 1, default_value=("",),
         help="Optional units appended to legend titles and probe values."))
     text_color = hou.FloatParmTemplate(
-        "legend_text_color", "Legend Text Color", 3, default_value=(1, 1, 1))
+        "legend_text_color", "Legend Text Color", 3, default_value=(1, 1, 1),
+        help="Color of the legend title and tick labels (scene legend and "
+             "viewport overlay).")
     legend.addParmTemplate(text_color)
     legend.addParmTemplate(hou.MenuParmTemplate(
         "legend_orientation", "Scene Legend Plane and Up Direction",
@@ -1224,36 +1379,51 @@ def _parms():
                      "YZ Plane, +Z Up", "YZ Plane, -Z Up",
                      "XZ Plane, +X Up", "XZ Plane, -X Up",
                      "XZ Plane, +Z Up", "XZ Plane, -Z Up"),
-        default_value=2))
+        default_value=2,
+        help="Which world plane the scene legend lies in and which way its "
+             "'up' points. Choose the plane facing your usual camera."))
     legend.addParmTemplate(hou.FloatParmTemplate(
         "legend_translate", "Scene Legend Translation", 3,
-        default_value=(0, 0, 0)))
+        default_value=(0, 0, 0),
+        help="Position of the scene legend geometry (scene units). Place "
+             "Scene Legend Beside Model sets it automatically."))
     legend_rotate = hou.FloatParmTemplate(
         "legend_rotate", "Additional Scene Legend Rotation", 3,
-        default_value=(0, 0, 0))
+        default_value=(0, 0, 0),
+        help="Extra rotation (degrees) applied to the scene legend after the "
+             "plane/up choice, for fine adjustment.")
     legend_rotate.setLook(hou.parmLook.Angle)
     legend.addParmTemplate(legend_rotate)
     legend.addParmTemplate(hou.FloatParmTemplate(
         "legend_scale", "Scene Legend Scale", 1, default_value=(1.0,),
-        min=0.0001, max=1000))
+        min=0.0001, max=1000,
+        help="Overall size of the scene legend geometry."))
     legend.addParmTemplate(hou.ButtonParmTemplate(
         "legend_autoplace", "Place Scene Legend Beside Model",
         script_callback="hou.phm().autoplace_legend(kwargs)",
-        script_callback_language=hou.scriptLanguage.Python))
+        script_callback_language=hou.scriptLanguage.Python,
+        help="Move and size the scene legend so it sits next to the model's "
+             "bounding box at a readable size."))
     legend.addParmTemplate(hou.MenuParmTemplate(
         "overlay_corner", "Overlay Screen Corner",
         ("upper_left", "upper_right", "lower_left", "lower_right"),
         menu_labels=("Upper Left", "Upper Right", "Lower Left", "Lower Right"),
-        default_value=1))
+        default_value=1,
+        help="Corner of the viewport where the screen-fixed overlay legend "
+             "is drawn."))
     legend.addParmTemplate(hou.IntParmTemplate(
         "overlay_margin", "Overlay Margin (Pixels)", 1, default_value=(24,),
-        min=0, max=1000))
+        min=0, max=1000,
+        help="Distance in pixels between the overlay legend and the "
+             "viewport edges."))
     legend.addParmTemplate(hou.IntParmTemplate(
         "overlay_width", "Overlay Bar Width (Pixels)", 1, default_value=(28,),
-        min=8, max=500))
+        min=8, max=500,
+        help="Width of the overlay color bar in pixels."))
     legend.addParmTemplate(hou.IntParmTemplate(
         "overlay_height", "Overlay Bar Height (Pixels)", 1,
-        default_value=(260,), min=40, max=2000))
+        default_value=(260,), min=40, max=2000,
+        help="Height of the overlay color bar in pixels."))
     ptg.append(legend)
 
     gnomon = hou.FolderParmTemplate("gnomon_folder", "Gnomon",
@@ -1262,17 +1432,22 @@ def _parms():
         "gnomon_show", "Show Scene Gnomon", default_value=False,
         help="Adds a renderable XYZ orientation marker to the final geometry."))
     gnomon.addParmTemplate(hou.FloatParmTemplate(
-        "gnomon_center", "Gnomon Center", 3, default_value=(0, 0, 0)))
+        "gnomon_center", "Gnomon Center", 3, default_value=(0, 0, 0),
+        help="World position of the gnomon's origin (scene units)."))
     gnomon.addParmTemplate(hou.FloatParmTemplate(
         "gnomon_scale", "Gnomon Axis Length", 1, default_value=(1.0,),
-        min=0.0001, max=1000))
-    for name, label in (("gnomon_x", "Show X Axis"),
-                        ("gnomon_y", "Show Y Axis"),
-                        ("gnomon_z", "Show Z Axis"),
-                        ("gnomon_arrows", "Show Arrowheads"),
-                        ("gnomon_center_marker", "Show Center Marker")):
+        min=0.0001, max=1000,
+        help="Length of each gnomon axis line (scene units)."))
+    for name, label, what in (
+            ("gnomon_x", "Show X Axis", "Draw the red X axis line."),
+            ("gnomon_y", "Show Y Axis", "Draw the green Y axis line."),
+            ("gnomon_z", "Show Z Axis", "Draw the blue Z axis line."),
+            ("gnomon_arrows", "Show Arrowheads",
+             "Draw arrowheads at the tip of each axis."),
+            ("gnomon_center_marker", "Show Center Marker",
+             "Draw a small marker at the gnomon origin.")):
         gnomon.addParmTemplate(hou.ToggleParmTemplate(
-            name, label, default_value=True))
+            name, label, default_value=True, help=what))
     ptg.append(gnomon)
 
     hidden_flags = ["has_solution_data", "has_glyph_data", "has_multibody",
@@ -1280,7 +1455,11 @@ def _parms():
     hidden_flags += [f"has_block_{slug}"
                      for slug in ("volume", "surface", "contact", "points")]
     for name in hidden_flags:
-        flag = hou.ToggleParmTemplate(name, name, default_value=False)
+        flag = hou.ToggleParmTemplate(
+            name, name, default_value=False,
+            help="Internal, hidden: set on load to record whether this kind "
+                 "of data exists, so the controls that need it can be "
+                 "enabled or disabled.")
         flag.setConditional(hou.parmCondType.HideWhen, "{ 1 == 1 }")
         ptg.append(flag)
     return ptg
