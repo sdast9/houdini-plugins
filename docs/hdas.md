@@ -291,6 +291,20 @@ Targets the current build's strict-validated schema — the old fork keys
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
 
+### Friction lag and budget (2026-09-13, RB-10)
+
+* **Friction Iterations now defaults to 2** and the Semi-Implicit Options tab
+  gained **Friction Lag** (Realized Force / Follow Stiffness), exported as
+  `solver/contact/semi_implicit/friction_lag`. Friction is lagged one step
+  behind the contact pressures; the RB-10 study measured that a single solve
+  per step understates the friction work by a few percent on steady sliding
+  and by about half when the load doubles each step, and that rescaling the
+  lagged pressures with the barrier's trim (the historical behavior) can
+  double the friction capacity for the rest of a step after a trim bump. Both
+  controls carry tooltips; an untouched old scene now exports the new
+  defaults, and importing a params.json that names the old settings restores
+  them.
+
 ### Contact resource limits (2026-09-12, RB-05)
 
 * **New on the Contact ▸ CCD Parameters tab: Resource Limits** (Automatic /

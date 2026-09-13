@@ -3133,6 +3133,18 @@
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
+                    name    "si_friction_lag"
+                    label   "Friction Lag"
+                    type    ordinal
+                    default { "0" }
+                    menu {
+                        "realized_force"    "Realized Force (recommended)"
+                        "follow_stiffness"  "Follow Stiffness (historical)"
+                    }
+                    help    "Which contact pressure the friction of a step is based on. Friction is lagged: it uses the pressures from the end of the previous step. Realized Force (recommended): exactly the pressures that acted there. Follow Stiffness (historical): those pressures rescaled whenever the solver's barrier-stiffness controller changes its trim during the step -- but a trim change moves the contact gap, not the equilibrium pressure, so this can double the friction capacity for the rest of a step and make a sliding contact stick for one step. Kept for comparison with results computed before the RB-10 friction study."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
                     name    "si_trial_displacement_cap"
                     label   "Trial Displacement Cap"
                     type    float
@@ -3256,10 +3268,10 @@
                 name    "friction_iterations"
                 label   "Friction Iterations"
                 type    integer
-                default { "1" }
+                default { "2" }
                 disablewhen "{ enable == 0 }"
                 range   { 0 10 }
-                help    "Number of times per step the friction forces are updated with the new sliding state (lagged friction, as in the IPC paper). 1 is the standard; more iterations tighten the friction/contact coupling at extra cost."
+                help    "Number of times per step the friction forces are updated with the new sliding state (lagged friction, as in the IPC paper). The first solve of a step uses the contact pressures of the previous step; each further iteration rebuilds them from the new result and re-solves. 2 (recommended, the default since the RB-10 friction study) corrects the lag once: with 1 the friction of a contact whose pressure grows during the step is understated -- a few percent on steady sliding, up to half the friction work when the load doubles each step -- at roughly 25% more solver iterations. Use 1 for the classic single-solve IPC behavior, -1 to iterate until the friction converges, 0 to disable friction."
                 parmtag { "script_callback_language" "python" }
             }
             parm {

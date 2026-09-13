@@ -230,6 +230,31 @@ def main():
     node3.destroy()
     print("PASS: resource limits automatic by default; custom/off round-trip")
 
+    # --- RB-10 friction defaults: budget 2, realized-force lag; round-trip --
+    semi = data["solver"]["contact"]["semi_implicit"]
+    assert semi["friction_lag"] == "realized_force", semi
+    assert data["solver"]["contact"]["friction_iterations"] == 2, data["solver"]["contact"]
+    for parm_name in ("si_friction_lag", "friction_iterations"):
+        assert node.parm(parm_name).parmTemplate().help(), f"no tooltip on {parm_name}"
+    assert "trim" in node.parm("si_friction_lag").parmTemplate().help()
+    node2.parm("si_friction_lag").set("follow_stiffness")
+    node2.setParms({"friction_iterations": 1})
+    lag_path = node2.hdaModule().write_params_only({"node": node2})
+    with open(lag_path) as f:
+        lag_contact = json.load(f)["solver"]["contact"]
+    assert lag_contact["semi_implicit"]["friction_lag"] == "follow_stiffness", lag_contact
+    assert lag_contact["friction_iterations"] == 1, lag_contact
+    node4 = hou.node("/obj").createNode(
+        "stevenabramowitch::dev::PolyFEM::2.0", "polyfem_friction_lag_roundtrip")
+    node4.setParms({"old_input_dir": os.path.dirname(lag_path)})
+    node4.hdaModule().read_params({"node": node4})
+    assert node4.parm("si_friction_lag").evalAsString() == "follow_stiffness"
+    assert node4.evalParm("friction_iterations") == 1
+    node4.destroy()
+    node2.parm("si_friction_lag").set("realized_force")
+    node2.setParms({"friction_iterations": 2})
+    print("PASS: friction lag realized-force / budget 2 by default; follow/1 round-trip")
+
     # --- solver panel: nothing wired may be hidden --------------------------
     def walk(templates, path):
         for t in templates:

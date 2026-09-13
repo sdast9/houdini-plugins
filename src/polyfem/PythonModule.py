@@ -2927,6 +2927,7 @@ def build_solver(parent, data):
                 parent.evalParm("si_continuation_max_ratio"),
             "coefficient_identity":
                 _menu_token(parent, "si_coefficient_identity"),
+            "friction_lag": _menu_token(parent, "si_friction_lag"),
             "restart": {
                 "enabled": bool(parent.evalParm("si_restart_enabled")),
                 "alpha_threshold": parent.evalParm("si_alpha_threshold"),
@@ -4283,6 +4284,9 @@ def _restore_solver(parent, data, legacy, warnings):
                 if semi.get("coefficient_identity") in identities:
                     parms["si_coefficient_identity"] = \
                         identities[semi["coefficient_identity"]]
+                lag_modes = {"realized_force": 0, "follow_stiffness": 1}
+                if semi.get("friction_lag") in lag_modes:
+                    parms["si_friction_lag"] = lag_modes[semi["friction_lag"]]
                 if semi.get("gap_floor", 0) != 0:
                     warnings.append(
                         "gap_floor is experimental and not exposed by the "
