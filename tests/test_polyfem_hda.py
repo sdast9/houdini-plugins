@@ -141,6 +141,14 @@ def main():
     for f_name in tri_files + [geo1["volume_selection"]]:
         assert os.path.isfile(os.path.join(input_dir, f_name)), f_name
 
+    # provenance (RB-12): the asset identifies itself in the export
+    prov = data["provenance"]
+    assert prov["producer"] == "houdini", prov
+    assert prov["producer_version"] == hou.applicationVersionString(), prov
+    assert prov["asset"].startswith("stevenabramowitch::dev::PolyFEM::2.0"), prov
+    assert len(prov["asset_sha256"]) == 64, prov
+    assert prov["exported_at"].endswith("Z"), prov
+
     # --- run the real binary (strict validation is the schema test) -------
     result = subprocess.run(
         [POLYFEM_BIN, "-j", "params.json", "-o", "../output/",
@@ -153,6 +161,13 @@ def main():
     out_dir = os.path.join(work, "output")
     pvds = [f for f in os.listdir(out_dir) if f.endswith(".pvd")]
     assert pvds, f"no .pvd written in {out_dir}"
+
+    # ... and the solver's run manifest carries it back as the producer
+    with open(os.path.join(out_dir, "run-manifest.json")) as f:
+        manifest = json.load(f)
+    assert manifest["completion"]["status"] == "completed", manifest["completion"]
+    assert manifest["producer"] == prov, (manifest["producer"], prov)
+    assert manifest["input"]["file"]["sha256"], manifest["input"]["file"]
 
     # the Dirichlet push must actually move the cube (guards selection order)
     import re as _re

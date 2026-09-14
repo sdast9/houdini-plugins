@@ -3124,11 +3124,45 @@ def build_params(parent):
     build_space(parent, data, orders)
     build_solver(parent, data)
     build_output(parent, data)
+    build_provenance(parent, data)
 
     params_path = os.path.join(input_dir, "params.json")
     with open(params_path, "w") as f:
         json.dump(data, f, indent=4)
     return params_path
+
+
+def build_provenance(parent, data):
+    """Who wrote this input (RB-12): the solver copies the block verbatim into
+    its run manifest (``run-manifest.json``, ``producer``) so a result can be
+    traced back to the asset definition and scene that produced it. Needs a
+    PolyFEM build that knows ``/provenance`` (1f6f826fa or later; earlier
+    strict builds refuse unknown keys)."""
+    import datetime
+    import hashlib
+
+    definition = parent.type().definition()
+    library = definition.libraryFilePath() if definition is not None else ""
+    asset_sha = ""
+    if library and os.path.isfile(library):
+        digest = hashlib.sha256()
+        with open(library, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                digest.update(chunk)
+        asset_sha = digest.hexdigest()
+    try:
+        version = hou.applicationVersionString()
+    except Exception:
+        version = ".".join(str(v) for v in hou.applicationVersion())
+    data["provenance"] = {
+        "producer": "houdini",
+        "producer_version": version,
+        "asset": f"{parent.type().name()} ({os.path.basename(library)})" if library else parent.type().name(),
+        "asset_version": (definition.version() if definition is not None else "") or "",
+        "asset_sha256": asset_sha,
+        "scene": hou.hipFile.path(),
+        "exported_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
 
 
 def write_params_only(kwargs):
@@ -4815,7 +4849,7 @@ def read_params(kwargs):
     represented_top_level = {
         "geometry", "materials", "time", "contact", "space", "solver",
         "output", "units", "boundary_conditions", "initial_conditions",
-        "root_path"}
+        "root_path", "provenance"}  # provenance is regenerated at export
     unrepresented = sorted(set(data) - represented_top_level)
     if unrepresented:
         warnings.append(

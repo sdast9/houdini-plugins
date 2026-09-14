@@ -11,7 +11,7 @@ old definitions; installed-library state should be checked in Houdini.
 | `stevenabramowitch::dev::PolyFEM::2.0` (Object) | `object_stevenabramowitch.dev.PolyFEM.2.0.hdanc` | 1.2 |
 | `readPVD::1.0` (Object) | `object_readPVD.1.0.hdanc` | readPVD_higher_order 0.26 |
 
-Design notes: [SPEC_per_element_materials.md](SPEC_per_element_materials.md) —
+Design notes: [per-element-materials.md](per-element-materials.md) —
 fiber models, composites, and per-element material data. **Implemented**
 2026-07-30 (phases 0–4 and readPVD material/fiber support, including sign-aware
 smoothing and dispersion coloring); the spec is kept as the rationale and
@@ -120,6 +120,13 @@ Targets the current build's strict-validated schema — the old fork keys
   (geometry/transforms/materials/time/contact/solver mapped; sidesets must be
   re-selected since the id scheme changed).
 * Tolerance defaults updated to the rescaled-tolerances solver semantics.
+* **Provenance** (2026-09-14, RB-12): every exported `params.json` carries a
+  `provenance` block — Houdini version, the asset type and library file with
+  its SHA-256, the scene file and the export time — which the solver copies
+  into `output/run-manifest.json` (`producer`), next to the build identity,
+  executable hash, input/mesh hashes and per-step history it records for
+  every run. Needs a PolyFEM build of `1f6f826fa` or later; earlier strict
+  builds refuse the unknown key.
 
 ## readPVD 1.0
 
@@ -290,6 +297,15 @@ Targets the current build's strict-validated schema — the old fork keys
    viewport overlay legend, and scene gnomon; try both Auto Range buttons;
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
+
+### Provenance block (2026-09-14, RB-12)
+
+* `build_params` appends `provenance` (producer `houdini`, `producer_version`,
+  `asset` = type name and `.hdanc` file, `asset_version`, `asset_sha256`,
+  `scene`, `exported_at`) to the exported JSON; `read_params` treats the key
+  as represented (it is regenerated at the next export). The end-to-end test
+  checks that the exported file carries it and that the solver's manifest
+  reproduces it as `producer`.
 
 ### Friction lag and budget (2026-09-13, RB-10)
 

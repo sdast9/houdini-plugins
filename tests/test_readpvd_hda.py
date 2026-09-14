@@ -18,11 +18,28 @@ POLYFEM_BIN = os.path.join(ROOT, "polyfem", "build", "PolyFEM_bin")
 SMOKE = os.path.join(ROOT, "smoke-out", "quasistatic-semi")
 
 
+def cached_run_is_current(pvd):
+    """A derived run of the smoke scene is only comparable with the full run
+    in SMOKE if the same solver produced both: regenerate it when it is
+    older than the full run's last step or than the binary (RB-12: the
+    July minimal run was being compared with a September full run, 4e-4 of
+    displacement apart, and failed the PK2 comparison for that reason)."""
+    if not os.path.isfile(pvd):
+        return False
+    age = os.path.getmtime(pvd)
+    newer = [f for f in (os.path.join(SMOKE, "step_4.vtu"), POLYFEM_BIN)
+             if os.path.isfile(f) and os.path.getmtime(f) > age]
+    if newer:
+        print(f"regenerating {os.path.basename(pvd)}: older than "
+              + ", ".join(os.path.basename(f) for f in newer))
+    return not newer
+
+
 def ensure_surface_run():
     """Produce output with a Surface block (contact forces) if missing."""
     out_dir = os.path.join(ROOT, "smoke-out", "readpvd-surface")
     pvd = os.path.join(out_dir, "surface.pvd")
-    if os.path.isfile(pvd):
+    if cached_run_is_current(pvd):
         return pvd
     os.makedirs(out_dir, exist_ok=True)
     scene_dir = os.path.join(ROOT, "polyfem", "scenes", "semi-implicit")
@@ -49,7 +66,7 @@ def ensure_minimal_run():
     else is derived by readPVD on load."""
     out_dir = os.path.join(ROOT, "smoke-out", "readpvd-minimal")
     pvd = os.path.join(out_dir, "minimal.pvd")
-    if os.path.isfile(pvd):
+    if cached_run_is_current(pvd):
         return pvd
     os.makedirs(out_dir, exist_ok=True)
     scene_dir = os.path.join(ROOT, "polyfem", "scenes", "semi-implicit")
