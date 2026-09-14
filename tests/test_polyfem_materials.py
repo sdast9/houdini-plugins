@@ -585,6 +585,91 @@ def main():
     node.parm("color_by1").set("subdomains")
     phm.fiber_display_changed({"node": node, "script_multiparm_index": "1"})
 
+    # ---- end-to-end: a per-element scalar on a NON-FIRST subdomain ---------
+    # RB-11 (2026-09-13): the HDA writes every per-element file over the
+    # global element range. Upstream #333 had made the solver read scalar
+    # files body-locally, so body 2's rows were misindexed while the fibre
+    # file (still global) was not; the fork binds both by length. This solve
+    # proves the kappa authored on subdomain 2 reaches the right elements.
+    print("\n--- end-to-end solve: per-element kappa on subdomain 2 ---")
+    scalar_source = node.createNode("attribwrangle", "scalar_source_vol2")
+    scalar_source.setInput(0, node.node("branch_1"))
+    scalar_source.setParms({"class": 1, "snippet": (
+        "if (i@is_volume == 0) return;\n"
+        "vector c = {0,0,0}; int n = primvertexcount(0, @primnum);\n"
+        "for (int i = 0; i < n; i++)\n"
+        "    c += point(0, \"P\", vertexpoint(0, vertexindex(0, @primnum, i)));\n"
+        "c /= n;\n"
+        "v@fiber2 = normalize(set(0.2, 1.0, 0.1));\n"
+        "f@kappa2 = 0.05 + 0.25 * clamp(0.5 * c.x + 0.25 * c.z, 0.0, 1.0);")})
+    node.setParms({
+        "materials1_1": phm.MATERIAL_TOKENS.index("NeoHookean"),
+        "E1_1": 1e5, "nu1_1": 0.4,
+        "materials1_2": phm.MATERIAL_TOKENS.index("HGODispersion"),
+        "hgo_k11_2": 1e4, "hgo_k21_2": 5.0,
+        "fib_source1_2": "attribute", "fib_sop1_2": scalar_source.path(),
+        "fib_attrib1_2": "fiber2",
+        "kappa_source1_2": "attribute", "kappa_sop1_2": scalar_source.path(),
+        "kappa_attrib1_2": "kappa2"})
+    material2 = phm.build_material(node, 1, 2)
+    check("subdomain 2 emits a per-element kappa file",
+          material2.get("kappa") == "pe_kappa_1_2.txt", str(material2))
+    params_path = phm.build_params(node)
+    kappa_file = np.loadtxt(os.path.join(os.path.dirname(params_path),
+                                         "pe_kappa_1_2.txt"))
+    check("subdomain 2's kappa file spans the global element range",
+          len(kappa_file) == count, f"{len(kappa_file)} rows vs {count}")
+    result = subprocess.run(
+        [POLYFEM_BIN, "-j", "params.json", "-o", "../output_vol2/",
+         "--log_level", "error"],
+        cwd=os.path.dirname(params_path), capture_output=True, text=True,
+        timeout=900)
+    check("PolyFEM runs the subdomain-2 scene", result.returncode == 0,
+          (result.stdout + result.stderr)[-400:])
+    if result.returncode == 0:
+        out_dir = os.path.join(work, "output_vol2")
+        vtus = [f for f in os.listdir(out_dir) if f.endswith(".vtu")]
+        vtu = vtu_parser.read_vtu(os.path.join(out_dir, sorted(vtus)[0]))
+        pdata = vtu["point_data"]
+        kappa_keys = [k for k in pdata if k.endswith("kappa")]
+        check("kappa field present in the output", bool(kappa_keys),
+              str(sorted(pdata)[:12]))
+        body = pdata["body_ids"].ravel() if "body_ids" in pdata else None
+        check("body ids exported for the subdomain-2 binding check",
+              body is not None)
+        if kappa_keys and body is not None:
+            kappa_out = pdata[kappa_keys[0]].ravel()
+            pts = vtu["points"]
+            checked = bad = other = 0
+            worst = 0.0
+            for cell in vtu["cells"]["tet"]:
+                values = kappa_out[cell]
+                if int(body[cell[0]]) != 1002:
+                    # the NeoHookean body has no kappa: reported as zero
+                    if np.abs(values).max() > 1e-12:
+                        other += 1
+                    continue
+                centroid = pts[cell].mean(axis=0)
+                expected = 0.05 + 0.25 * min(max(
+                    0.5 * centroid[0] + 0.25 * centroid[2], 0.0), 1.0)
+                checked += 1
+                err = float(np.abs(values - expected).max())
+                worst = max(worst, err)
+                if err > 1e-6:
+                    bad += 1
+            expected_count = int(np.sum(np.asarray(
+                node.node("branch_1").geometry().primIntAttribValues("Entity")
+            )[np.asarray(node.node("branch_1").geometry()
+                         .primIntAttribValues("is_volume")).astype(bool)] == 2))
+            check("per-element kappa reached the solver on subdomain 2's "
+                  "elements (global-row binding)",
+                  checked == expected_count and bad == 0 and other == 0,
+                  f"{checked}/{expected_count} checked, {bad} wrong, "
+                  f"{other} leaked onto body 1, worst {worst:.2e}")
+    node.setParms({"materials1_1": phm.MATERIAL_TOKENS.index("HGODispersion"),
+                   "materials1_2": phm.MATERIAL_TOKENS.index("NeoHookean"),
+                   "fib_source1_2": "constant", "kappa_source1_2": "constant"})
+
     print("\n" + ("PASS: PolyFEM material models and per-element data"
                   if not fails else f"FAILURES: {fails}"))
     if fails:
