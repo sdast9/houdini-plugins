@@ -2825,7 +2825,16 @@ def build_nonlinear_solver(parent):
                      "roundoff_tolerance":
                          parent.evalParm("armijo_roundoff_tolerance")},
           "RobustArmijo": {"delta_relative_tolerance":
-                           parent.evalParm("delta_relative_tolerance")}}
+                           parent.evalParm("delta_relative_tolerance")},
+          "Wolfe": {
+              "c2": parent.evalParm("wolfe_c2"),
+              "growth_factor": parent.evalParm("wolfe_growth_factor"),
+              "growth_limit": parent.evalParm("wolfe_growth_limit"),
+              "max_evaluations": parent.evalParm("wolfe_max_evaluations"),
+              "max_objective_restarts":
+                  parent.evalParm("wolfe_max_objective_restarts"),
+              "approximate_wolfe_epsilon":
+                  parent.evalParm("wolfe_approximate_epsilon")}}
 
     # A scene saved with a withdrawn method (see _UNSUPPORTED_NONLINEAR) loads
     # with Houdini's own warning ("Parameter value ... in solver_nl is
@@ -4249,7 +4258,8 @@ def _restore_solver(parent, data, legacy, warnings):
         if isinstance(line_search, dict):
             methods = {
                 name: index for index, name in enumerate((
-                    "Armijo", "RobustArmijo", "Backtracking", "None"))}
+                    "Armijo", "RobustArmijo", "Backtracking", "None",
+                    "Wolfe"))}
             method = line_search.get("method")
             if method == "none":
                 method = "None"
@@ -4274,6 +4284,7 @@ def _restore_solver(parent, data, legacy, warnings):
                     parms[parm] = line_search[key]
             armijo = line_search.get("Armijo", {})
             robust = line_search.get("RobustArmijo", {})
+            wolfe = line_search.get("Wolfe", {})
             if isinstance(armijo, dict) and "c" in armijo:
                 parms["armijo_c"] = armijo["c"]
             if isinstance(armijo, dict) and "roundoff_tolerance" in armijo:
@@ -4282,6 +4293,18 @@ def _restore_solver(parent, data, legacy, warnings):
                     and "delta_relative_tolerance" in robust:
                 parms["delta_relative_tolerance"] = \
                     robust["delta_relative_tolerance"]
+            if isinstance(wolfe, dict):
+                for key, parm in (
+                        ("c2", "wolfe_c2"),
+                        ("growth_factor", "wolfe_growth_factor"),
+                        ("growth_limit", "wolfe_growth_limit"),
+                        ("max_evaluations", "wolfe_max_evaluations"),
+                        ("max_objective_restarts",
+                         "wolfe_max_objective_restarts"),
+                        ("approximate_wolfe_epsilon",
+                         "wolfe_approximate_epsilon")):
+                    if key in wolfe:
+                        parms[parm] = wolfe[key]
 
     contact = solver.get("contact", {})
     if isinstance(contact, dict):

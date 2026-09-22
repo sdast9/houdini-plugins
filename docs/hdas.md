@@ -298,6 +298,23 @@ Targets the current build's strict-validated schema — the old fork keys
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
 
+### Strong Wolfe line search (2026-09-22, BFGS audit stage 3)
+
+* Solver ▸ *Line Search* now offers the feasibility-respecting **Strong Wolfe
+  (opt-in)** search implemented in Stage 3 of the BFGS audit. Robust Armijo
+  remains the recommended default; no solver policy or default changed.
+* The asset exports and restores the complete `line_search/Wolfe` contract:
+  curvature `c2`, growth factor and limit, evaluation budget, objective-change
+  restart budget and approximate-Wolfe energy tolerance. Armijo `c`, its
+  roundoff tolerance and Robust Armijo's relative tolerance remain visible
+  because Wolfe uses them for its decrease test and safeguarded fallback.
+* Step growth is not blind: the solver rebuilds and prices the longer contact
+  sweep before evaluating it, and CCD, validity and the trial-displacement cap
+  can stop growth earlier. The end-to-end asset test exports custom values,
+  runs dense BFGS with `[BFGS][Wolfe]`, and round-trips all controls.
+* Wolfe was appended to the menu so existing Houdini scenes keep the ordinal
+  values of Armijo, Robust Armijo, Backtracking and None.
+
 ### Nonlinear methods: only what the simulation can run (2026-09-22, BFGS audit stage 5)
 
 * **The Solver menu offers seven methods, down from ten.** L-BFGS-B and MMA are

@@ -346,6 +346,51 @@ def main():
     assert node3.parm("al_lumping").evalAsString() == "hrz"
     print("PASS: solver-panel controls round-trip through import")
 
+    # --- BFGS audit stage 3: feasibility-respecting Strong Wolfe ----------
+    # Append Wolfe to the menu so the saved ordinal values of all older
+    # choices remain stable. Exercise its full JSON contract, importer and a
+    # real dense-BFGS solve rather than accepting UI presence as sufficient.
+    line_searches = list(node.parm("method").menuItems())
+    assert line_searches == ["Armijo", "RobustArmijo", "Backtracking", "None",
+                             "Wolfe"], line_searches
+    node.parm("method").set("Wolfe")
+    node.parm("solver_nl").set("BFGS")
+    node.setParms({"wolfe_c2": 0.8, "wolfe_growth_factor": 1.75,
+                   "wolfe_growth_limit": 12.0,
+                   "wolfe_max_evaluations": 17,
+                   "wolfe_max_objective_restarts": 3,
+                   "wolfe_approximate_epsilon": 2e-6})
+    params_path = mod.write_params_only({"node": node})
+    with open(params_path) as f:
+        data = json.load(f)
+    line_search = data["solver"]["nonlinear"]["line_search"]
+    assert line_search["method"] == "Wolfe", line_search
+    assert line_search["Wolfe"] == {
+        "c2": 0.8, "growth_factor": 1.75, "growth_limit": 12.0,
+        "max_evaluations": 17, "max_objective_restarts": 3,
+        "approximate_wolfe_epsilon": 2e-6}, line_search
+    result = subprocess.run(
+        [POLYFEM_BIN, "-j", "params.json", "-o", "../output/",
+         "--log_level", "info"],
+        cwd=input_dir, capture_output=True, text=True, timeout=900)
+    combined = result.stdout + result.stderr
+    assert "invalid input json" not in combined, combined[-1500:]
+    assert "[BFGS][Wolfe]" in combined, combined[-1500:]
+    wolfe_back = hou.node("/obj").createNode(
+        "stevenabramowitch::dev::PolyFEM::2.0", "polyfem_wolfe_roundtrip")
+    wolfe_back.setParms({"old_input_dir": input_dir})
+    wolfe_back.hdaModule().read_params({"node": wolfe_back})
+    assert wolfe_back.parm("method").evalAsString() == "Wolfe"
+    assert abs(wolfe_back.evalParm("wolfe_c2") - 0.8) < 1e-12
+    assert abs(wolfe_back.evalParm("wolfe_growth_factor") - 1.75) < 1e-12
+    assert abs(wolfe_back.evalParm("wolfe_growth_limit") - 12.0) < 1e-12
+    assert wolfe_back.evalParm("wolfe_max_evaluations") == 17
+    assert wolfe_back.evalParm("wolfe_max_objective_restarts") == 3
+    assert abs(wolfe_back.evalParm("wolfe_approximate_epsilon") - 2e-6) < 1e-18
+    wolfe_back.destroy()
+    node.parm("method").set("RobustArmijo")
+    print("PASS: BFGS Strong Wolfe exports, runs and round-trips")
+
     # --- BFGS audit stage 5: forward nonlinear methods ------------------------
     # The menu offers only what PolyFEM's simulation can run; every offered
     # method exports JSON that round-trips through the importer and that the

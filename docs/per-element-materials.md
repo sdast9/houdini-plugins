@@ -5,7 +5,7 @@ Phases 0–4 and the readPVD material/fiber pipeline are present in source and t
 including sign-aware smoothing and dispersion coloring. The 2.0 generation was
 published in `sdast9/houdini-plugins` at `5b8c5e9`; PolyFEM's material-file caching,
 bounds guard, and duplicate-model output names landed in `3503148d7` and are on
-`main`. See [README.md](README.md) for the user-facing feature summary.
+`main`. See [README.md](hdas.md) for the user-facing feature summary.
 
 Sections below retain the original implementation plan, sketches, and July 30
 upstream observations. Phrases such as "today", "must add", "crashes", and

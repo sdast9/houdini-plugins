@@ -4035,8 +4035,9 @@
                     "RobustArmijo"  "Robust Armijo (recommended)"
                     "Backtracking"  "Backtracking"
                     "None"          "None (full steps, unsafe)"
+                    "Wolfe"         "Strong Wolfe (opt-in)"
                 }
-                help    "Rule the line search uses to accept a trial step. Robust Armijo (recommended) is Armijo's sufficient-decrease test made safe against roundoff near convergence. Armijo is the plain test; Backtracking only asks for any energy decrease; None takes full steps blindly and can pass through contact or diverge -- use it only for experiments."
+                help    "Rule the line search uses to accept a trial step. Robust Armijo remains the recommended default. Strong Wolfe is the BFGS-audit search: it tests sufficient decrease and slope, may safely grow beyond a full step after rebuilding and pricing the contact sweep, and falls back to Robust Armijo if it finds no decrease. Armijo is the plain sufficient-decrease test; Backtracking only asks for any energy decrease; None takes full steps blindly and can pass through contact or diverge -- use it only for experiments."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4044,8 +4045,8 @@
                 label   "Armijo c"
                 type    log
                 default { "0.0001" }
-                disablewhen "{ method != Armijo method != RobustArmijo }"
-                hidewhen "{ method != Armijo method != RobustArmijo }"
+                disablewhen "{ method != Armijo method != RobustArmijo method != Wolfe }"
+                hidewhen "{ method != Armijo method != RobustArmijo method != Wolfe }"
                 range   { 0 1 }
                 help    "Armijo constant c: a step is accepted if the energy drops by at least c times the drop predicted by the gradient. 1e-4 is the textbook value; larger is stricter."
                 parmtag { "script_callback_language" "python" }
@@ -4055,8 +4056,8 @@
                 label   "Delta Relative Tolerance"
                 type    float
                 default { "0.1" }
-                disablewhen "{ method != RobustArmijo }"
-                hidewhen "{ method != RobustArmijo }"
+                disablewhen "{ method != RobustArmijo method != Wolfe }"
+                hidewhen "{ method != RobustArmijo method != Wolfe }"
                 range   { 0 1 }
                 help    "Robust Armijo: when the energy change is smaller than this fraction of the energy itself, the test switches to a gradient-based estimate that is not swamped by roundoff. 0.1 is standard."
                 parmtag { "script_callback_language" "python" }
@@ -4066,10 +4067,76 @@
                 label   "Roundoff Tolerance"
                 type    log
                 default { "2.220446049250313e-16" }
-                disablewhen "{ method != Armijo method != RobustArmijo }"
-                hidewhen "{ method != Armijo method != RobustArmijo }"
+                disablewhen "{ method != Armijo method != RobustArmijo method != Wolfe }"
+                hidewhen "{ method != Armijo method != RobustArmijo method != Wolfe }"
                 range   { 0 1e-08 }
                 help    "Roundoff floor of the energy for Armijo and Robust Armijo: if the energy change is within this fraction of (1 + |energy|), it cannot be trusted and the step is instead accepted when the gradient norm decreases. The default is machine precision (2.2e-16); 0 disables this fallback. Together with Grad Norm Tol this prevents solves from stalling on floating-point noise."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "wolfe_c2"
+                label   "Wolfe Curvature c2"
+                type    float
+                default { "0.9" }
+                disablewhen "{ method != Wolfe }"
+                hidewhen "{ method != Wolfe }"
+                range   { 0 1 }
+                help    "Strong Wolfe curvature constant. It must be greater than Armijo c and less than 1. Smaller values demand a flatter slope and trigger more step growth; 0.9 is the Stage 3 default."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "wolfe_growth_factor"
+                label   "Wolfe Growth Factor"
+                type    float
+                default { "2" }
+                disablewhen "{ method != Wolfe }"
+                hidewhen "{ method != Wolfe }"
+                range   { 1.01 10 }
+                help    "Multiplier used when Strong Wolfe extends a step beyond its current priced interval. It must be greater than 1; each extension rebuilds and prices the contact sweep before evaluating the longer step."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "wolfe_growth_limit"
+                label   "Wolfe Growth Limit"
+                type    float
+                default { "16" }
+                disablewhen "{ method != Wolfe }"
+                hidewhen "{ method != Wolfe }"
+                range   { 1 128 }
+                help    "Largest step multiplier Strong Wolfe may reach while growing beyond the initial direction. Feasibility, CCD and the trial-displacement cap can stop growth earlier."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "wolfe_max_evaluations"
+                label   "Wolfe Max Evaluations"
+                type    integer
+                default { "20" }
+                disablewhen "{ method != Wolfe }"
+                hidewhen "{ method != Wolfe }"
+                range   { 1 100 }
+                help    "Maximum energy/slope trials in one Strong Wolfe bracket-and-zoom search. The general line-search iteration limit can impose a tighter bound."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "wolfe_max_objective_restarts"
+                label   "Wolfe Objective Restarts"
+                type    integer
+                default { "2" }
+                disablewhen "{ method != Wolfe }"
+                hidewhen "{ method != Wolfe }"
+                range   { 0 20 }
+                help    "How many times Strong Wolfe may discard its bracket and restart from the current point if a form reports that the objective changed during the search."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "wolfe_approximate_epsilon"
+                label   "Approximate Wolfe Epsilon"
+                type    log
+                default { "1e-06" }
+                disablewhen "{ method != Wolfe }"
+                hidewhen "{ method != Wolfe }"
+                range   { 0 0.01 }
+                help    "Relative energy-noise allowance used by the Hager-Zhang approximate Wolfe condition. When energy changes are below this fraction of the current energy, the slope decides acceptance. 1e-6 is the validated Stage 3 default; 0 disables this allowance."
                 parmtag { "script_callback_language" "python" }
             }
         }
