@@ -353,6 +353,15 @@ def main():
     line_searches = list(node.parm("method").menuItems())
     assert line_searches == ["Armijo", "RobustArmijo", "Backtracking", "None",
                              "Wolfe"], line_searches
+    method_help = node.parm("method").parmTemplate().help()
+    assert "decides how far the solver moves" in method_help
+    assert "recommended choice for most simulations" in method_help
+    assert "Contact safety checks still limit every move" in method_help
+    for parm_name in ("wolfe_c2", "wolfe_growth_factor", "wolfe_growth_limit",
+                      "wolfe_max_evaluations", "wolfe_max_objective_restarts",
+                      "wolfe_approximate_epsilon"):
+        help_text = node.parm(parm_name).parmTemplate().help()
+        assert help_text and len(help_text) > 120, (parm_name, help_text)
     node.parm("method").set("Wolfe")
     node.parm("solver_nl").set("BFGS")
     node.setParms({"wolfe_c2": 0.8, "wolfe_growth_factor": 1.75,

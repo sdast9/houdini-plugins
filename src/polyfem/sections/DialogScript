@@ -4037,7 +4037,7 @@
                     "None"          "None (full steps, unsafe)"
                     "Wolfe"         "Strong Wolfe (opt-in)"
                 }
-                help    "Rule the line search uses to accept a trial step. Robust Armijo remains the recommended default. Strong Wolfe is the BFGS-audit search: it tests sufficient decrease and slope, may safely grow beyond a full step after rebuilding and pricing the contact sweep, and falls back to Robust Armijo if it finds no decrease. Armijo is the plain sufficient-decrease test; Backtracking only asks for any energy decrease; None takes full steps blindly and can pass through contact or diverge -- use it only for experiments."
+                help    "A line search decides how far the solver moves during each iteration. Robust Armijo is the recommended choice for most simulations. Strong Wolfe is an optional choice for BFGS or L-BFGS: it may try a shorter or longer move and accepts it only when the energy has dropped enough and the energy curve has flattened. Contact safety checks still limit every move. Leave this on Robust Armijo unless you are testing quasi-Newton convergence. Armijo and Backtracking use simpler acceptance rules. None skips this protection and is unsafe except for controlled experiments."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4048,7 +4048,7 @@
                 disablewhen "{ method != Armijo method != RobustArmijo method != Wolfe }"
                 hidewhen "{ method != Armijo method != RobustArmijo method != Wolfe }"
                 range   { 0 1 }
-                help    "Armijo constant c: a step is accepted if the energy drops by at least c times the drop predicted by the gradient. 1e-4 is the textbook value; larger is stricter."
+                help    "Controls how much the simulation energy must decrease before a trial move is accepted. Larger values demand a bigger decrease and may produce shorter moves. The default 1e-4 is standard; most users should leave it unchanged."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4059,7 +4059,7 @@
                 disablewhen "{ method != RobustArmijo method != Wolfe }"
                 hidewhen "{ method != RobustArmijo method != Wolfe }"
                 range   { 0 1 }
-                help    "Robust Armijo: when the energy change is smaller than this fraction of the energy itself, the test switches to a gradient-based estimate that is not swamped by roundoff. 0.1 is standard."
+                help    "Helps Robust Armijo and Strong Wolfe when an energy change is too tiny for reliable floating-point comparison. In that case the solver also checks the force information. The default 0.1 is intended to prevent false rejections near convergence; most users should leave it unchanged."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4070,7 +4070,7 @@
                 disablewhen "{ method != Armijo method != RobustArmijo method != Wolfe }"
                 hidewhen "{ method != Armijo method != RobustArmijo method != Wolfe }"
                 range   { 0 1e-08 }
-                help    "Roundoff floor of the energy for Armijo and Robust Armijo: if the energy change is within this fraction of (1 + |energy|), it cannot be trusted and the step is instead accepted when the gradient norm decreases. The default is machine precision (2.2e-16); 0 disables this fallback. Together with Grad Norm Tol this prevents solves from stalling on floating-point noise."
+                help    "Treats extremely small energy differences as numerical noise instead of real increases. When that happens, the solver checks whether the remaining force became smaller. The default is machine precision (2.2e-16); 0 turns this protection off. Leave the default unless you are diagnosing a near-convergence stall."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4081,7 +4081,7 @@
                 disablewhen "{ method != Wolfe }"
                 hidewhen "{ method != Wolfe }"
                 range   { 0 1 }
-                help    "Strong Wolfe curvature constant. It must be greater than Armijo c and less than 1. Smaller values demand a flatter slope and trigger more step growth; 0.9 is the Stage 3 default."
+                help    "Controls how flat the energy curve must become before Strong Wolfe accepts a move. A smaller value is stricter and can make the solver try more or longer moves; a value nearer 1 is easier to satisfy. It must stay above Armijo c and below 1. The recommended starting value is 0.9."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4092,7 +4092,7 @@
                 disablewhen "{ method != Wolfe }"
                 hidewhen "{ method != Wolfe }"
                 range   { 1.01 10 }
-                help    "Multiplier used when Strong Wolfe extends a step beyond its current priced interval. It must be greater than 1; each extension rebuilds and prices the contact sweep before evaluating the longer step."
+                help    "How much longer the next trial move becomes when Strong Wolfe decides the current move is too short. A value of 2 doubles it. The value must be greater than 1. Before trying the longer move, PolyFEM rebuilds the contact search and applies its safety limits."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4103,7 +4103,7 @@
                 disablewhen "{ method != Wolfe }"
                 hidewhen "{ method != Wolfe }"
                 range   { 1 128 }
-                help    "Largest step multiplier Strong Wolfe may reach while growing beyond the initial direction. Feasibility, CCD and the trial-displacement cap can stop growth earlier."
+                help    "The longest move Strong Wolfe is allowed to try, measured as a multiple of the original move. The default 16 means at most sixteen times as far. Contact, collision and mesh-validity checks can stop the move much earlier. Lower this if long trials cost too much."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4114,7 +4114,7 @@
                 disablewhen "{ method != Wolfe }"
                 hidewhen "{ method != Wolfe }"
                 range   { 1 100 }
-                help    "Maximum energy/slope trials in one Strong Wolfe bracket-and-zoom search. The general line-search iteration limit can impose a tighter bound."
+                help    "Maximum number of trial moves Strong Wolfe may examine during one solver iteration. More trials can help it find a useful move but cost more energy and force evaluations. The default is 20; the general line-search limit may stop it sooner."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4125,7 +4125,7 @@
                 disablewhen "{ method != Wolfe }"
                 hidewhen "{ method != Wolfe }"
                 range   { 0 20 }
-                help    "How many times Strong Wolfe may discard its bracket and restart from the current point if a form reports that the objective changed during the search."
+                help    "How many times Strong Wolfe may start its search over if the simulation energy model changes while it is testing moves. Restarting prevents it from comparing values from two different models. The default 2 is normally sufficient; 0 allows no restart."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4136,7 +4136,7 @@
                 disablewhen "{ method != Wolfe }"
                 hidewhen "{ method != Wolfe }"
                 range   { 0 0.01 }
-                help    "Relative energy-noise allowance used by the Hager-Zhang approximate Wolfe condition. When energy changes are below this fraction of the current energy, the slope decides acceptance. 1e-6 is the validated Stage 3 default; 0 disables this allowance."
+                help    "How much of a tiny energy change may be treated as floating-point noise. When the change is below this fraction of the current energy, Strong Wolfe uses the curve's slope to decide instead. The validated default is 1e-6. Larger values are more forgiving; 0 disables this allowance."
                 parmtag { "script_callback_language" "python" }
             }
         }
