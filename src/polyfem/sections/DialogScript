@@ -4641,7 +4641,7 @@
                 label   "File Name"
                 type    string
                 default { "sim.pvd" }
-                help    "Name of the ParaView collection file written in output/ (each step is a .vtu referenced from it). Load this file with the Read PVD node."
+                help    "Name of the small ParaView collection file written in output/. It lists the result file for each saved step (.hdf by default, or .vtu when Use HDF5 is off). Choose this .pvd file in the Read PVD node to view or scrub the simulation."
                 parmtag { "filechooser_mode" "write" }
                 parmtag { "script_callback_language" "python" }
             }
@@ -4671,8 +4671,8 @@
                     name    "use_hdf5"
                     label   "Use HDF5"
                     type    toggle
-                    default { "0" }
-                    help    "Write the ParaView data in HDF5 format instead of XML .vtu (smaller for large meshes). The Read PVD node expects .vtu, so leave this off for the Houdini workflow."
+                    default { "1" }
+                    help    "Save each result frame as a compressed HDF5 file. This is the recommended default: large meshes usually use much less disk space (about 89% less in a 612,000-tet test), and the Read PVD node loads these files directly through the .pvd collection. Turn this off only when sending results to an older tool that requires XML .vtu files."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -4965,7 +4965,7 @@
                 label   "Timestep Prefix"
                 type    string
                 default { "step_" }
-                help    "Prefix of the per-step result files (step_0.vtu, step_1.vtu, ...). Change only if another tool expects different names."
+                help    "Prefix of the numbered result files (for example step_0.hdf and step_1.hdf, or .vtu when HDF5 is off). Most users should leave this as step_."
                 parmtag { "script_callback_language" "python" }
             }
             parm {

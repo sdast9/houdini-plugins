@@ -11,7 +11,7 @@ old definitions; installed-library state should be checked in Houdini.
 | `stevenabramowitch::dev::PolyFEM::2.0` (Object) | `object_stevenabramowitch.dev.PolyFEM.2.0.hdanc` | 1.2 |
 | `readPVD::1.0` (Object) | `object_readPVD.1.0.hdanc` | readPVD_higher_order 0.26 |
 
-Design notes: [per-element-materials.md](per-element-materials.md) —
+Design notes: [SPEC_per_element_materials.md](SPEC_per_element_materials.md) —
 fiber models, composites, and per-element material data. **Implemented**
 2026-07-30 (phases 0–4 and readPVD material/fiber support, including sign-aware
 smoothing and dispersion coloring); the spec is kept as the rationale and
@@ -111,6 +111,11 @@ Targets the current build's strict-validated schema — the old fork keys
   (these take precedence over face-list files).
 * **Run buttons**: *Run PolyFEM* (terminal, as before), *Run in Background*
   (headless with `output/log.txt` + *Show Log*), *Write params.json Only*.
+* **Compressed HDF5 output is the default.** PolyFEM writes each result frame
+  as VTK-HDF while keeping the same `.pvd` collection workflow. On the
+  611,914-tet uniaxial case this reduced one frame from 2.227 GB to 238 MB
+  (89.3% less). Turn *Use HDF5* off only for an older downstream tool that
+  requires XML `.vtu` files.
 * Adaptive remeshing settings write the current `/space/remesh` schema and
   round-trip when importing a previous `params.json`.
 * Display chain rebuilt for scale: one Entity-colored boundary surface per
@@ -130,11 +135,15 @@ Targets the current build's strict-validated schema — the old fork keys
 
 ## readPVD 1.0
 
-* **No meshio dependency**: native numpy VTK-XML parser (ascii / inline
-  base64 / appended, zlib-compressed or not). Handles multi-GB inline-binary
-  VTUs: the XML is fed to expat in chunks (a >2 GiB document overflows a single
-  feed) and inline `<DataArray>` payloads are stripped before parsing and
-  decoded on demand, so a 2 GB file does not build a 2 GB ElementTree.
+* **VTK XML and VTK-HDF input**: the native numpy XML parser handles ascii,
+  inline base64 and appended arrays, with or without zlib compression. It also
+  reads PolyFEM's compressed `.hdf` frames, including nested material-field
+  names and mixed cell types. The asset embeds the pinned h5py 3.16 wheel for
+  Houdini 22's Python 3.13 on Apple-silicon macOS and extracts it to a versioned
+  Houdini user cache on first HDF load; a normal h5py installation is preferred
+  on other platforms. Multi-GB inline-binary VTUs remain supported: XML is fed
+  to expat in chunks and inline payloads are decoded on demand, so a 2 GB file
+  does not build a 2 GB ElementTree.
 * **Topology caching**: topology is parsed once (configurable frame) and
   only P + fields upload per frame. ~1M tets: first cook 1.75 s, then
   **0.25 s per frame change**. A *Remeshing Mode* toggle rebuilds topology
@@ -225,8 +234,9 @@ Targets the current build's strict-validated schema — the old fork keys
   (fast: only the displayed frame is inspected on load, and a stale selection
   shows the Unavailable Field Color rather than erroring). Every Frame / Any
   Frame additionally scan the whole sequence for intermittent fields with
-  coverage labels — these read every `.vtu` and are labelled as slow, since the
-  field list lives inside each file and cannot be discovered any other way.
+  coverage labels — these inspect every result frame and are labelled as slow,
+  since the field list lives inside each file and cannot be discovered any
+  other way.
   Options that were not exported are not shown; stale selections are replaced
   safely. Controls such as deformation and glyphs are disabled when their
   required data is unavailable. Operations that must scan the whole sequence

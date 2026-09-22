@@ -1,4 +1,4 @@
-"""Native numpy VTK XML parser (VTU/VTM/PVD) for PolyFEM output.
+"""Native numpy VTK parser (VTU/VTK-HDF/VTM/PVD) for PolyFEM output.
 
 Replaces meshio for the readPVD HDA: zero dependencies beyond numpy,
 vectorized decode of ascii / inline-base64 / appended data arrays with
@@ -72,6 +72,25 @@ TET35_SUBDIV = np.array([          # P4 (35 nodes) -> 64 sub-tets
 
 class VtuParseError(RuntimeError):
     pass
+
+
+def _import_h5py():
+    """Import h5py, using the HDA's embedded wheel when available."""
+    try:
+        import h5py
+        return h5py
+    except ImportError as original:
+        loader = globals().get("_load_embedded_h5py")
+        if loader is not None:
+            try:
+                return loader()
+            except Exception as embedded_error:
+                raise VtuParseError(
+                    "This VTK-HDF result needs h5py. The bundled reader could "
+                    f"not be loaded: {embedded_error}") from embedded_error
+        raise VtuParseError(
+            "This VTK-HDF result needs h5py in Houdini's Python environment."
+        ) from original
 
 
 # expat's feed() takes an int-sized length, so ElementTree.fromstring (one
@@ -235,44 +254,28 @@ class _Reader:
         return arr
 
 
-def read_vtu(path):
-    """Parse an UnstructuredGrid .vtu.
-
-    Returns dict:
-        points      (N, 3) float64
-        cells       {family: (M, k) int64 corner connectivity}
-        cell_entity {family: (M,) int32}   (zeros; vtu carries no entities)
-        point_data  {name: ndarray (N,) or (N, c)}
-        cell_data   {name: {family: ndarray (M,) or (M, c)}}
-        topo_key    hash of the connectivity (for topology caching)
-    """
-    reader = _Reader(path)
-    piece = reader.root.find(".//{*}Piece") or reader.root.find(".//Piece")
-    if piece is None:
-        raise VtuParseError(f"No <Piece> in {path}")
-
-    def find(parent, tag):
-        e = parent.find(tag)
-        return e if e is not None else parent.find("{*}" + tag)
-
-    points_elem = find(piece, "Points")
-    points = reader.read_data_array(
-        points_elem.find("DataArray")
-        if points_elem.find("DataArray") is not None
-        else points_elem.find("{*}DataArray")).astype(np.float64)
+def _mesh_from_arrays(points, connectivity, offsets, types, point_data,
+                      raw_cell_data, offsets_include_zero=False):
+    """Build the common readPVD mesh contract from VTK cell arrays."""
+    points = np.asarray(points, dtype=np.float64)
     if points.ndim == 1:
         points = points.reshape(-1, 3)
-
-    cells_elem = find(piece, "Cells")
-    arrays = {}
-    for da in cells_elem:
-        arrays[da.get("Name")] = reader.read_data_array(da)
-    connectivity = arrays["connectivity"].astype(np.int64).ravel()
-    offsets = arrays["offsets"].astype(np.int64).ravel()
-    types = arrays["types"].astype(np.int64).ravel()
-
-    starts = np.concatenate(([0], offsets[:-1]))
-    sizes = offsets - starts
+    connectivity = np.asarray(connectivity, dtype=np.int64).ravel()
+    offsets = np.asarray(offsets, dtype=np.int64).ravel()
+    types = np.asarray(types, dtype=np.int64).ravel()
+    if offsets_include_zero:
+        if len(offsets) != len(types) + 1 or (len(offsets) and offsets[0] != 0):
+            raise VtuParseError(
+                "VTK-HDF Offsets must start at zero and contain one entry "
+                "more than Types")
+        starts = offsets[:-1]
+        sizes = np.diff(offsets)
+    else:
+        if len(offsets) != len(types):
+            raise VtuParseError(
+                "VTU offsets and cell types have different lengths")
+        starts = np.concatenate(([0], offsets[:-1]))
+        sizes = offsets - starts
 
     cells = {}
     cell_sources = {}
@@ -312,6 +315,43 @@ def read_vtu(path):
             source_indices if prev_sources is None
             else np.concatenate((prev_sources, source_indices)))
 
+    cell_data = {}
+    for name, raw in raw_cell_data.items():
+        raw = np.asarray(raw)
+        cell_data[name] = {
+            family: raw[source_indices]
+            for family, source_indices in cell_sources.items()
+        }
+
+    topo = b"".join(
+        cells[f].tobytes() for f in sorted(cells)) + str(len(points)).encode()
+    topo_key = hash(topo)
+
+    return {"points": points, "cells": cells, "point_data": point_data,
+            "cell_data": cell_data, "topo_key": topo_key}
+
+
+def read_vtu(path):
+    """Parse an UnstructuredGrid .vtu into the readPVD mesh contract."""
+    reader = _Reader(path)
+    piece = reader.root.find(".//{*}Piece") or reader.root.find(".//Piece")
+    if piece is None:
+        raise VtuParseError(f"No <Piece> in {path}")
+
+    def find(parent, tag):
+        e = parent.find(tag)
+        return e if e is not None else parent.find("{*}" + tag)
+
+    points_elem = find(piece, "Points")
+    points = reader.read_data_array(
+        points_elem.find("DataArray")
+        if points_elem.find("DataArray") is not None
+        else points_elem.find("{*}DataArray"))
+
+    cells_elem = find(piece, "Cells")
+    arrays = {da.get("Name"): reader.read_data_array(da)
+              for da in cells_elem}
+
     point_data = {}
     pd = find(piece, "PointData")
     if pd is not None:
@@ -320,25 +360,62 @@ def read_vtu(path):
             if name:
                 point_data[name] = reader.read_data_array(da)
 
-    cell_data = {}
+    raw_cell_data = {}
     cd = find(piece, "CellData")
     if cd is not None:
         for da in cd:
             name = da.get("Name")
-            if not name:
-                continue
-            raw = reader.read_data_array(da)
-            cell_data[name] = {
-                family: raw[source_indices]
-                for family, source_indices in cell_sources.items()
-            }
+            if name:
+                raw_cell_data[name] = reader.read_data_array(da)
 
-    topo = b"".join(
-        cells[f].tobytes() for f in sorted(cells)) + str(len(points)).encode()
-    topo_key = hash(topo)
+    return _mesh_from_arrays(
+        points, arrays["connectivity"], arrays["offsets"], arrays["types"],
+        point_data, raw_cell_data)
 
-    return {"points": points, "cells": cells, "point_data": point_data,
-            "cell_data": cell_data, "topo_key": topo_key}
+
+def _hdf_datasets(group):
+    """Read every dataset below an HDF5 group, preserving slash names."""
+    h5py = _import_h5py()
+    arrays = {}
+
+    def collect(name, value):
+        if isinstance(value, h5py.Dataset):
+            arrays[name] = value[...]
+
+    group.visititems(collect)
+    return arrays
+
+
+def read_hdf(path):
+    """Parse PolyFEM's VTK-HDF UnstructuredGrid output."""
+    h5py = _import_h5py()
+    try:
+        with h5py.File(path, "r") as handle:
+            if "VTKHDF" not in handle:
+                raise VtuParseError(f"No /VTKHDF group in {path}")
+            root = handle["VTKHDF"]
+            vtk_type = root.attrs.get("Type", "")
+            if isinstance(vtk_type, bytes):
+                vtk_type = vtk_type.decode(errors="replace")
+            if str(vtk_type).rstrip("\x00") != "UnstructuredGrid":
+                raise VtuParseError(
+                    f"Unsupported VTK-HDF Type {vtk_type!r} in {path}")
+            required = ("Points", "Connectivity", "Offsets", "Types")
+            missing = [name for name in required if name not in root]
+            if missing:
+                raise VtuParseError(
+                    f"Missing VTK-HDF datasets in {path}: {', '.join(missing)}")
+            point_data = (_hdf_datasets(root["PointData"])
+                          if "PointData" in root else {})
+            cell_data = (_hdf_datasets(root["CellData"])
+                         if "CellData" in root else {})
+            return _mesh_from_arrays(
+                root["Points"][...], root["Connectivity"][...],
+                root["Offsets"][...], root["Types"][...], point_data,
+                cell_data, offsets_include_zero=True)
+    except OSError as error:
+        raise VtuParseError(f"Could not read VTK-HDF file {path}: {error}") \
+            from error
 
 
 def read_vtu_cached(path):
@@ -350,6 +427,24 @@ def read_vtu_cached(path):
     mesh = _VTU_CACHE.get(key)
     if mesh is None:
         mesh = read_vtu(path)
+        _VTU_CACHE[key] = mesh
+        while len(_VTU_CACHE) > _VTU_CACHE_SIZE:
+            _VTU_CACHE.popitem(last=False)
+    else:
+        _VTU_CACHE.move_to_end(key)
+    return mesh
+
+
+def _is_hdf(path):
+    return os.path.splitext(path)[1].lower() in (".hdf", ".h5", ".hdf5")
+
+
+def read_mesh_cached(path):
+    """Read either VTK XML or VTK-HDF through the shared small LRU."""
+    key = _file_key(path)
+    mesh = _VTU_CACHE.get(key)
+    if mesh is None:
+        mesh = read_hdf(path) if _is_hdf(path) else read_vtu(path)
         _VTU_CACHE[key] = mesh
         while len(_VTU_CACHE) > _VTU_CACHE_SIZE:
             _VTU_CACHE.popitem(last=False)
@@ -420,6 +515,45 @@ def read_vtu_field_info(path):
     return info
 
 
+def read_hdf_field_info(path):
+    """Field names and component counts without loading HDF5 array values."""
+    key = _file_key(path)
+    cached = _FIELD_INFO_CACHE.get(key)
+    if cached is not None:
+        return cached
+    parsed = _VTU_CACHE.get(key)
+    if parsed is not None:
+        info = _field_info_from_mesh(parsed)
+        _FIELD_INFO_CACHE[key] = info
+        return info
+    h5py = _import_h5py()
+    info = {"point_data": {}, "cell_data": {}}
+    with h5py.File(path, "r") as handle:
+        if "VTKHDF" not in handle:
+            raise VtuParseError(f"No /VTKHDF group in {path}")
+        root = handle["VTKHDF"]
+        for group_name, out_key in (("PointData", "point_data"),
+                                    ("CellData", "cell_data")):
+            if group_name not in root:
+                continue
+
+            def collect(name, value, destination=info[out_key]):
+                if isinstance(value, h5py.Dataset):
+                    destination[name] = (1 if len(value.shape) < 2
+                                         else int(value.shape[1]))
+
+            root[group_name].visititems(collect)
+    if len(_FIELD_INFO_CACHE) > 4096:
+        _FIELD_INFO_CACHE.clear()
+    _FIELD_INFO_CACHE[key] = info
+    return info
+
+
+def read_mesh_field_info(path):
+    return read_hdf_field_info(path) if _is_hdf(path) \
+        else read_vtu_field_info(path)
+
+
 def read_vtm(path):
     """Parse a vtkMultiBlockDataSet: returns {block_name: vtu_path}."""
     tree = ET.parse(path)
@@ -474,16 +608,16 @@ def _frame_block_paths(pvd_path, frame_index):
 
 
 def load_frame(pvd_path, frame_index):
-    """pvd -> vtm/vtu of one frame -> {block_name: parsed vtu dict}."""
+    """pvd -> vtm -> vtu/hdf frame -> {block_name: parsed mesh dict}."""
     blocks = _frame_block_paths(pvd_path, frame_index)
-    return {name: read_vtu_cached(p) for name, p in blocks.items()
+    return {name: read_mesh_cached(p) for name, p in blocks.items()
             if os.path.isfile(p)}
 
 
 def frame_field_info(pvd_path, frame_index):
     """Metadata-only load_frame: {block_name: field-info dict}."""
     blocks = _frame_block_paths(pvd_path, frame_index)
-    return {name: read_vtu_field_info(p) for name, p in blocks.items()
+    return {name: read_mesh_field_info(p) for name, p in blocks.items()
             if os.path.isfile(p)}
 
 

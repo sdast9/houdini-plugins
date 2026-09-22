@@ -11,16 +11,12 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 
 import hou
 import numpy as np
 
 from test_polyfem_hda import BASE, ROOT, POLYFEM_BIN
-
-sys.path.insert(0, os.path.join(BASE, "src", "common"))
-import vtu_parser  # noqa: E402
 
 ANCHOR = np.array([0.5, 0.5, -0.75])
 fails = []
@@ -75,6 +71,16 @@ def main():
     hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"))
     hou.hda.installFile(
         os.path.join(BASE, "object_stevenabramowitch.dev.PolyFEM.2.0.hdanc"))
+    hou.hda.installFile(os.path.join(BASE, "object_readPVD.1.0.hdanc"))
+    reader_node = hou.node("/obj").createNode("readPVD::1.0", "hdf_reader")
+    reader = reader_node.hdaModule()
+
+    def read_first_result(out_dir):
+        frames = sorted(
+            name for name in os.listdir(out_dir)
+            if name.endswith((".hdf", ".h5", ".hdf5", ".vtu")))
+        assert frames, f"no VTK-HDF or VTU result frame in {out_dir}"
+        return reader.read_mesh_cached(os.path.join(out_dir, frames[0]))
 
     work = tempfile.mkdtemp(prefix="polyfem_materials_")
     input_dir = os.path.join(work, "input")
@@ -300,8 +306,7 @@ def main():
 
     if result.returncode == 0:
         out_dir = os.path.join(work, "output")
-        vtus = [f for f in os.listdir(out_dir) if f.endswith(".vtu")]
-        vtu = vtu_parser.read_vtu(os.path.join(out_dir, sorted(vtus)[0]))
+        vtu = read_first_result(out_dir)
         pdata = vtu["point_data"]
         fx = [k for k in pdata if k.endswith("fiber_direction_x")]
         check("material fields present in the output", bool(fx), str(fx))
@@ -628,8 +633,7 @@ def main():
           (result.stdout + result.stderr)[-400:])
     if result.returncode == 0:
         out_dir = os.path.join(work, "output_vol2")
-        vtus = [f for f in os.listdir(out_dir) if f.endswith(".vtu")]
-        vtu = vtu_parser.read_vtu(os.path.join(out_dir, sorted(vtus)[0]))
+        vtu = read_first_result(out_dir)
         pdata = vtu["point_data"]
         kappa_keys = [k for k in pdata if k.endswith("kappa")]
         check("kappa field present in the output", bool(kappa_keys),

@@ -13,15 +13,74 @@
 #
 # Per-frame cost = vtu parse + attribute upload only.
 
+import base64
+import hashlib
+import importlib
+import io
 import math
 import os
 import json
+import platform
 import re
 import itertools
+import shutil
+import sys
+import zipfile
 
 import numpy as np
 
 import hou
+
+
+_EMBEDDED_H5PY_SECTION = "h5py-3.16.0-cp313-macos-arm64.whl.b64"
+
+
+def _load_embedded_h5py():
+    """Install the asset's pinned h5py wheel into a versioned user cache.
+
+    The wheel is embedded in the .hdanc, so reading PolyFEM's default HDF5
+    output works offline and does not modify Houdini's own Python installation.
+    A normal h5py installation, when present, is preferred by _import_h5py.
+    """
+    if (sys.version_info[:2] != (3, 13) or sys.platform != "darwin"
+            or platform.machine().lower() not in ("arm64", "aarch64")):
+        raise ImportError(
+            "The bundled HDF5 reader supports Houdini 22 on an Apple-silicon "
+            "Mac. On this platform, install h5py into Houdini's Python "
+            "environment, then restart Houdini.")
+
+    node_type = hou.nodeType(hou.objNodeTypeCategory(), "readPVD::1.0")
+    definition = node_type.definition() if node_type is not None else None
+    section = (definition.sections().get(_EMBEDDED_H5PY_SECTION)
+               if definition is not None else None)
+    if section is None:
+        raise ImportError(
+            "This Read PVD asset does not contain its HDF5 reader. Reinstall "
+            "the current object_readPVD.1.0.hdanc asset.")
+    wheel = base64.b64decode(section.contents().encode("ascii"))
+    digest = hashlib.sha256(wheel).hexdigest()
+    pref_dir = hou.expandString("$HOUDINI_USER_PREF_DIR")
+    vendor_dir = os.path.join(
+        pref_dir, "python3.13libs", f"readpvd_h5py_{digest[:12]}")
+    marker = os.path.join(vendor_dir, ".complete")
+    if not os.path.isfile(marker):
+        if os.path.isdir(vendor_dir):
+            shutil.rmtree(vendor_dir)
+        os.makedirs(vendor_dir, exist_ok=True)
+        with zipfile.ZipFile(io.BytesIO(wheel)) as archive:
+            for member in archive.infolist():
+                normalized = os.path.normpath(member.filename)
+                if os.path.isabs(normalized) or normalized.startswith(".."):
+                    raise ImportError(
+                        "The embedded HDF5 reader contains an unsafe path.")
+            archive.extractall(vendor_dir)
+        with open(marker, "w", encoding="ascii") as handle:
+            handle.write(digest + "\n")
+    if vendor_dir not in sys.path:
+        sys.path.insert(0, vendor_dir)
+    importlib.invalidate_caches()
+    import h5py
+    return h5py
 
 # ---- embedded native parser (built from src/common/vtu_parser.py) ----------
 # @VTU_PARSER@

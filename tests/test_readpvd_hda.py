@@ -87,6 +87,31 @@ def ensure_minimal_run():
     return pvd
 
 
+def ensure_hdf_run():
+    """Produce the same smoke scene in PolyFEM's VTK-HDF format."""
+    out_dir = os.path.join(ROOT, "smoke-out", "readpvd-hdf")
+    pvd = os.path.join(out_dir, "hdf.pvd")
+    if cached_run_is_current(pvd) and os.path.isfile(
+            os.path.join(out_dir, "step_4.hdf")):
+        return pvd
+    os.makedirs(out_dir, exist_ok=True)
+    scene_dir = os.path.join(ROOT, "polyfem", "scenes", "semi-implicit")
+    with open(os.path.join(scene_dir, "quasistatic-semi.json")) as f:
+        scene = json.load(f)
+    scene["output"]["paraview"] = {
+        "file_name": "hdf.pvd", "options": {"use_hdf5": True}}
+    scene_path = os.path.join(out_dir, "scene.json")
+    with open(scene_path, "w") as f:
+        json.dump(scene, f)
+    result = subprocess.run(
+        [POLYFEM_BIN, "-j", scene_path, "-o", out_dir, "--log_level", "error"],
+        cwd=scene_dir, capture_output=True, text=True, timeout=900)
+    assert result.returncode == 0, result.stdout[-1500:] + result.stderr[-500:]
+    assert os.path.isfile(pvd)
+    assert os.path.isfile(os.path.join(out_dir, "step_4.hdf"))
+    return pvd
+
+
 def ensure_two_body_run():
     """Create a tiny PVD with two bodies (body_ids 0 and 1) for show/hide."""
     out_dir = os.path.join(ROOT, "smoke-out", "readpvd-two-body")
@@ -221,6 +246,35 @@ def main():
     phm.read_vtu_cached(step0)
     info = phm.read_vtu_field_info(step0)
     assert "von_mises" in info["point_data"]
+
+    # PolyFEM now defaults to compressed VTK-HDF output. The asset carries a
+    # compatible h5py wheel, so a clean Houdini 22 installation can load it
+    # without a separate package install. Compare the parsed contract against
+    # the same XML smoke frame, then exercise a full HDA cook from the HDF PVD.
+    hdf_pvd = ensure_hdf_run()
+    xml_blocks = phm.load_frame(pvd, 4)
+    hdf_blocks = phm.load_frame(hdf_pvd, 4)
+    assert set(hdf_blocks) == set(xml_blocks)
+    for block_name in xml_blocks:
+        xml_mesh, hdf_mesh = xml_blocks[block_name], hdf_blocks[block_name]
+        assert np.allclose(hdf_mesh["points"], xml_mesh["points"])
+        assert set(hdf_mesh["cells"]) == set(xml_mesh["cells"])
+        for family in xml_mesh["cells"]:
+            assert np.array_equal(
+                hdf_mesh["cells"][family], xml_mesh["cells"][family])
+        assert set(hdf_mesh["point_data"]) == set(xml_mesh["point_data"])
+        assert set(hdf_mesh["cell_data"]) == set(xml_mesh["cell_data"])
+    hdf_info = phm.frame_field_info(hdf_pvd, 4)
+    assert hdf_info == phm.frame_field_info(pvd, 4)
+    hdf_node = hou.node("/obj").createNode("readPVD::1.0", "viewer_hdf")
+    hdf_node.setParms({"PVD_file": hdf_pvd})
+    hdf_node.hdaModule().sync_available_options({"node": hdf_node})
+    hou.setFrame(4)
+    hdf_node.node("output").cook(force=True)
+    assert (hdf_node.node("output").geometry().intrinsicValue("pointcount")
+            == 1540)
+    hdf_node.destroy()
+    print("PASS: embedded HDF5 reader matches VTU and cooks the HDA")
 
     # Menus expose only data that exists in the active PVD frame and block.
     assert node.parm("source_block").menuItems() == ("Volume",)

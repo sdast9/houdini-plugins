@@ -1,5 +1,6 @@
 """Build readPVD::1.0 (.hdanc). Run under hython via src/build_all.py."""
 
+import base64
 import os
 import sys
 
@@ -10,6 +11,8 @@ import hda_build  # noqa: E402
 
 TYPE_NAME = "readPVD::1.0"
 LABEL = "Read PVD 1.0 (PolyFEM results)"
+H5PY_WHEEL = "h5py-3.16.0-cp313-cp313-macosx_11_0_arm64.whl"
+H5PY_SECTION = "h5py-3.16.0-cp313-macos-arm64.whl.b64"
 
 TOPO_SOP_CODE = """\
 node = hou.pwd()
@@ -710,7 +713,7 @@ def _parms():
         help="Controls which fields appear in menus. Current Frame only "
              "inspects the displayed frame and is fast; a stale selection "
              "simply shows the Unavailable Field Color, never an error. Every "
-             "Frame and Any Frame must read every .vtu in the sequence to find "
+             "Frame and Any Frame must inspect every result file in the sequence to find "
              "intermittent fields and label their coverage -- this can take a "
              "while for long sequences of large meshes and there is no way "
              "around it (the field list lives inside each file)."))
@@ -1726,6 +1729,12 @@ def toggle_remesh(kwargs):
     definition.updateFromNode(asset)
     definition.setParmTemplateGroup(_parms())
     definition.addSection("PythonModule", module)
+    wheel_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "vendor", H5PY_WHEEL)
+    with open(wheel_path, "rb") as wheel_file:
+        definition.addSection(
+            H5PY_SECTION,
+            base64.b64encode(wheel_file.read()).decode("ascii"))
     definition.addSection("OnCreated", ON_CREATED_CODE)
     definition.addSection(
         "ViewerStateModule",

@@ -51,6 +51,11 @@ def main():
     node = hou.node("/obj").createNode(
         "stevenabramowitch::dev::PolyFEM::2.0", "polyfem_test")
     mod = node.hdaModule()
+    assert node.evalParm("use_hdf5") == 1
+    hdf_help = node.parm("use_hdf5").parmTemplate().help()
+    assert "recommended default" in hdf_help
+    assert "Read PVD node loads these files directly" in hdf_help
+    assert "older tool" in hdf_help
     assert node.parm("si_constraint_floor") is None, "retired control still exposed"
     node.addSpareParmTuple(hou.FloatParmTemplate(
         "si_constraint_floor", "Legacy saved floor", 1, default_value=(1e-4,)))
@@ -127,6 +132,7 @@ def main():
                    or f.endswith("_avg") for f in pv["fields"]), pv["fields"]
     assert pv["options"]["scalar_values"] is False
     assert pv["options"]["tensor_values"] is True
+    assert pv["options"]["use_hdf5"] is True
     assert data["space"]["remesh"] == {"enabled": False}
     assert data["materials"][0]["id"] == 1001
     geo1 = data["geometry"][0]
@@ -161,6 +167,8 @@ def main():
     out_dir = os.path.join(work, "output")
     pvds = [f for f in os.listdir(out_dir) if f.endswith(".pvd")]
     assert pvds, f"no .pvd written in {out_dir}"
+    hdf_frames = [f for f in os.listdir(out_dir) if f.endswith(".hdf")]
+    assert hdf_frames, f"default output did not write HDF5 frames in {out_dir}"
 
     # ... and the solver's run manifest carries it back as the producer
     with open(os.path.join(out_dir, "run-manifest.json")) as f:
