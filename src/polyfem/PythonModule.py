@@ -2732,6 +2732,23 @@ def _menu_token(parent, name):
     return parent.parm(name).evalAsString()
 
 
+# Nonlinear methods the HDA no longer offers, and why (BFGS audit stage 5).
+# PolyFEM's simulation cannot run them: its forward solve builds PolySolve's
+# unconstrained solver, which has no box-constrained strategies, and none of
+# its problems assembles a dense Hessian.
+_UNSUPPORTED_NONLINEAR = {
+    "L-BFGS-B": "is a box-constrained optimizer (PolyFEM uses it for shape "
+                "and parameter optimization, not for a simulation step)",
+    "MMA": "is a box-constrained optimizer (PolyFEM uses it for shape and "
+           "parameter optimization, not for a simulation step)",
+    "DenseNewton": "needs a dense Hessian, which PolyFEM's problems do not "
+                   "assemble; Newton is the same method on the sparse one"}
+
+# Dense BFGS factorizes a dense n x n matrix; PolySolve refuses any other
+# linear solver for it, and the Linear folder offers only sparse ones.
+_BFGS_LINEAR_SOLVER = "Eigen::LDLT"
+
+
 def build_linear_solver(parent):
     """The /solver/linear block: only what the chosen solver actually reads.
 
@@ -2739,6 +2756,8 @@ def build_linear_solver(parent):
     compiled into the binary), which is what every scene got before the
     linear settings were wired at all.
     """
+    if _menu_token(parent, "solver_nl") == "BFGS":
+        return {"solver": _BFGS_LINEAR_SOLVER}
     solver = _menu_token(parent, "solver")
     if solver == "auto":
         return None
@@ -2808,6 +2827,10 @@ def build_nonlinear_solver(parent):
           "RobustArmijo": {"delta_relative_tolerance":
                            parent.evalParm("delta_relative_tolerance")}}
 
+    # A scene saved with a withdrawn method (see _UNSUPPORTED_NONLINEAR) loads
+    # with Houdini's own warning ("Parameter value ... in solver_nl is
+    # invalid. Defaulting to 0."), i.e. as Newton; no withdrawn token reaches
+    # this point.
     method = _menu_token(parent, "solver_nl")
     nonlinear = {
         "solver": method,
@@ -2834,7 +2857,7 @@ def build_nonlinear_solver(parent):
                      "gradient_fd_eps": parent.evalParm("gradient_fd_eps")}}
     # Per-method settings: written only for the chosen method so the file
     # says exactly what the run used.
-    if method in ("Newton", "DenseNewton"):
+    if method == "Newton":
         nonlinear[method] = {
             "residual_tolerance": parent.evalParm("residual_tolerance"),
             "reg_weight_min": parent.evalParm("reg_weight_min"),
@@ -2845,7 +2868,7 @@ def build_nonlinear_solver(parent):
             "use_psd_projection": bool(parent.evalParm("use_psd_projection")),
             "use_psd_projection_in_regularized":
                 bool(parent.evalParm("use_psd_projection_reg"))}
-    elif method in ("L-BFGS", "L-BFGS-B"):
+    elif method == "L-BFGS":
         nonlinear[method] = {"history_size": parent.evalParm("history_size")}
     elif method in ("ADAM", "StochasticADAM"):
         nonlinear[method] = {"alpha": parent.evalParm("adam_alpha"),
@@ -4146,10 +4169,8 @@ def _restore_solver(parent, data, legacy, warnings):
             parms["norm_type"] = norm_types[nonlinear["norm_type"]]
         nonlinear_type = nonlinear.get("solver", "Newton")
         nonlinear_types = {
-            name: index for index, name in enumerate((
-                "Newton", "DenseNewton", "GradientDescent", "ADAM",
-                "StochasticADAM", "StochasticGradientDescent", "L-BFGS",
-                "BFGS", "L-BFGS-B", "MMA"))}
+            name: index for index, name in enumerate(
+                parent.parm("solver_nl").menuItems())}
         if isinstance(nonlinear_type, list):
             # polysolve also accepts an explicit strategy list; the UI holds
             # the single method, so take the first entry's type.
@@ -4162,6 +4183,11 @@ def _restore_solver(parent, data, legacy, warnings):
         if nonlinear_type in nonlinear_types \
                 and parent.parm("solver_nl") is not None:
             parms["solver_nl"] = nonlinear_types[nonlinear_type]
+        elif nonlinear_type in _UNSUPPORTED_NONLINEAR:
+            warnings.append(
+                f"Nonlinear solver '{nonlinear_type}' is not offered by the "
+                f"HDA: it {_UNSUPPORTED_NONLINEAR[nonlinear_type]}; Newton "
+                "was kept.")
         elif nonlinear_type not in nonlinear_types:
             warnings.append(
                 f"Nonlinear solver '{nonlinear_type}' is not offered by the "
@@ -4391,7 +4417,17 @@ def _restore_solver(parent, data, legacy, warnings):
             parms["inversion_method"] = inversion[advanced["check_inversion"]]
 
     linear = solver.get("linear", {})
-    if isinstance(linear, dict):
+    bfgs = isinstance(nonlinear, dict) and nonlinear.get("solver") == "BFGS"
+    if bfgs:
+        # The HDA supplies BFGS's dense linear solver itself; the Linear
+        # folder keeps its own (sparse) choice for the other methods.
+        if isinstance(linear, dict) \
+                and linear.get("solver") not in (None, _BFGS_LINEAR_SOLVER):
+            warnings.append(
+                f"solver.linear.solver '{linear.get('solver')}' was not "
+                f"restored: BFGS needs a dense linear solver, and the HDA "
+                f"exports {_BFGS_LINEAR_SOLVER} with it.")
+    elif isinstance(linear, dict):
         _restore_linear_solver(parent, linear, parms, warnings)
     parent.setParms(parms)
 

@@ -298,6 +298,31 @@ Targets the current build's strict-validated schema — the old fork keys
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
 
+### Nonlinear methods: only what the simulation can run (2026-09-22, BFGS audit stage 5)
+
+* **The Solver menu offers seven methods, down from ten.** L-BFGS-B and MMA are
+  box-constrained optimizers — PolyFEM uses them for shape and parameter
+  optimization, and its simulation step cannot run them (the run stopped with
+  `Unrecognized solver type`). Dense Newton needs a dense Hessian that
+  PolyFEM's problems do not assemble (it stopped with `must be dense`, or with
+  `Dense Hessian not implemented` once a dense linear solver was chosen). A
+  scene saved with one of them loads with Houdini's own warning (*Parameter
+  value … in solver_nl is invalid. Defaulting to 0.*), i.e. as Newton; a
+  `params.json` that names one imports as Newton with the reason in the Import
+  Report.
+* **BFGS now runs from the asset.** Dense BFGS needs a dense linear solver and
+  the Linear folder offers only sparse ones, so every BFGS export failed. With
+  BFGS selected the asset exports `Eigen::LDLT` itself (the Linear *Solver*
+  menu is disabled, and keeps its choice for the other methods); the menu
+  label says what the help explains: a dense n × n matrix, small meshes only.
+* **ADAM and Stochastic ADAM now take ADAM steps.** PolySolve's ADAM divided by
+  zero on its first step, so both had always run as Gradient Descent (PolySolve
+  fix in the BFGS audit's stage 5 record).
+* The end-to-end test exports every offered method, checks that PolyFEM runs
+  it (not merely accepts the JSON) and that it round-trips through the
+  importer, and checks that each withdrawn method imports as Newton with its
+  reason and is refused by name if run as written.
+
 ### Provenance block (2026-09-14, RB-12)
 
 * `build_params` appends `provenance` (producer `houdini`, `producer_version`,

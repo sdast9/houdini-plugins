@@ -3459,6 +3459,7 @@
                 label   "Solver"
                 type    ordinal
                 default { "0" }
+                disablewhen "{ solver_nl == BFGS }"
                 menu {
                     "auto"                                  "Automatic (PolyFEM default)"
                     "Eigen::SimplicialLDLT"                 "Eigen::SimplicialLDLT (direct)"
@@ -3481,7 +3482,7 @@
                     "Eigen::DGMRES"                         "Eigen::DGMRES (iterative)"
                     "Eigen::MINRES"                         "Eigen::MINRES (iterative)"
                 }
-                help    "Direct or iterative method for the linear system solved at each Newton iteration. Automatic lets PolyFEM pick the best direct solver compiled into your binary (recommended). Direct solvers (LDLT/LLT/LU) are robust and exact; iterative ones (CG, GMRES, Hypre, AMGCL) use less memory on very large meshes but need a preconditioner and tolerance. Options marked MKL or macOS only exist in builds with that library: if the binary you point at was not built with the solver you pick, PolyFEM prints a warning in the log and falls back to its own default instead of stopping (the HDA sets enable_overwrite_solver for you)."
+                help    "Direct or iterative method for the linear system solved at each Newton iteration. Automatic lets PolyFEM pick the best direct solver compiled into your binary (recommended). Direct solvers (LDLT/LLT/LU) are robust and exact; iterative ones (CG, GMRES, Hypre, AMGCL) use less memory on very large meshes but need a preconditioner and tolerance. Options marked MKL or macOS only exist in builds with that library: if the binary you point at was not built with the solver you pick, PolyFEM prints a warning in the log and falls back to its own default instead of stopping (the HDA sets enable_overwrite_solver for you). With the BFGS nonlinear method this choice is not used: dense BFGS needs a dense linear solver, and the HDA exports Eigen::LDLT."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3835,17 +3836,14 @@
             default { "0" }
             menu {
                 "Newton"                    "Newton (recommended)"
-                "DenseNewton"               "Dense Newton"
                 "GradientDescent"           "Gradient Descent"
                 "ADAM"                      "ADAM"
                 "StochasticADAM"            "Stochastic ADAM"
                 "StochasticGradientDescent" "Stochastic Gradient Descent"
                 "L-BFGS"                    "L-BFGS"
-                "BFGS"                      "BFGS"
-                "L-BFGS-B"                  "L-BFGS-B"
-                "MMA"                       "MMA"
+                "BFGS"                      "BFGS (dense, small meshes only)"
             }
-            help    "Method used to minimize the total energy at each step. Newton (recommended) uses second derivatives and converges in few iterations; it falls back to regularized Newton and gradient descent automatically when a step fails. The other methods are first-order or quasi-Newton alternatives that need many more iterations and are provided for experiments."
+            help    "Method used to minimize the total energy at each step. Newton (recommended) uses second derivatives and converges in few iterations; it falls back to regularized Newton and gradient descent automatically when a step fails. The other methods are first-order or quasi-Newton alternatives that need many more iterations and are provided for experiments. BFGS keeps a dense n-by-n matrix and always runs with the dense Eigen::LDLT linear solver, so it suits small meshes only. Only methods PolyFEM's simulation can run are offered: L-BFGS-B and MMA are box-constrained optimizers (PolyFEM uses them for shape and parameter optimization, not for a simulation step), and Dense Newton needs a dense Hessian that PolyFEM's problems do not assemble."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -3853,8 +3851,8 @@
             label   "History Size"
             type    integer
             default { "6" }
-            disablewhen "{ solver_nl != L-BFGS solver_nl != L-BFGS-B }"
-            hidewhen "{ solver_nl != L-BFGS solver_nl != L-BFGS-B }"
+            disablewhen "{ solver_nl != L-BFGS }"
+            hidewhen "{ solver_nl != L-BFGS }"
             range   { 1 50 }
             help    "Number of previous steps L-BFGS keeps to approximate curvature. 6-20 is typical; more memory, better steps."
             parmtag { "script_callback_language" "python" }
@@ -3864,8 +3862,8 @@
             label   "Residual Tolerance"
             type    log
             default { "1e-05" }
-            disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
-            hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
+            disablewhen "{ solver_nl != Newton }"
+            hidewhen "{ solver_nl != Newton }"
             range   { 1e-12 1 }
             help    "Newton: accept the linear solve when its relative residual is below this value. The default 1e-5 is fine for direct solvers; loosen it only for iterative solvers."
             parmtag { "script_callback_language" "python" }
@@ -3875,8 +3873,8 @@
             label   "Min Reg Weight"
             type    log
             default { "1e-08" }
-            disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
-            hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
+            disablewhen "{ solver_nl != Newton }"
+            hidewhen "{ solver_nl != Newton }"
             range   { 1e-15 1 }
             help    "Newton: smallest regularization (identity added to the Hessian, in Hessian units) tried when a plain Newton step fails. Regularization makes steps shorter but safer."
             parmtag { "script_callback_language" "python" }
@@ -3886,8 +3884,8 @@
             label   "Max Reg Weight"
             type    log
             default { "1e+08" }
-            disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
-            hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
+            disablewhen "{ solver_nl != Newton }"
+            hidewhen "{ solver_nl != Newton }"
             range   { 1 1e+15 }
             help    "Newton: largest regularization tried before giving up on the regularized strategy and falling back to gradient descent."
             parmtag { "script_callback_language" "python" }
@@ -3897,8 +3895,8 @@
             label   "Reg Weight Increment"
             type    float
             default { "10" }
-            disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
-            hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
+            disablewhen "{ solver_nl != Newton }"
+            hidewhen "{ solver_nl != Newton }"
             range   { 1.5 100 }
             help    "Newton: factor by which the regularization grows after each failed regularized step (10 = one decade at a time)."
             parmtag { "export_disable" "1" }
@@ -4185,8 +4183,8 @@
                 label   "Force PSD Projection"
                 type    toggle
                 default { "0" }
-                disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
-                hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
+                disablewhen "{ solver_nl != Newton }"
+                hidewhen "{ solver_nl != Newton }"
                 help    "Always project element Hessians to positive semi-definite, even on the first attempt. Guarantees a descent direction at the cost of slower (linear) convergence near the solution."
                 parmtag { "script_callback_language" "python" }
             }
@@ -4195,8 +4193,8 @@
                 label   "Use PSD Projection"
                 type    toggle
                 default { "1" }
-                disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
-                hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
+                disablewhen "{ solver_nl != Newton }"
+                hidewhen "{ solver_nl != Newton }"
                 help    "Allow projecting element Hessians to positive semi-definite when a plain Newton step is not a descent direction (standard IPC practice). Turning this off can make solves fail on buckling or snapping configurations."
                 parmtag { "script_callback_language" "python" }
             }
@@ -4205,8 +4203,8 @@
                 label   "Use PSD Projection in Regularized"
                 type    toggle
                 default { "1" }
-                disablewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
-                hidewhen "{ solver_nl != Newton solver_nl != DenseNewton }"
+                disablewhen "{ solver_nl != Newton }"
+                hidewhen "{ solver_nl != Newton }"
                 help    "Also project element Hessians to positive semi-definite inside the regularized-Newton fallback strategy."
                 parmtag { "script_callback_language" "python" }
             }

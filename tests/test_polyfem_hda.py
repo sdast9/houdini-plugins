@@ -346,6 +346,88 @@ def main():
     assert node3.parm("al_lumping").evalAsString() == "hrz"
     print("PASS: solver-panel controls round-trip through import")
 
+    # --- BFGS audit stage 5: forward nonlinear methods ------------------------
+    # The menu offers only what PolyFEM's simulation can run; every offered
+    # method exports JSON that round-trips through the importer and that the
+    # binary constructs and iterates with (convergence is not required: the
+    # first-order methods do not converge on this scene in one step).
+    offered = list(node.parm("solver_nl").menuItems())
+    assert offered == ["Newton", "GradientDescent", "ADAM", "StochasticADAM",
+                       "StochasticGradientDescent", "L-BFGS", "BFGS"], offered
+    ran_as = {"Newton": "[SparseNewton]", "GradientDescent": "[GradientDescent]",
+              "ADAM": "[ADAM]", "StochasticADAM": "[StochasticADAM]",
+              "StochasticGradientDescent": "[StochasticGradientDescent]",
+              "L-BFGS": "[L-BFGS]", "BFGS": "[BFGS]"}
+    refusals = ("Unrecognized solver type", "is a box-constrained method",
+                "must be dense", "must be sparse", "Dense Hessian not implemented",
+                "invalid input json")
+    node.parm("solver").set("auto")
+    node.setParms({"tend": 0.125, "max_iterations": 30})
+    for method in offered:
+        node.parm("solver_nl").set(offered.index(method))
+        params_path = mod.write_params_only({"node": node})
+        with open(params_path) as f:
+            data = json.load(f)
+        assert data["solver"]["nonlinear"]["solver"] == method, method
+        linear = data["solver"].get("linear", {})
+        if method == "BFGS":
+            assert linear == {"solver": "Eigen::LDLT"}, linear
+        else:
+            assert linear.get("solver") != "Eigen::LDLT", linear
+        result = subprocess.run(
+            [POLYFEM_BIN, "-j", "params.json", "-o", "../output/",
+             "--log_level", "info"],
+            cwd=input_dir, capture_output=True, text=True, timeout=900)
+        found = [r for r in refusals if r in result.stdout + result.stderr]
+        assert not found, (method, found, result.stdout[-1500:])
+        assert ran_as[method] in result.stdout, (method, result.stdout[-1500:])
+        back = hou.node("/obj").createNode(
+            "stevenabramowitch::dev::PolyFEM::2.0", "polyfem_method_" +
+            method.replace("-", "_"))
+        back.setParms({"old_input_dir": input_dir})
+        back.hdaModule().read_params({"node": back})
+        assert back.parm("solver_nl").evalAsString() == method, method
+        report = back.evalParm("import_report")
+        assert "solver.linear" not in report and "Nonlinear solver" not in report, report
+        back.destroy()
+        print(f"  {method}: exported, run by PolyFEM "
+              f"(exit {result.returncode}), round-tripped")
+    print("PASS: every offered nonlinear method runs in PolyFEM and round-trips")
+
+    # A withdrawn method in an imported file: Newton is kept, with the reason;
+    # and PolyFEM itself names it if the file is run as it is.
+    node.parm("solver_nl").set(0)
+    params_path = mod.write_params_only({"node": node})
+    with open(params_path) as f:
+        data = json.load(f)
+    for withdrawn, why in (("L-BFGS-B", "box-constrained optimizer"),
+                           ("MMA", "box-constrained optimizer"),
+                           ("DenseNewton", "needs a dense Hessian")):
+        data["solver"]["nonlinear"]["solver"] = withdrawn
+        with open(params_path, "w") as f:
+            json.dump(data, f)
+        back = hou.node("/obj").createNode(
+            "stevenabramowitch::dev::PolyFEM::2.0", "polyfem_withdrawn")
+        back.setParms({"old_input_dir": input_dir})
+        back.hdaModule().read_params({"node": back})
+        assert back.parm("solver_nl").evalAsString() == "Newton", withdrawn
+        report = back.evalParm("import_report")
+        assert f"Nonlinear solver '{withdrawn}' is not offered" in report \
+            and why in report, report
+        back.destroy()
+        result = subprocess.run(
+            [POLYFEM_BIN, "-j", "params.json", "-o", "../output/",
+             "--log_level", "info"],
+            cwd=input_dir, capture_output=True, text=True, timeout=900)
+        assert result.returncode != 0, withdrawn
+        named = {"L-BFGS-B": "L-BFGS-B is a box-constrained method",
+                 "MMA": "MMA is a box-constrained method",
+                 "DenseNewton": "the dense Newton strategies"}[withdrawn]
+        assert named in result.stdout + result.stderr, \
+            (withdrawn, result.stdout[-1500:])
+    print("PASS: withdrawn methods import as Newton with the reason; "
+          "PolyFEM refuses them by name")
+
     print("\nPASS: end-to-end PolyFEM 2.0 HDA test")
     print("workdir:", work)
     return work
