@@ -11,7 +11,7 @@ old definitions; installed-library state should be checked in Houdini.
 | `stevenabramowitch::dev::PolyFEM::2.0` (Object) | `object_stevenabramowitch.dev.PolyFEM.2.0.hdanc` | 1.2 |
 | `readPVD::1.0` (Object) | `object_readPVD.1.0.hdanc` | readPVD_higher_order 0.26 |
 
-Design notes: [SPEC_per_element_materials.md](SPEC_per_element_materials.md) —
+Design notes: [SPEC_per_element_materials.md](per-element-materials.md) —
 fiber models, composites, and per-element material data. **Implemented**
 2026-07-30 (phases 0–4 and readPVD material/fiber support, including sign-aware
 smoothing and dispersion coloring); the spec is kept as the rationale and
@@ -324,6 +324,24 @@ Targets the current build's strict-validated schema — the old fork keys
   runs dense BFGS with `[BFGS][Wolfe]`, and round-trips all controls.
 * Wolfe was appended to the menu so existing Houdini scenes keep the ordinal
   values of Armijo, Robust Armijo, Backtracking and None.
+
+### Contact scenes: use Newton (2026-09-23)
+
+* **Only Newton converges on contact scenes.** Measured on real scenes, the
+  contact barrier makes the problem so stiff (condition numbers above 1e13)
+  that L-BFGS, BFGS, ADAM and gradient descent stall far from the solution —
+  not because of the line search. Worse, they used to *report* convergence:
+  the solver's slope tolerance, which is a Newton-decrement test, was met by
+  their tiny directions, and runs finished with exit 0 and 5–100 % wrong
+  solutions. PolyFEM now applies that test (and the step-length tolerances)
+  only to Newton, so these methods run until the gradient tolerance or their
+  limits; see the PolyFEM record `docs/qn-contact-investigation-20260922.md`.
+* With contact on and another method selected, the Solver folder shows a
+  warning under the menu, and *Write* / *Run* warn once more. Nothing is
+  refused: the methods stay available for experiments and contact-free scenes.
+* The *Descent Direction Tolerance* tooltip now says what the setting does: it
+  is Newton's convergence test (the predicted energy decrease), not an ascent
+  guard.
 
 ### Nonlinear methods: only what the simulation can run (2026-09-22, BFGS audit stage 5)
 

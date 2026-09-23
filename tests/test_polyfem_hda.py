@@ -456,6 +456,26 @@ def main():
               f"(exit {result.returncode}), round-tripped")
     print("PASS: every offered nonlinear method runs in PolyFEM and round-trips")
 
+    # Only Newton converges on contact scenes (qn-contact investigation): the
+    # Solver folder shows a warning for any other method while contact is on,
+    # and writing or running the scene warns once more (it does not refuse).
+    warning = node.parm("solver_nl_contact_warning")
+    assert warning is not None
+    hidewhen = warning.parmTemplate().conditionals().get(hou.parmCondType.HideWhen, "")
+    assert "solver_nl == Newton" in hidewhen and "enable == 0" in hidewhen, hidewhen
+    assert "only Newton converges" in " ".join(warning.parmTemplate().columnLabels())
+    assert "Use Newton for contact scenes" in node.parm("solver_nl").parmTemplate().help()
+    assert "Newton only" in node.parm("derivative_along_delta_x_tol").parmTemplate().help()
+    assert mod._warn_non_newton_contact(
+        node, {"contact": {"enabled": True}, "solver": {"nonlinear": {"solver": "Newton"}}}) is None
+    assert mod._warn_non_newton_contact(
+        node, {"contact": {"enabled": False}, "solver": {"nonlinear": {"solver": "L-BFGS"}}}) is None
+    for method in ("L-BFGS", "BFGS", "ADAM", "GradientDescent"):
+        message = mod._warn_non_newton_contact(
+            node, {"contact": {"enabled": True}, "solver": {"nonlinear": {"solver": method}}})
+        assert message and "only Newton converges" in message and method in message, message
+    print("PASS: non-Newton methods with contact are warned about, not refused")
+
     # A withdrawn method in an imported file: Newton is kept, with the reason;
     # and PolyFEM itself names it if the file is run as it is.
     node.parm("solver_nl").set(0)

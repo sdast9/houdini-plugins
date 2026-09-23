@@ -3843,8 +3843,16 @@
                 "L-BFGS"                    "L-BFGS"
                 "BFGS"                      "BFGS (dense, small meshes only)"
             }
-            help    "Method used to minimize the total energy at each step. Newton (recommended) uses second derivatives and converges in few iterations; it falls back to regularized Newton and gradient descent automatically when a step fails. The other methods are first-order or quasi-Newton alternatives that need many more iterations and are provided for experiments. BFGS keeps a dense n-by-n matrix and always runs with the dense Eigen::LDLT linear solver, so it suits small meshes only. Only methods PolyFEM's simulation can run are offered: L-BFGS-B and MMA are box-constrained optimizers (PolyFEM uses them for shape and parameter optimization, not for a simulation step), and Dense Newton needs a dense Hessian that PolyFEM's problems do not assemble."
+            help    "Method used to minimize the total energy at each step. Newton (recommended) uses second derivatives and converges in few iterations; it falls back to regularized Newton and gradient descent automatically when a step fails. The other methods are first-order or quasi-Newton alternatives that need many more iterations and are provided for experiments. With contact they are not usable: the contact barrier makes the problem so stiff (measured condition numbers above 1e13 on real scenes) that they stall far from the solution, and a step only finishes when they reach the gradient tolerance, which may never happen. Use Newton for contact scenes. BFGS keeps a dense n-by-n matrix and always runs with the dense Eigen::LDLT linear solver, so it suits small meshes only. Only methods PolyFEM's simulation can run are offered: L-BFGS-B and MMA are box-constrained optimizers (PolyFEM uses them for shape and parameter optimization, not for a simulation step), and Dense Newton needs a dense Hessian that PolyFEM's problems do not assemble."
             parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "solver_nl_contact_warning"
+            label   "Warning"
+            type    label
+            default { "Contact is on: only Newton converges on contact scenes. This method will stall far from the solution (see the Solver tooltip)." }
+            hidewhen "{ solver_nl == Newton } { enable == 0 }"
+            parmtag { "sidefx::look" "block" }
         }
         parm {
             name    "history_size"
@@ -4306,7 +4314,7 @@
                 type    log
                 default { "1e-16" }
                 range   { 0 1e-15 }
-                help    "Stop with 'not a descent direction' when the directional derivative along the proposed step is above this negative threshold (i.e. the step would not lower the energy). The tiny default only catches genuine ascent."
+                help    "Newton only: the step counts as converged when the energy decrease the Newton step predicts (minus its directional derivative, the squared Newton decrement) is below this value (scaled by the problem's energy). Real contact scenes usually converge on this test rather than on the gradient tolerance. The other methods ignore it and stop on the gradient tolerance: their directional derivative says nothing about the distance to the solution."
                 parmtag { "script_callback_language" "python" }
             }
             parm {

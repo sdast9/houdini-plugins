@@ -3157,11 +3157,34 @@ def build_params(parent):
     build_solver(parent, data)
     build_output(parent, data)
     build_provenance(parent, data)
+    _warn_non_newton_contact(parent, data)
 
     params_path = os.path.join(input_dir, "params.json")
     with open(params_path, "w") as f:
         json.dump(data, f, indent=4)
     return params_path
+
+
+# Why a method other than Newton is not usable with contact
+# (polyfem/docs/qn-contact-investigation-20260922.md).
+NON_NEWTON_CONTACT_WARNING = (
+    "Contact is on and the nonlinear solver is {method}: only Newton "
+    "converges on contact scenes. The contact barrier makes the problem so "
+    "stiff that {method} stalls far from the solution; a step finishes only "
+    "on the gradient tolerance, which it may never reach (the run then stops "
+    "with a named failure). Choose Newton under Solver > Nonlinear unless you "
+    "are experimenting.")
+
+
+def _warn_non_newton_contact(parent, data):
+    """Warn (without refusing) when a contact scene uses a method other than
+    Newton; returns the message, or None."""
+    method = data.get("solver", {}).get("nonlinear", {}).get("solver", "Newton")
+    if method == "Newton" or not data.get("contact", {}).get("enabled", False):
+        return None
+    message = NON_NEWTON_CONTACT_WARNING.format(method=method)
+    _message(message)
+    return message
 
 
 def build_provenance(parent, data):
