@@ -70,17 +70,23 @@ node.parent().hdaModule().cook_fiber_recovery(node)
 
 BUILD_PRIMS_VEX = """\
 int tet[] = detail(0, "tet_conn");
+int tet_bits[] = detail(0, "tet_face_bits");
 for (int i = 0; i < len(tet); i += 4) {
     int prim = addprim(0, "tet", tet[i+1], tet[i+3], tet[i+2], tet[i]);
     setprimattrib(0, "source_cell_index", prim, i / 4);
     setprimattrib(0, "source_cell_family", prim, "tet");
+    if (len(tet_bits))
+        setprimattrib(0, "readpvd_face_bits", prim, tet_bits[i / 4]);
 }
 int hexc[] = detail(0, "hex_conn");
+int hex_bits[] = detail(0, "hex_face_bits");
 for (int i = 0; i < len(hexc); i += 8) {
     int prim = addprim(0, "hex", hexc[i], hexc[i+1], hexc[i+3], hexc[i+2],
                       hexc[i+4], hexc[i+5], hexc[i+7], hexc[i+6]);
     setprimattrib(0, "source_cell_index", prim, i / 8);
     setprimattrib(0, "source_cell_family", prim, "hex");
+    if (len(hex_bits))
+        setprimattrib(0, "readpvd_face_bits", prim, hex_bits[i / 8]);
 }
 int tri[] = detail(0, "tri_conn");
 for (int i = 0; i < len(tri); i += 3) {
@@ -103,36 +109,42 @@ for (int i = 0; i < len(lin); i += 2) {
 """
 
 BOUNDARY_VEX = """\
-// boundary faces of the volume mesh for display; runs only on topology
-// changes (placed before the per-frame attribute update)
+// Element faces for display; runs only on topology changes (placed before
+// the per-frame attribute update). PolyFEM duplicates vertices per element,
+// so tet_adjacent/hex_adjacent see every face as boundary: the topology stage
+// matches faces by coincident vertex (and body) instead and passes one bit
+// per face in i@readpvd_face_bits. Interior faces are kept in a group so the
+// display can drop them, except while clipping.
 int vcount = primvertexcount(0, @primnum);
+int bits = i@readpvd_face_bits;
 if (vcount == 8) {
-    for (int f = 0; f < 6; f++)
-        if (hex_adjacent(0, @primnum, f) == -1) {
-            int pts[];
-            for (int j = 0; j < 4; j++)
-                append(pts, primpoint(0, @primnum, hex_faceindex(f, j)));
-            int face = addprim(0, "poly", pts[0], pts[1], pts[2], pts[3]);
-            setprimattrib(0, "source_cell_index", face,
-                          i@source_cell_index);
-            setprimattrib(0, "source_cell_family", face,
-                          s@source_cell_family);
-        }
+    for (int f = 0, mask = 1; f < 6; f++, mask *= 2) {
+        int pts[];
+        for (int j = 0; j < 4; j++)
+            append(pts, primpoint(0, @primnum, hex_faceindex(f, j)));
+        int face = addprim(0, "poly", pts[0], pts[1], pts[2], pts[3]);
+        setprimattrib(0, "source_cell_index", face, i@source_cell_index);
+        setprimattrib(0, "source_cell_family", face, s@source_cell_family);
+        setprimgroup(0, "readpvd_interior", face, (bits / mask) % 2);
+    }
     removeprim(0, @primnum, 0);
 } else if (vcount == 4 && primintrinsic(0, "typename", @primnum) == "Tetrahedron") {
-    for (int f = 0; f < 4; f++)
-        if (tet_adjacent(0, @primnum, f) == -1) {
-            int pts[];
-            for (int j = 0; j < 3; j++)
-                append(pts, primpoint(0, @primnum, tet_faceindex(f, j)));
-            int face = addprim(0, "poly", pts[0], pts[1], pts[2]);
-            setprimattrib(0, "source_cell_index", face,
-                          i@source_cell_index);
-            setprimattrib(0, "source_cell_family", face,
-                          s@source_cell_family);
-        }
+    for (int f = 0, mask = 1; f < 4; f++, mask *= 2) {
+        int pts[];
+        for (int j = 0; j < 3; j++)
+            append(pts, primpoint(0, @primnum, tet_faceindex(f, j)));
+        int face = addprim(0, "poly", pts[0], pts[1], pts[2]);
+        setprimattrib(0, "source_cell_index", face, i@source_cell_index);
+        setprimattrib(0, "source_cell_family", face, s@source_cell_family);
+        setprimgroup(0, "readpvd_interior", face, (bits / mask) % 2);
+    }
     removeprim(0, @primnum, 0);
 }
+"""
+
+DROP_INTERIOR_VEX = """\
+if (inprimgroup(0, "readpvd_interior", @primnum))
+    removeprim(0, @primnum, 0);
 """
 
 DEFORM_VEX = """\
@@ -719,8 +731,6 @@ def _parms():
              "around it (the field list lives inside each file)."))
     main.addParmTemplate(hou.ToggleParmTemplate(
         "remesh_mode", "Remeshing Mode", default_value=False,
-        script_callback="hou.phm().toggle_remesh(kwargs)",
-        script_callback_language=hou.scriptLanguage.Python,
         help="Rebuild topology every frame (needed for remeshing runs). This "
              "makes every frame change re-parse and rebuild the mesh, so "
              "scrubbing is much slower; leave off unless the topology actually "
@@ -735,13 +745,36 @@ def _parms():
         "cache", "Cache Frames", default_value=False,
         script_callback="hou.phm().toggle_cache(kwargs)",
         script_callback_language=hou.scriptLanguage.Python,
-        help="Keep each frame in memory once it has been read and its "
-             "derived fields computed, so scrubbing back and forth is "
-             "instant. Display settings (deformation, colors, comparison, "
-             "smoothing, visibility, glyphs, fibers, clipping) still update "
-             "live on the cached data. The cache is rebuilt automatically "
+        help="Keep each frame's imported data in memory once it has been "
+             "read, so returning to a frame never reads its file again. "
+             "Derived fields and every display setting (deformation, colors, "
+             "comparison, smoothing, visibility, glyphs, fibers, clipping) "
+             "are recalculated live from the cached data, so changing them "
+             "never re-reads the files. The cache is rebuilt automatically "
              "when the PVD file, source block, topology mode, remeshing "
-             "settings or Derived toggle change; Clear Cache empties it."))
+             "settings or Display Boundary Surface Only change; Clear Cache "
+             "empties it, and so does turning this off. "
+             "Cached frames are limited by Cache Memory Limit."))
+    cache_limit = hou.FloatParmTemplate(
+        "cache_memory_gb", "Cache Memory Limit (GB)", 1,
+        default_value=(0.0,), min=0.0, max=512.0,
+        help="Most memory the frame cache may use. 0 = automatic (half of "
+             "this computer's memory). Each frame's size is measured when "
+             "it is cached, and once the limit is reached the oldest cached "
+             "frames are dropped first, so a long run of a large mesh never "
+             "pushes the computer into swapping.")
+    cache_limit.setConditional(hou.parmCondType.DisableWhen, "{ cache == 0 }")
+    main.addParmTemplate(cache_limit)
+    cache_status = hou.StringParmTemplate(
+        "cache_status", "Cache Status", 1,
+        default_expression=(
+            "hou.pwd().hdaModule().cache_status_text(hou.pwd())",),
+        default_expression_language=(hou.scriptLanguage.Python,),
+        help="Read-only: how many frames the cache holds and the memory "
+             "they use, how many fit within Cache Memory Limit at the "
+             "measured size of one frame, and Houdini's total memory use.")
+    cache_status.setConditional(hou.parmCondType.DisableWhen, "{ 1 == 1 }")
+    main.addParmTemplate(cache_status)
     main.addParmTemplate(hou.ButtonParmTemplate(
         "clear_cache", "Clear Cache",
         script_callback="hou.phm().clear_cache(kwargs)",
@@ -1488,8 +1521,14 @@ def build(out_dir):
                                        hou.exprLanguage.Hscript)
     spare_f = hou.FloatParmTemplate("topoframe", "topoframe", 1)
     topo.addSpareParmTuple(spare_f)
-    topo.parm("topoframe").setExpression('ch("../topo_frame")',
-                                         hou.exprLanguage.Hscript)
+    # Remeshing Mode follows the playbar; otherwise the fixed Topology Frame.
+    # An expression (not a callback editing the node) keeps instances locked.
+    # Python short-circuits, so hou.frame() -- and with it time dependence --
+    # is only reached in Remeshing Mode (an Hscript if() evaluates both).
+    topo.parm("topoframe").setExpression(
+        "hou.frame() if hou.pwd().parent().evalParm('remesh_mode') "
+        "else hou.pwd().parent().evalParm('topo_frame')",
+        hou.exprLanguage.Python)
 
     prims = wrangle("build_prims", 0, BUILD_PRIMS_VEX, topo)
 
@@ -1508,31 +1547,37 @@ def build(out_dir):
     frame.parm("frame").setExpression("$F", hou.exprLanguage.Hscript)
     frame.setNextInput(surf_switch)
 
+    # Cache only what comes from disk: topology, P, and the imported
+    # PVD/companion attributes (~1 GB per frame at 2.4M points). Everything
+    # else -- derived mechanics included -- is recalculated downstream, which
+    # is fast next to a file read, so no setting change (Derived, color,
+    # clipping, deformation display, smoothing, visibility, glyphs, fibers)
+    # ever makes a cached frame read its file again. Keep the historical node
+    # name because callbacks and existing scenes address it directly.
+    cache = asset.createNode("cache", "cache1")
+    cache.setNextInput(frame)
+    # Frames beyond the memory budget are dropped oldest-first instead of
+    # growing until the machine swaps.
+    cache.parm("maxframes").setExpression(
+        "hou.pwd().parent().hdaModule().cache_frame_limit(hou.pwd())",
+        hou.exprLanguage.Python)
+    # Cache Frames selects the cached stream by expression. Bypassing cache1
+    # from a callback would need allowEditingOfContents(), which unlocks the
+    # instance so it silently stops receiving asset updates.
+    cache_switch = asset.createNode("switch", "cache_switch")
+    cache_switch.parm("input").setExpression('ch("../cache")')
+    cache_switch.setNextInput(frame)            # 0: read every frame
+    cache_switch.setNextInput(cache)            # 1: cached frames
+
     # Mechanics are independent of whether the user draws the rest or
     # displaced positions, so calculate them on the raw PVD geometry.
-    derived = wrangle("derived", 2, DERIVED_VEX, frame)
-    derived.parm("snippet").set(DERIVED_VEX)
-    derived.parm("group").set("")
-    derived.bypass(False)
-    derived.parm("snippet").set(DERIVED_VEX)
-    derived.setParms({"class": 2})
+    derived = wrangle("derived", 2, DERIVED_VEX, cache_switch)
     derived_switch = asset.createNode("switch", "derived_switch")
     derived_switch.parm("input").setExpression('ch("../derived")')
-    derived_switch.setNextInput(frame)
+    derived_switch.setNextInput(cache_switch)
     derived_switch.setNextInput(derived)
 
-    # Cache the stable, reusable frame payload: topology, P, imported
-    # PVD/companion attributes, and (when enabled) derived mechanics. All
-    # presentation controls remain downstream, so revisiting a frame after a
-    # color, clipping, deformation-display, smoothing, visibility, glyph, or
-    # fiber change retrieves the calculated frame rather than rebuilding it.
-    # Keep the historical node name because callbacks and existing scenes
-    # address it directly.
-    cache = asset.createNode("cache", "cache1")
-    cache.setNextInput(derived_switch)
-    cache.bypass(True)  # enabled via the cache toggle
-
-    deform = wrangle("deform", 2, DEFORM_VEX, cache)  # class 2 = point
+    deform = wrangle("deform", 2, DEFORM_VEX, derived_switch)  # class 2 = point
 
     reference = asset.createNode("python", "reference_comparison")
     reference.parm("python").set(REFERENCE_SOP_CODE)
@@ -1609,8 +1654,20 @@ def build(out_dir):
     multi_switch.setNextInput(multi_blocks)
 
     # Clip/slice the result and supplementary blocks (glyphs excluded).
+    # The topology stage keeps every element face and groups the interior
+    # ones, so the cached frame serves both views: the outer surface alone,
+    # or -- while a clip or slice is active -- every face, so the cut shows
+    # values inside the body. Points are kept (probe, range, glyphs).
+    interior = wrangle("drop_interior_faces", 1, DROP_INTERIOR_VEX,
+                       out_result)
+    surface_view = asset.createNode("switch", "surface_view_switch")
+    surface_view.parm("input").setExpression(
+        'ch("../surface_only") && ch("../clip_mode") == 0')
+    surface_view.setNextInput(out_result)   # 0: every face
+    surface_view.setNextInput(interior)     # 1: outer surface only
+
     clip_input = asset.createNode("merge", "clip_input")
-    clip_input.setNextInput(out_result)
+    clip_input.setNextInput(surface_view)
     clip_input.setNextInput(multi_switch)
     clip_one = asset.createNode("clip::2.0", "clip_plane")
     clip_one.setNextInput(clip_input)
@@ -1709,20 +1766,6 @@ def build(out_dir):
 
     module = hda_build.read_source("readpvd", "PythonModule.py").replace(
         "# @VTU_PARSER@", hda_build.read_source("common", "vtu_parser.py"))
-    module += '''
-
-def toggle_remesh(kwargs):
-    node = kwargs["node"]
-    node.allowEditingOfContents()
-    topo = node.node("topo_build")
-    if topo is None:
-        return
-    if node.evalParm("remesh_mode"):
-        topo.parm("topoframe").setExpression("$F", hou.exprLanguage.Hscript)
-    else:
-        topo.parm("topoframe").setExpression(
-            'ch("../topo_frame")', hou.exprLanguage.Hscript)
-'''
 
     state_name = TYPE_NAME
     definition = asset.type().definition()

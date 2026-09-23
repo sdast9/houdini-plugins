@@ -301,6 +301,33 @@ def main():
     counts0 = count_types(geo0)
     assert counts0.get("Tetrahedron", 0) == 0 and counts0.get("Poly", 0) > 0, counts0
 
+    # PolyFEM duplicates vertices per element, so element adjacency alone
+    # sees every face as boundary. The displayed surface must be the true
+    # outer surface -- closed: every edge (by position) on exactly two faces
+    # -- while clipping shows every element face so the cut has an inside.
+    n_tets = len(topo.geometry().attribValue("tet_conn")) // 4
+    clip_in = node.node("clip_input")
+    surface = clip_in.geometry()
+    edge_uses = {}
+    for prim in surface.prims():
+        if prim.attribValue("source_cell_family") != "tet":
+            continue          # the scene's obstacle is an open triangle sheet
+        corners = [tuple(np.round(p.position(), 9)) for p in prim.points()]
+        for a, b in zip(corners, corners[1:] + corners[:1]):
+            edge = (min(a, b), max(a, b))
+            edge_uses[edge] = edge_uses.get(edge, 0) + 1
+    n_other = len(topo.geometry().attribValue("tri_conn") or ()) // 3
+    n_surface = surface.intrinsicValue("primitivecount")
+    assert 0 < n_surface < 4 * n_tets, (n_surface, n_tets)
+    assert set(edge_uses.values()) == {2}, "boundary surface is not closed"
+    node.parm("clip_mode").set(1)
+    assert node.node("surface_view_switch").evalParm("input") == 0
+    assert clip_in.geometry().intrinsicValue("primitivecount") == \
+        4 * n_tets + n_other
+    node.parm("clip_mode").set(0)
+    assert out.geometry().intrinsicValue("pointcount") == n_pts, (
+        "dropping interior faces must keep every point")
+
     topo_cooks_before = topo.cookCount()
 
     hou.setFrame(4)
@@ -312,21 +339,47 @@ def main():
     # topology stage must NOT have recooked on the frame change
     assert topo.cookCount() == topo_cooks_before, "topology cache missed"
 
-    # The explicit Cache SOP stores imported fields plus stable derived
-    # mechanics, not the finished display. Recoloring or clipping previously
-    # cached frames must reuse both the PVD upload and derived calculation.
+    # The Cache SOP stores only what comes from disk (topology and imported
+    # PVD attributes); derived mechanics and the display are recalculated
+    # downstream. No setting change may make a cached frame read its file.
     cache_node = node.node("cache1")
     frame_node = node.node("frame_data")
-    derived_node = node.node("derived")
-    assert cache_node.inputs()[0] == node.node("derived_switch")
-    assert node.node("deform").inputs()[0] == cache_node
+    assert cache_node.inputs()[0] == frame_node
+    cache_switch = node.node("cache_switch")
+    assert cache_switch.inputs() == (frame_node, cache_node)
+    assert node.node("derived").inputs()[0] == cache_switch
+    assert node.node("deform").inputs()[0] == node.node("derived_switch")
+    assert node.isLockedHDA(), "loading a PVD unlocked the asset instance"
     node.setParms({"cache": 1})
     node.hdaModule().toggle_cache({"node": node})
     node.hdaModule().clear_cache({"node": node})
+    node.parm("remesh_mode").set(1)
+    node.parm("remesh_mode").set(0)
+    # Cache, remesh and clear callbacks must never unlock the instance, or
+    # it silently stops receiving asset rebuilds (the "cache broke again"
+    # report: every used readPVD node had been unlocked).
+    assert node.isLockedHDA(), "a cache/remesh callback unlocked the asset"
     for cached_frame in (0, 4, 0):
         hou.setFrame(cached_frame)
         out.cook(force=False)
-    cached_cooks = (frame_node.cookCount(), derived_node.cookCount())
+    cached_cooks = frame_node.cookCount()
+    assert cache_node.evalParm("maxframes") >= 2, (
+        "the default memory budget must hold more than one small frame")
+    status = node.evalParm("cache_status")
+    assert "2 frames cached" in status and "Houdini is using" in status, status
+
+    # Derived is downstream of the cache now: toggling it recalculates but
+    # never re-reads.
+    node.parm("derived").set(0)
+    for cached_frame in (4, 0):
+        hou.setFrame(cached_frame)
+        out.cook(force=False)
+    node.parm("derived").set(1)
+    for cached_frame in (4, 0):
+        hou.setFrame(cached_frame)
+        out.cook(force=False)
+    assert frame_node.cookCount() == cached_cooks, (
+        "toggling Derived re-read cached frames")
 
     # Exercise the actual UI callback path for a field change, then revisit
     # both cached frames. Neither stable stage may cook again.
@@ -336,7 +389,7 @@ def main():
     for cached_frame in (0, 4, 0):
         hou.setFrame(cached_frame)
         out.cook(force=False)
-    assert (frame_node.cookCount(), derived_node.cookCount()) == cached_cooks, (
+    assert frame_node.cookCount() == cached_cooks, (
         "changing the color field invalidated calculated frame data")
 
     # Clipping is presentation-only and must have the same behavior in both
@@ -346,8 +399,7 @@ def main():
         for cached_frame in (4, 0):
             hou.setFrame(cached_frame)
             out.cook(force=False)
-        assert (frame_node.cookCount(),
-                derived_node.cookCount()) == cached_cooks, (
+        assert frame_node.cookCount() == cached_cooks, (
             "toggling clipping invalidated calculated frame data")
 
     # Range/ramp edits are downstream as well.
@@ -356,14 +408,36 @@ def main():
     for cached_frame in (4, 0):
         hou.setFrame(cached_frame)
         out.cook(force=False)
-    assert (frame_node.cookCount(), derived_node.cookCount()) == cached_cooks, (
+    assert frame_node.cookCount() == cached_cooks, (
         "editing the color range invalidated calculated frame data")
+
+    # A memory limit smaller than two frames keeps only the newest frame:
+    # revisiting the other one reads it again instead of growing the cache.
+    frame_bytes = node.hdaModule()._CACHE_FRAME_BYTES[node.sessionId()]
+    node.parm("cache_memory_gb").set(1.5 * frame_bytes / float(1 << 30))
+    assert cache_node.evalParm("maxframes") == 1
+    node.hdaModule().clear_cache({"node": node})
+    for limited_frame in (4, 0):
+        hou.setFrame(limited_frame)
+        out.cook(force=False)
+    before = frame_node.cookCount()
+    hou.setFrame(4)
+    out.cook(force=False)
+    assert frame_node.cookCount() == before + 1, (
+        "a frame beyond the memory limit was still served from the cache")
+    node.parm("cache_memory_gb").set(0.0)
 
     node.parm("color_attrib").set(old_color_field)
     node.hdaModule().color_selection_changed({"node": node})
     node.parm("color_max").set(old_color_max)
     node.setParms({"cache": 0})
     node.hdaModule().toggle_cache({"node": node})
+    before = frame_node.cookCount()
+    for uncached_frame in (0, 4):
+        hou.setFrame(uncached_frame)
+        out.cook(force=False)
+    assert frame_node.cookCount() == before + 2, (
+        "Cache Frames off still served frames from the cache")
     hou.setFrame(4)
     out.cook(force=False)
 
@@ -901,12 +975,13 @@ def main():
     assert np.allclose(pos4, out.geometry().point(probe_pt).position()), (
         "probe marker position does not match the live point")
     node.setParms({"reference_enable": 0})
-    out.cook(force=True)
-    unclipped_prims = len(out.geometry().prims())
     node.setParms({"clip_mode": 1, "clip_originx": 0.5,
                    "clip_directionx": 1.0, "clip_directiony": 0.0,
                    "clip_directionz": 0.0})
     out.cook(force=True)
+    # clipping draws every element face (so the cut has an inside); the
+    # clip must remove part of that set
+    unclipped_prims = len(node.node("clip_input").geometry().prims())
     assert len(out.geometry().prims()) < unclipped_prims
     node.setParms({"clip_mode": 2, "slice_thickness": 0.05})
     out.cook(force=True)
@@ -919,10 +994,11 @@ def main():
                    "glyph_stride": 5, "clip_mode": 0})
     out.cook(force=True)
     glyphs_unclipped = len(out.geometry().findPrimGroup("readpvd_glyphs").prims())
-    model_unclipped = len(out.geometry().prims()) - glyphs_unclipped
     node.setParms({"clip_mode": 1, "clip_originx": 0.5, "clip_directionx": 1.0,
                    "clip_directiony": 0.0, "clip_directionz": 0.0})
     out.cook(force=True)
+    # glyphs merge in after the clip stage, so clip_input is the model alone
+    model_unclipped = len(node.node("clip_input").geometry().prims())
     clipped = out.geometry()
     glyphs_clipped = len(clipped.findPrimGroup("readpvd_glyphs").prims())
     model_clipped = len(clipped.prims()) - glyphs_clipped
@@ -1186,6 +1262,29 @@ def main():
         b'<r><DataArray>PAYLOAD</DataArray><DataArray o="1"/></r>')
     assert b"PAYLOAD" not in skeleton                 # inline payload removed
     assert spans[0] is not None and spans[1] is None  # inline span, self-closing
+
+    # Uncompressed binary payloads are skipped by their encoded length (the
+    # header gives the byte count); a payload whose length does not match --
+    # line-wrapped base64 here -- must fall back to searching.
+    import base64 as _b64
+    values = np.arange(7, dtype=np.float64)
+    encoded = _b64.b64encode(
+        np.uint64(values.nbytes).tobytes() + values.tobytes())
+    for header, payload in (
+            (b'<VTKFile header_type="UInt64">', b"\n  " + encoded + b"\n"),
+            (b'<VTKFile header_type="UInt64">', encoded[:20] + b"\n"
+             + encoded[20:]),
+            (b'<VTKFile header_type="UInt64" compressor="vtkZLibDataCompressor">',
+             encoded)):
+        doc = (header + b'<DataArray format="binary">' + payload
+               + b"</DataArray></VTKFile>")
+        skeleton, spans = phm._strip_inline_payloads(doc)
+        assert doc[spans[0][0]:spans[0][1]] == payload, (header, payload)
+        assert skeleton.endswith(b"<DataArray format=\"binary\"></DataArray>"
+                                 b"</VTKFile>")
+    assert phm._predicted_close(
+        b"\n  " + encoded + b"\n</DataArray>", 0, (8, "little")) == \
+        len(encoded) + 4, "fast path not taken for a plain binary payload"
 
     print(f"\nPASS: readPVD 1.0 ({frame_cook*1000:.0f} ms/frame on this mesh; "
           f"contact-force max {np.abs(cf).max():.3g})")

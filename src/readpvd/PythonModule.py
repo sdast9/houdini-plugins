@@ -24,6 +24,7 @@ import platform
 import re
 import itertools
 import shutil
+import subprocess
 import sys
 import zipfile
 
@@ -1442,6 +1443,48 @@ def _coincidence_groups(points):
     return inverse, representative
 
 
+# Element faces in the order the boundary_display wrangle emits them: the
+# build_prims vertex order of each volume prim, indexed by Houdini's
+# tet_faceindex / hex_faceindex tables.
+_FACE_TABLES = {
+    "tet": (np.array([1, 3, 2, 0]),
+            np.array([[1, 2, 3], [0, 3, 2], [0, 1, 3], [0, 2, 1]])),
+    "hex": (np.array([0, 1, 3, 2, 4, 5, 7, 6]),
+            np.array([[0, 4, 6, 2], [1, 3, 7, 5], [0, 1, 5, 4],
+                      [2, 6, 7, 3], [0, 2, 3, 1], [4, 5, 7, 6]])),
+}
+
+
+def _interior_face_bits(conn, family, inverse, body=None):
+    """Per cell, bit f set when face f is shared with another cell.
+
+    PolyFEM gives every element its own copy of its vertices, so faces are
+    matched through the coincidence groups (and the body id, so an interface
+    between two bodies stays visible when one of them is hidden).
+    """
+    prim_order, face_index = _FACE_TABLES[family]
+    conn = np.asarray(conn, dtype=np.int64)
+    if not len(conn):
+        return np.zeros(0, dtype=np.int64)
+    faces = conn[:, prim_order][:, face_index]          # (cells, faces, k)
+    cells, n_faces, _ = faces.shape
+    keys = np.sort(inverse[faces].reshape(cells * n_faces, -1), axis=1)
+    if body is not None and len(body) == len(inverse):
+        body = np.rint(np.asarray(body, dtype=np.float64).ravel())
+        keys = np.column_stack(
+            (keys, body[faces[:, :, 0].ravel()].astype(np.int64)))
+    order = np.lexsort(keys.T[::-1])
+    ordered = keys[order]
+    same = np.all(ordered[1:] == ordered[:-1], axis=1)
+    shared = np.zeros(len(keys), dtype=bool)
+    shared[1:] |= same
+    shared[:-1] |= same
+    interior = np.empty(len(keys), dtype=bool)
+    interior[order] = shared
+    weights = np.left_shift(1, np.arange(n_faces, dtype=np.int64))
+    return (interior.reshape(cells, n_faces) * weights).sum(axis=1)
+
+
 def _coincidence_inverse(points):
     """Group id per point for coincident (duplicated) mesh vertices."""
     return _coincidence_groups(points)[0]
@@ -2170,6 +2213,12 @@ def cook_topology(node):
         if family in mesh["cells"]:
             put(f"{family}_conn", mesh["cells"][family])
 
+    body = mesh["point_data"].get("body_ids")
+    for family in ("tet", "hex"):
+        if family in mesh["cells"]:
+            put(f"{family}_face_bits", _interior_face_bits(
+                mesh["cells"][family], family, inverse, body))
+
     geo.addAttrib(hou.attribType.Global, "topo_key", "")
     geo.setGlobalAttribValue("topo_key", str(mesh["topo_key"]))
 
@@ -2375,20 +2424,112 @@ def start(kwargs=None):
 
 
 def clear_cache(kwargs=None):
-    """Flush the cooked-frame cache (cache1). Never moves the playbar."""
+    """Flush the cooked-frame cache (cache1). Never moves the playbar.
+
+    Pressing an internal button is allowed on a locked asset; nothing here
+    may unlock the node (allowEditingOfContents), or the instance stops
+    receiving later asset rebuilds.
+    """
     node = hou.pwd() if kwargs is None else kwargs["node"]
-    node.allowEditingOfContents()
     cache_node = node.node("cache1")
     if cache_node is not None:
         cache_node.parm("clear").pressButton()
 
 
 def toggle_cache(kwargs):
-    node = kwargs["node"]
-    node.allowEditingOfContents()
+    # cache_switch follows the toggle by expression; turning the cache off
+    # also releases the frames it holds.
+    clear_cache(kwargs)
+
+
+# Measured size of one cached frame per asset instance (bytes), updated
+# whenever the cache's input is already cooked.
+_CACHE_FRAME_BYTES = {}
+CACHE_FRAME_CEILING = 2500   # the Cache SOP's own default Max Frames
+
+
+def _physical_memory():
+    try:
+        return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    except (AttributeError, OSError, ValueError):
+        return 16 << 30
+
+
+def _cache_budget_bytes(asset):
+    parm = asset.parm("cache_memory_gb")
+    limit_gb = parm.eval() if parm is not None else 0.0
+    if limit_gb > 0:
+        return int(limit_gb * (1 << 30))
+    return _physical_memory() // 2
+
+
+def cache_frame_limit(cache_node):
+    """Max Frames for cache1: as many frames as fit the memory budget.
+
+    Evaluated by cache1's maxframes expression on every cook. The frame size
+    is read only from an input that is already cooked, so a cache hit never
+    forces the upstream stages to run.
+    """
+    asset = cache_node.parent()
+    key = asset.sessionId()
+    source = cache_node.input(0)
+    if source is not None and not source.needsToCook():
+        try:
+            size = int(source.geometry().intrinsicValue("memoryusage"))
+        except (hou.Error, TypeError, ValueError):
+            size = 0
+        if size > 0:
+            _CACHE_FRAME_BYTES[key] = size
+    size = _CACHE_FRAME_BYTES.get(key)
+    if not size:
+        return CACHE_FRAME_CEILING
+    return int(max(1, min(CACHE_FRAME_CEILING,
+                          _cache_budget_bytes(asset) // size)))
+
+
+def _cache_contents(cache_node):
+    """(frames cached, memory text) as the Cache SOP reports them."""
+    try:
+        rows = dict(cache_node.infoTree(verbose=False).branches()[
+            "Cache SOP Info"].rows())
+        return (int(rows["Geometries Cached"].split("/")[0]),
+                rows["Memory Used"])
+    except (hou.Error, KeyError, ValueError, AttributeError):
+        return None
+
+
+def _houdini_memory_gb():
+    """Resident memory of this Houdini process, or None."""
+    try:
+        rss_kb = subprocess.run(
+            ["ps", "-o", "rss=", "-p", str(os.getpid())],
+            capture_output=True, text=True, timeout=2).stdout.strip()
+        return int(rss_kb) / float(1 << 20)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def cache_status_text(node):
+    hou.frame()   # time-dependent, so the readout refreshes as frames load
+    total = _houdini_memory_gb()
+    total_text = f" Houdini is using {total:.1f} GB." if total else ""
+    if not node.evalParm("cache"):
+        return ("Cache off: every frame change reads its result file."
+                + total_text)
+    budget = _cache_budget_bytes(node) / float(1 << 30)
+    size = _CACHE_FRAME_BYTES.get(node.sessionId())
     cache_node = node.node("cache1")
-    if cache_node is not None:
-        cache_node.bypass(not node.evalParm("cache"))
+    contents = _cache_contents(cache_node) if cache_node is not None else None
+    held = (f"{contents[0]} frame{'s' if contents[0] != 1 else ''} cached "
+            f"({contents[1]}); " if contents else "")
+    if not size:
+        return (f"{held}limit {budget:.1f} GB. The frame size is measured "
+                "when the first frame is cached." + total_text)
+    frames = min(CACHE_FRAME_CEILING, max(1, int(budget * (1 << 30) // size)))
+    return (f"{held}limit {budget:.1f} GB holds {frames} "
+            f"frame{'s' if frames != 1 else ''} of "
+            f"{size / float(1 << 30):.2f} GB, oldest dropped first."
+            + total_text)
 
 
 def autoscale(kwargs):

@@ -7,6 +7,7 @@ optional zlib compression, and vectorized linearization of higher-order
 """
 
 import base64
+import binascii
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -114,6 +115,56 @@ def _localname(tag):
     return tag.rsplit("}", 1)[-1]
 
 
+_ROOT_ATTRS_RE = re.compile(rb"<VTKFile\b([^>]*)>")
+_WHITESPACE = b" \t\r\n"
+
+
+def _raw_binary_header(data):
+    """(header_size, byteorder) when inline binary payloads are uncompressed.
+
+    Uncompressed inline-binary VTK encodes the byte-count header and the data
+    as one base64 stream, so the payload length follows from its first few
+    characters. Returns None when the layout is not known to be predictable.
+    """
+    match = _ROOT_ATTRS_RE.search(data, 0, 4096)
+    if match is None:
+        return None
+    attrs = dict(_XML_ATTR_RE.findall(match.group(1)))
+    if attrs.get(b"compressor"):
+        return None
+    header = {b"UInt32": 4, b"UInt64": 8}.get(
+        attrs.get(b"header_type", b"UInt32"))
+    if header is None:
+        return None
+    order = ("big" if attrs.get(b"byte_order") == b"BigEndian" else "little")
+    return header, order
+
+
+def _predicted_close(data, begin, raw_header):
+    """Offset of this payload's </DataArray> from its header, or None.
+
+    Saves a byte search through the whole payload (about a second per 2 GB
+    frame). Any mismatch -- wrapped base64, ascii, compressed data -- returns
+    None and the caller falls back to searching.
+    """
+    header_size, order = raw_header
+    start = begin
+    while data[start:start + 1] and data[start:start + 1] in _WHITESPACE:
+        start += 1
+    chars = 4 * -(-header_size // 3)
+    try:
+        head = binascii.a2b_base64(data[start:start + chars])
+    except binascii.Error:
+        return None
+    if len(head) < header_size:
+        return None
+    nbytes = int.from_bytes(head[:header_size], order)
+    close = start + 4 * -(-(header_size + nbytes) // 3)
+    while data[close:close + 1] and data[close:close + 1] in _WHITESPACE:
+        close += 1
+    return close if data.startswith(b"</DataArray>", close) else None
+
+
 def _strip_inline_payloads(data):
     """Remove inline <DataArray> payloads, returning (skeleton, ranges).
 
@@ -123,10 +174,12 @@ def _strip_inline_payloads(data):
     each payload (leaving a small tag skeleton to parse) and records the
     payload's byte range so it can be decoded on demand from the original
     buffer. Base64/ascii payloads never contain '<', so the tag scan is safe.
-    `ranges[i]` is the byte span of the i-th <DataArray> in document order, or
-    None for a self-closing tag (appended format).
+    Uncompressed binary payloads are skipped by their encoded length instead
+    of scanned. `ranges[i]` is the byte span of the i-th <DataArray> in
+    document order, or None for a self-closing tag (appended format).
     """
     close_tag = b"</DataArray>"
+    raw_header = _raw_binary_header(data)
     out = bytearray()
     ranges = []
     pos = 0
@@ -144,7 +197,11 @@ def _strip_inline_payloads(data):
             ranges.append(None)
             pos = tag_end + 1
             continue
-        close = data.find(close_tag, tag_end)
+        close = None
+        if raw_header is not None and b'format="binary"' in data[start:tag_end]:
+            close = _predicted_close(data, tag_end + 1, raw_header)
+        if close is None:
+            close = data.find(close_tag, tag_end)
         if close < 0:
             out += data[pos:]
             break
@@ -160,9 +217,13 @@ def _strip_inline_payloads(data):
 _PVD_CACHE = {}
 _FIELD_INFO_CACHE = {}
 _VTU_CACHE = OrderedDict()
-# parsed frames are large; hold enough for the stages that re-read the same
-# frame in one cook (topology + frame + multi-block + reference comparison)
+# Parsed frames are large; hold enough for the stages that re-read the same
+# frame in one cook (topology + frame + multi-block + reference comparison),
+# but never more than _VTU_CACHE_BYTES beyond the newest entry: a 2.4M-point
+# frame parses to ~2 GB, and the cooked-frame cache (cache1) already keeps
+# every visited frame.
 _VTU_CACHE_SIZE = 3
+_VTU_CACHE_BYTES = 4 << 30
 
 
 def _file_key(path):
@@ -418,6 +479,25 @@ def read_hdf(path):
             from error
 
 
+def _mesh_nbytes(mesh):
+    """Approximate memory held by one parsed mesh dict."""
+    total = getattr(mesh.get("points"), "nbytes", 0)
+    for group in ("cells", "point_data"):
+        total += sum(getattr(v, "nbytes", 0) for v in mesh.get(group, {}).values())
+    for by_family in mesh.get("cell_data", {}).values():
+        total += sum(getattr(v, "nbytes", 0) for v in by_family.values())
+    return total
+
+
+def _remember(key, mesh):
+    _VTU_CACHE[key] = mesh
+    while len(_VTU_CACHE) > 1 and (
+            len(_VTU_CACHE) > _VTU_CACHE_SIZE
+            or sum(_mesh_nbytes(m) for m in _VTU_CACHE.values())
+            > _VTU_CACHE_BYTES):
+        _VTU_CACHE.popitem(last=False)
+
+
 def read_vtu_cached(path):
     """read_vtu with a small LRU keyed on file identity.
 
@@ -427,9 +507,7 @@ def read_vtu_cached(path):
     mesh = _VTU_CACHE.get(key)
     if mesh is None:
         mesh = read_vtu(path)
-        _VTU_CACHE[key] = mesh
-        while len(_VTU_CACHE) > _VTU_CACHE_SIZE:
-            _VTU_CACHE.popitem(last=False)
+        _remember(key, mesh)
     else:
         _VTU_CACHE.move_to_end(key)
     return mesh
@@ -445,9 +523,7 @@ def read_mesh_cached(path):
     mesh = _VTU_CACHE.get(key)
     if mesh is None:
         mesh = read_hdf(path) if _is_hdf(path) else read_vtu(path)
-        _VTU_CACHE[key] = mesh
-        while len(_VTU_CACHE) > _VTU_CACHE_SIZE:
-            _VTU_CACHE.popitem(last=False)
+        _remember(key, mesh)
     else:
         _VTU_CACHE.move_to_end(key)
     return mesh

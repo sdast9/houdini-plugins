@@ -281,11 +281,24 @@ Targets the current build's strict-validated schema — the old fork keys
   carried onto the sub-tets (the 0.26 hand-built subdivisions, regenerated
   verbatim and vectorized). Orders above P4 fall back to the corner tet; for
   those, PolyFEM's `vismesh_rel_area` sampled output covers visualization.
-* Playbar mapping from `.pvd` timesteps, plus a calculated-frame cache. The
-  cache stores topology, positions, imported PVD/fiber attributes, and enabled
-  derived mechanics. Deformation display, reference comparison, color,
-  smoothing, visibility, glyph, fiber, and clipping controls remain live
-  downstream of it.
+* Playbar mapping from `.pvd` timesteps, plus a frame cache that holds only
+  what comes from disk: topology, positions, and imported PVD/fiber
+  attributes (about 1 GB per frame at 2.4M points). Derived mechanics,
+  deformation display, reference comparison, color, smoothing, visibility,
+  glyph, fiber, and clipping are recalculated downstream of it, so changing
+  any of them never re-reads a file (a cached frame costs about 0.6 s at 2.4M
+  points, a file read about 3 s warm and 8 s cold). *Cache Memory Limit*
+  (0 = half of the computer's memory) bounds it: each frame's size is measured
+  when cached and the oldest frames are dropped first. *Cache Status* shows
+  the frames held, their memory, how many fit, and Houdini's total memory.
+  The cache callbacks never unlock the asset instance; instances saved by
+  older versions are unlocked and keep their old internals until *Match
+  Current Definition*.
+* *Display Boundary Surface Only* draws the true outer surface. PolyFEM
+  duplicates vertices per element, so faces are matched by coincident vertex
+  (and body) in the topology stage: 435k instead of 2.45M triangles on a
+  612k-tet mesh. While a clip or slice is active every element face is drawn,
+  so the cut shows values inside the body.
 
 ## Performance summary
 
