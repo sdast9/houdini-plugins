@@ -255,16 +255,12 @@ Targets the current build's strict-validated schema — the old fork keys
   difference, and percentage change. Interactive clipping planes and thin
   slices expose internal colored sections; glyphs are merged after the clip so
   they are never cut.
-* Timeline diagnostics scan the selected displayed value over the PVD
+* *Auto Range: All Frames* scans the selected displayed value over the PVD
   sequence (vectorized numpy reduction per frame — no per-frame network cook
-  or frame changes) and optionally add a renderable minimum/mean/maximum plot
-  with numbered, unit-labeled axes, gridlines, an optional min–max band, a
-  curve legend, and a time-vs-frame horizontal axis choice. The two operations
-  that read every frame — *Auto Range: All Frames* and *Compute Field Over
-  Time* — share a memoized per-frame result keyed on the scan settings and PVD
-  file, so running one right after the other (or re-running) is instant; it
-  invalidates on a settings/file change and is bounded so a very large
-  sequence is recomputed rather than pinned in memory.
+  or frame changes) and memoizes the per-frame result keyed on the scan
+  settings and PVD file, so a repeat is instant. (The renderable timeline plot
+  was removed on 2026-09-23: world-space placement and a blocking full-sequence
+  scan made it impractical on large runs.)
 * Matching legends can be shown as renderable scene geometry, a screen-fixed
   viewport overlay, or both. The Scene Geometry legend is real geometry and is
   always visible (and renders); the Viewport Overlay is screen-fixed but is
@@ -288,9 +284,13 @@ Targets the current build's strict-validated schema — the old fork keys
   glyph, fiber, and clipping are recalculated downstream of it, so changing
   any of them never re-reads a file (a cached frame costs about 0.6 s at 2.4M
   points, a file read about 3 s warm and 8 s cold). *Cache Memory Limit*
-  (0 = half of the computer's memory) bounds it: each frame's size is measured
-  when cached and the oldest frames are dropped first. *Cache Status* shows
-  the frames held, their memory, how many fit, and Houdini's total memory.
+  bounds it (a new node starts at the system memory available when it is
+  created; 0 = half of physical memory): each frame's size is measured when
+  cached and the oldest frames are dropped first. *Cache Frames* is on by
+  default. *Cache Status* shows the frames held, their memory and how many fit
+  (Clear Cache resets it; the frame on screen is re-cached from memory right
+  away), and *Memory* shows Houdini's and the system's used/available memory.
+  *Refresh / Set Playbar* never clears the cache.
   The cache callbacks never unlock the asset instance; instances saved by
   older versions are unlocked and keep their old internals until *Match
   Current Definition*.

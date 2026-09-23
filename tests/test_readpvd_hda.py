@@ -205,6 +205,10 @@ def assert_close(actual, expected, label, rtol=2e-4, atol=2e-5):
 def main():
     hou.hda.installFile(os.path.join(BASE, "object_readPVD.1.0.hdanc"))
     node = hou.node("/obj").createNode("readPVD::1.0", "viewer")
+    # new nodes cache by default, limited to the memory available at creation
+    assert node.evalParm("cache") == 1
+    assert 0 < node.evalParm("cache_memory_gb") <= \
+        node.hdaModule()._physical_memory() / float(1 << 30)
     out = node.node("output")
     result = node.node("OUT_result")
     topo = node.node("topo_build")
@@ -366,7 +370,20 @@ def main():
     assert cache_node.evalParm("maxframes") >= 2, (
         "the default memory budget must hold more than one small frame")
     status = node.evalParm("cache_status")
-    assert "2 frames cached" in status and "Houdini is using" in status, status
+    assert "2 frames cached" in status, status
+    memory = node.evalParm("memory_status")
+    assert "Houdini" in memory and "available" in memory, memory
+
+    # Refresh / Set Playbar picks up new steps but never clears the cache,
+    # even when it changes the playbar range.
+    hou.playbar.setFrameRange(0, 1)
+    before = frame_node.cookCount()
+    node.hdaModule().refresh({"node": node})
+    for cached_frame in (4, 0):
+        hou.setFrame(cached_frame)
+        out.cook(force=False)
+    assert frame_node.cookCount() == before, "Refresh cleared the cache"
+    assert "2 frames cached" in node.evalParm("cache_status")
 
     # Derived is downstream of the cache now: toggling it recalculates but
     # never re-reads.
@@ -417,6 +434,8 @@ def main():
     node.parm("cache_memory_gb").set(1.5 * frame_bytes / float(1 << 30))
     assert cache_node.evalParm("maxframes") == 1
     node.hdaModule().clear_cache({"node": node})
+    status = node.evalParm("cache_status")
+    assert status.startswith("Cleared: 0 frames cached"), status
     for limited_frame in (4, 0):
         hou.setFrame(limited_frame)
         out.cook(force=False)
@@ -703,16 +722,14 @@ def main():
                  np.array([truth.min(), truth.max()]),
                  "all-frames auto range matches displayed values")
     # The every-frame scan is memoized: it caches the per-frame values keyed on
-    # the scan settings, so a same-settings run (e.g. diagnostics right after
-    # auto-range) reuses them instead of re-parsing. Poison the cached values
-    # and confirm the next same-settings scan reads them back.
+    # the scan settings, so a same-settings rerun reuses them instead of
+    # re-parsing. Poison the cached values and confirm the rerun reads them.
     phm = node.hdaModule()
     assert phm._SCAN_CACHE.get("key") == phm._scan_key(node, pvd)
     phm._SCAN_CACHE["rows"] = [(frame, timestep, np.full(4, 42.0, np.float32))
                                for frame, timestep, _ in phm._SCAN_CACHE["rows"]]
-    phm.compute_diagnostics({"node": node})
-    poisoned = json.loads(node.evalParm("diagnostics_data"))
-    assert poisoned and all(abs(row[4] - 42.0) < 1e-3 for row in poisoned), (
+    phm.autoscale_all({"node": node})
+    assert abs(node.evalParm("color_max") - 42.0) < 1e-3, (
         "all-frames scan did not reuse the cache")
     # changing the scanned field invalidates the cache (different key)
     key_before = phm._scan_key(node, pvd)
@@ -1108,22 +1125,9 @@ def main():
     assert "sentinel" not in gphm._VTU_CACHE, "start did not flush caches"
     gnode.destroy()
 
-    node.hdaModule().compute_diagnostics({"node": node})
-    # numpy scan stores frame, timestep, min, mean, max per frame
-    diag_rows = json.loads(node.evalParm("diagnostics_data"))
-    assert diag_rows and all(len(row) == 5 for row in diag_rows)
-    assert [row[2] <= row[3] <= row[4] for row in diag_rows]  # min<=mean<=max
-    node.setParms({"diagnostics_show": 1, "field_units": "m",
-                   "legend_number_format": 2, "diagnostics_grid": 1,
-                   "diagnostics_band": 1})
-    out.cook(force=True)
-    diagnostic_group = out.geometry().findPrimGroup("readpvd_diagnostics")
-    assert diagnostic_group is not None and len(diagnostic_group.prims()) == 3
-    # axes, gridlines, numbered tick labels, band, titles, and legend
-    chrome = out.geometry().findPrimGroup("readpvd_diagnostics_axes")
-    assert chrome is not None and len(chrome.prims()) > 20
-    assert "[m]" in node.hdaModule().legend_title_text(node)
-    node.setParms({"diagnostics_show": 0})
+    # the timeline plot was removed; nothing may still build it
+    assert node.parm("diagnostics_show") is None
+    assert node.node("timeline_diagnostics") is None
 
     # CellData remains on primitives, is promoted for display, and temporal
     # field menus distinguish every-frame and intermittent data.

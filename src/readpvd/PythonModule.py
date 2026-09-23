@@ -1377,23 +1377,7 @@ def probe_point(node, point_number):
     return readout
 
 
-def _nice_ticks(low, high, target=5):
-    """Tick values at 1/2/2.5/5 x 10^k steps spanning [low, high]."""
-    if not (np.isfinite(low) and np.isfinite(high)) or high <= low:
-        return np.array([low if np.isfinite(low) else 0.0])
-    span = high - low
-    magnitude = 10.0 ** math.floor(math.log10(span / max(1, target)))
-    step = 10 * magnitude
-    for multiplier in (1, 2, 2.5, 5, 10):
-        step = multiplier * magnitude
-        if span / step <= target * 1.4:
-            break
-    start = math.ceil(low / step - 1e-9) * step
-    count = int(math.floor((high - start) / step + 1e-9)) + 1
-    return start + step * np.arange(max(1, count))
-
-
-def _diagnostics_reduced(node, mesh, field, reduction):
+def _scan_reduced(node, mesh, field, reduction):
     """Per-point displayed scalar for one mesh -- mirrors the color VEX."""
     raw = _mesh_field(mesh, field)
     if raw is None:
@@ -1408,7 +1392,7 @@ def _reference_reduced(node, path, block, field, reduction):
     try:
         blocks = load_frame(path, node.evalParm("reference_frame"))
         mesh = blocks.get(block) or next(iter(blocks.values()), None)
-        return _diagnostics_reduced(node, mesh, field, reduction) \
+        return _scan_reduced(node, mesh, field, reduction) \
             if mesh is not None else None
     except Exception:
         return None
@@ -1501,9 +1485,8 @@ def _nodal_average(values, inverse):
     return averaged[inverse]
 
 
-# Memoized results of the last all-frames scan, so the two features that read
-# every frame (Auto Range: All Frames, Compute Field Over Time) share the work
-# and a repeat is instant. Keyed on everything that changes the per-frame
+# Memoized results of the last all-frames scan (Auto Range: All Frames), so a
+# repeat is instant. Keyed on everything that changes the per-frame
 # value; a settings or file change invalidates it. Bounded so a huge sequence
 # is recomputed rather than pinned in RAM.
 _SCAN_CACHE = {}
@@ -1550,7 +1533,7 @@ def _scan_frames(node, path):
     """Compute (frame, timestep, values) per frame -- pure numpy, an exact
     mirror of the color stage (reduction, reference comparison, smoothing
     `_avg` preference, nodal averaging, body visibility). No network cook and
-    no frame change, so the two consumers agree with the viewport.
+    no frame change, so the range agrees with the viewport.
     """
     entries = read_pvd(path)
     field = node.evalParm("color_attrib")
@@ -1573,7 +1556,7 @@ def _scan_frames(node, path):
             yield frame, timestep, None
             continue
         if reference_reduced is not None:
-            values = _diagnostics_reduced(node, mesh, field, reduction)
+            values = _scan_reduced(node, mesh, field, reduction)
             if values is not None:
                 values = _apply_reference(
                     values, reference_reduced, reference_mode)
@@ -1586,12 +1569,12 @@ def _scan_frames(node, path):
                          for name in mesh["point_data"]}
                 if candidate in names:
                     effective = candidate
-            values = _diagnostics_reduced(node, mesh, effective, reduction)
+            values = _scan_reduced(node, mesh, effective, reduction)
         if values is not None and smooth:
             if inverse is None or len(inverse) != len(values):
                 inverse = _coincidence_inverse(mesh["points"])
             values = _nodal_average(values, inverse)
-        # Restrict the range/diagnostics to the bodies that are displayed.
+        # Restrict the range to the bodies that are displayed.
         if values is not None and visible is not None:
             body = mesh["point_data"].get("body_ids")
             if body is not None:
@@ -1599,200 +1582,6 @@ def _scan_frames(node, path):
                                 list(visible))
                 values = np.where(shown, values, np.nan)
         yield frame, timestep, values
-
-
-def compute_diagnostics(kwargs):
-    """Scan the displayed value over every frame using numpy directly.
-
-    No network cook and no frame changes: each frame is parsed once (shared
-    cache) and reduced with the same helpers the color VEX uses, so this is
-    far faster than force-cooking the result pipeline per frame and never
-    disturbs the current frame or playbar.
-    """
-    node = kwargs["node"]
-    path = node.evalParm("PVD_file")
-    if not path:
-        return
-    try:
-        scanned = list(_scan_displayed_values(node, path))
-    except Exception as exc:
-        node.parm("diagnostics_status").set(f"Timeline scan failed: {exc}")
-        return
-    rows = []
-    for frame, timestep, values in scanned:
-        if values is None:
-            continue
-        finite = values[np.isfinite(values)]
-        if len(finite):
-            rows.append((int(frame), float(timestep), float(finite.min()),
-                         float(finite.mean()), float(finite.max())))
-    node.parm("diagnostics_data").set(json.dumps(rows))
-    node.parm("diagnostics_status").set(
-        f"Stored {len(rows)} of {len(scanned)} frames for "
-        f"{legend_title_text(node)}.")
-
-
-# Timeline-plot palette and depth layering (everything is built in the unit
-# plot space then transformed; small z offsets avoid coplanar z-fighting).
-_DIAG_MIN_COLOR = (0.25, 0.55, 1.0)     # cool blue
-_DIAG_MEAN_COLOR = (0.95, 0.8, 0.25)    # amber
-_DIAG_MAX_COLOR = (1.0, 0.4, 0.25)      # warm red
-_DIAG_AXIS_COLOR = (0.78, 0.80, 0.84)
-_DIAG_GRID_COLOR = (0.33, 0.35, 0.40)
-_DIAG_ZERO_COLOR = (0.55, 0.57, 0.62)
-_DIAG_BAND_COLOR = (0.26, 0.29, 0.36)
-_DIAG_Z_BAND, _DIAG_Z_GRID = -0.002, -0.001
-_DIAG_Z_AXIS, _DIAG_Z_CURVE = 0.0, 0.001
-
-
-def _diag_curve(geo, group, xs, ys, color, z):
-    prim = geo.createPolygon(is_closed=False)
-    for x_value, y_value in zip(xs, ys):
-        prim.addVertex(_point(geo, (x_value, y_value, z), color))
-    group.add(prim)
-
-
-def cook_diagnostics(node):
-    """Renderable timeline chart: axes, gridlines, numbered ticks with units,
-    min/mean/max curves, an optional spread band, and a legend.
-
-    Built in a unit plot box, then transformed by the diagnostics translate
-    and scale so a single bulk point transform positions the whole plot.
-    """
-    geo = node.geometry()
-    asset = node.parent()
-    try:
-        rows = np.asarray(json.loads(asset.evalParm("diagnostics_data")),
-                          dtype=np.float64)
-    except Exception:
-        return
-    if rows.ndim != 2 or rows.shape[0] < 2 or rows.shape[1] < 5:
-        return
-
-    geo.addAttrib(hou.attribType.Point, "Cd", (1.0, 1.0, 1.0),
-                  create_local_variable=False)
-    curves = geo.createPrimGroup("readpvd_diagnostics")
-    chrome = geo.createPrimGroup("readpvd_diagnostics_axes")
-
-    use_time = _menu_token(asset, "diagnostics_x_axis") != "frame"
-    x_data = rows[:, 1] if use_time else rows[:, 0]
-    y_min, y_mean, y_max = rows[:, 2], rows[:, 3], rows[:, 4]
-
-    digits = int(asset.evalParm("legend_digits"))
-    notation = _menu_token(asset, "legend_number_format")
-
-    x_lo, x_hi = float(x_data.min()), float(x_data.max())
-    x_ticks = _nice_ticks(x_lo, x_hi, 6)
-    x_ticks = x_ticks[(x_ticks >= x_lo - 1e-9) & (x_ticks <= x_hi + 1e-9)]
-    data_lo = float(np.nanmin(y_min))
-    data_hi = float(np.nanmax(y_max))
-    y_ticks = _nice_ticks(data_lo, data_hi, 5)
-    y_lo = min(data_lo, float(y_ticks[0]))
-    y_hi = max(data_hi, float(y_ticks[-1]))
-
-    def mx(value):
-        return (value - x_lo) / (x_hi - x_lo) if x_hi > x_lo else 0.5
-
-    def my(value):
-        return (value - y_lo) / (y_hi - y_lo) if y_hi > y_lo else 0.5
-
-    xs = np.array([mx(v) for v in x_data])
-
-    # gridlines (behind everything)
-    if asset.evalParm("diagnostics_grid"):
-        for tick in x_ticks:
-            _line(geo, (mx(tick), 0, _DIAG_Z_GRID), (mx(tick), 1, _DIAG_Z_GRID),
-                  _DIAG_GRID_COLOR, chrome)
-        for tick in y_ticks:
-            _line(geo, (0, my(tick), _DIAG_Z_GRID), (1, my(tick), _DIAG_Z_GRID),
-                  _DIAG_GRID_COLOR, chrome)
-
-    # optional min-max spread band
-    if asset.evalParm("diagnostics_band"):
-        band = geo.createPolygon()
-        for x_value, y_value in zip(xs, np.array([my(v) for v in y_max])):
-            band.addVertex(_point(geo, (x_value, y_value, _DIAG_Z_BAND),
-                                  _DIAG_BAND_COLOR))
-        for x_value, y_value in zip(xs[::-1],
-                                    np.array([my(v) for v in y_min])[::-1]):
-            band.addVertex(_point(geo, (x_value, y_value, _DIAG_Z_BAND),
-                                  _DIAG_BAND_COLOR))
-        chrome.add(band)
-
-    # zero reference line if the value range crosses zero
-    if y_lo < 0.0 < y_hi:
-        _line(geo, (0, my(0.0), _DIAG_Z_GRID), (1, my(0.0), _DIAG_Z_GRID),
-              _DIAG_ZERO_COLOR, chrome)
-
-    # axes (L-shape) and tick marks
-    _line(geo, (0, 0, _DIAG_Z_AXIS), (0, 1, _DIAG_Z_AXIS),
-          _DIAG_AXIS_COLOR, chrome)
-    _line(geo, (0, 0, _DIAG_Z_AXIS), (1, 0, _DIAG_Z_AXIS),
-          _DIAG_AXIS_COLOR, chrome)
-    for tick in x_ticks:
-        _line(geo, (mx(tick), 0, _DIAG_Z_AXIS), (mx(tick), -0.014, _DIAG_Z_AXIS),
-              _DIAG_AXIS_COLOR, chrome)
-        _merge_into(geo, chrome, _font_geometry(
-            _format_number(tick, digits, notation), 0.034, 1, 1,
-            (mx(tick), -0.022), _DIAG_AXIS_COLOR))  # center, top
-    for tick in y_ticks:
-        _line(geo, (0, my(tick), _DIAG_Z_AXIS), (-0.014, my(tick), _DIAG_Z_AXIS),
-              _DIAG_AXIS_COLOR, chrome)
-        _merge_into(geo, chrome, _font_geometry(
-            _format_number(tick, digits, notation), 0.034, 2, 2,
-            (-0.022, my(tick)), _DIAG_AXIS_COLOR))  # right, middle
-
-    # curves (in front)
-    _diag_curve(geo, curves, xs, [my(v) for v in y_min],
-                _DIAG_MIN_COLOR, _DIAG_Z_CURVE)
-    _diag_curve(geo, curves, xs, [my(v) for v in y_mean],
-                _DIAG_MEAN_COLOR, _DIAG_Z_CURVE)
-    _diag_curve(geo, curves, xs, [my(v) for v in y_max],
-                _DIAG_MAX_COLOR, _DIAG_Z_CURVE)
-
-    # axis titles + plot title + legend
-    units = asset.evalParm("field_units").strip()
-    if use_time:
-        time_units = asset.evalParm("diagnostics_time_units").strip()
-        x_title = "Simulation Time" + (f" [{time_units}]" if time_units else "")
-    else:
-        x_title = "Frame Index"
-    _merge_into(geo, chrome, _font_geometry(
-        x_title, 0.045, 1, 1, (0.5, -0.075), _DIAG_AXIS_COLOR))  # center, top
-    y_title = "Value" + (f" [{units}]" if units else "")
-    _merge_into(geo, chrome, _font_geometry(
-        y_title, 0.045, 1, 2, (-0.11, 0.5), _DIAG_AXIS_COLOR, rotate=90))
-    _merge_into(geo, chrome, _font_geometry(
-        legend_title_text(asset), 0.055, 0, 3, (0.0, 1.15),
-        _DIAG_AXIS_COLOR))  # left, bottom
-
-    legend_x = 0.66
-    for offset, (label, color) in enumerate((
-            ("Max", _DIAG_MAX_COLOR), ("Mean", _DIAG_MEAN_COLOR),
-            ("Min", _DIAG_MIN_COLOR))):
-        y = 1.15 - 0.06 * offset
-        _line(geo, (legend_x, y, _DIAG_Z_CURVE),
-              (legend_x + 0.05, y, _DIAG_Z_CURVE), color, chrome)
-        _merge_into(geo, chrome, _font_geometry(
-            label, 0.034, 0, 2, (legend_x + 0.07, y), color))  # left, middle
-
-    # one bulk transform places the whole plot
-    translate = np.asarray(asset.evalParmTuple("diagnostics_translate"),
-                           dtype=np.float64)
-    scale = float(asset.evalParm("diagnostics_scale"))
-    P = np.frombuffer(geo.pointFloatAttribValuesAsString("P"),
-                      dtype=np.float32).reshape(-1, 3).astype(np.float64)
-    P = translate + scale * P
-    geo.setPointFloatAttribValuesFromString(
-        "P", np.ascontiguousarray(P).tobytes(),
-        float_type=hou.numericData.Float64)
-
-    geo.addAttrib(hou.attribType.Global, "diagnostics_field", "")
-    geo.addAttrib(hou.attribType.Global, "diagnostics_min", 0.0)
-    geo.addAttrib(hou.attribType.Global, "diagnostics_max", 0.0)
-    geo.setGlobalAttribValue("diagnostics_field", legend_title_text(asset))
-    geo.setGlobalAttribValue("diagnostics_min", y_lo)
-    geo.setGlobalAttribValue("diagnostics_max", y_hi)
 
 
 def _build_block_geometry(mesh, block_name, slug, colors, values, components):
@@ -2434,6 +2223,13 @@ def clear_cache(kwargs=None):
     cache_node = node.node("cache1")
     if cache_node is not None:
         cache_node.parm("clear").pressButton()
+    _CACHE_CLEARED.add(node.sessionId())
+    _CACHE_CONTENTS.pop(node.sessionId(), None)
+    # Cache Status reads this counter, so it updates the moment the button is
+    # pressed instead of on the next frame change.
+    epoch = node.parm("cache_epoch")
+    if epoch is not None:
+        epoch.set(epoch.eval() + 1)
 
 
 def toggle_cache(kwargs):
@@ -2487,49 +2283,113 @@ def cache_frame_limit(cache_node):
                           _cache_budget_bytes(asset) // size)))
 
 
-def _cache_contents(cache_node):
-    """(frames cached, memory text) as the Cache SOP reports them."""
+# Last frames/memory the Cache SOP reported, per asset instance, and the
+# instances whose cache was cleared since their last new frame.
+_CACHE_CONTENTS = {}
+_CACHE_CLEARED = set()
+
+
+def _cache_contents(node, cache_node):
+    """(frames cached, memory text) as the Cache SOP reports them.
+
+    Reading the info tree of a node that needs to cook would cook it (and,
+    right after Clear Cache, re-cache the frame on screen), so a dirty cache
+    reports the last known contents instead.
+    """
+    key = node.sessionId()
+    if cache_node.needsToCook():
+        if key in _CACHE_CLEARED:
+            return 0, "0 B"
+        return _CACHE_CONTENTS.get(key)
     try:
         rows = dict(cache_node.infoTree(verbose=False).branches()[
             "Cache SOP Info"].rows())
-        return (int(rows["Geometries Cached"].split("/")[0]),
-                rows["Memory Used"])
+        contents = (int(rows["Geometries Cached"].split("/")[0]),
+                    rows["Memory Used"])
     except (hou.Error, KeyError, ValueError, AttributeError):
+        return _CACHE_CONTENTS.get(key)
+    _CACHE_CONTENTS[key] = contents
+    if contents[0] > 1:
+        _CACHE_CLEARED.discard(key)
+    return contents
+
+
+def _system_memory():
+    """(total, available) physical memory in bytes, or None."""
+    try:
+        import psutil
+        memory = psutil.virtual_memory()
+        return int(memory.total), int(memory.available)
+    except Exception:
         return None
 
 
-def _houdini_memory_gb():
-    """Resident memory of this Houdini process, or None."""
+def _houdini_memory_bytes():
+    """Resident memory of this Houdini process in bytes, or None."""
+    try:
+        import psutil
+        return int(psutil.Process(os.getpid()).memory_info().rss)
+    except Exception:
+        pass
     try:
         rss_kb = subprocess.run(
             ["ps", "-o", "rss=", "-p", str(os.getpid())],
             capture_output=True, text=True, timeout=2).stdout.strip()
-        return int(rss_kb) / float(1 << 20)
+        return int(rss_kb) * 1024
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
 
 
+def available_memory_gb():
+    """System memory available right now, in GB (the OnCreated default for
+    Cache Memory Limit); falls back to half of physical memory."""
+    memory = _system_memory()
+    available = memory[1] if memory else _physical_memory() // 2
+    return round(available / float(1 << 30), 1)
+
+
 def cache_status_text(node):
     hou.frame()   # time-dependent, so the readout refreshes as frames load
-    total = _houdini_memory_gb()
-    total_text = f" Houdini is using {total:.1f} GB." if total else ""
+    node.evalParm("cache_epoch")   # ... and when Clear Cache is pressed
     if not node.evalParm("cache"):
-        return ("Cache off: every frame change reads its result file."
-                + total_text)
+        return "Cache off: every frame change reads its result file."
     budget = _cache_budget_bytes(node) / float(1 << 30)
     size = _CACHE_FRAME_BYTES.get(node.sessionId())
     cache_node = node.node("cache1")
-    contents = _cache_contents(cache_node) if cache_node is not None else None
-    held = (f"{contents[0]} frame{'s' if contents[0] != 1 else ''} cached "
-            f"({contents[1]}); " if contents else "")
+    contents = (_cache_contents(node, cache_node)
+                if cache_node is not None else None)
+    if contents is None:
+        held = ""
+    elif contents[0] <= 1 and node.sessionId() in _CACHE_CLEARED:
+        held = ("Cleared: 0 frames cached. " if contents[0] == 0 else
+                f"Cleared: only the frame on screen is cached "
+                f"({contents[1]}). ")
+    else:
+        held = (f"{contents[0]} frame{'s' if contents[0] != 1 else ''} "
+                f"cached ({contents[1]}). ")
     if not size:
-        return (f"{held}limit {budget:.1f} GB. The frame size is measured "
-                "when the first frame is cached." + total_text)
+        return (f"{held}Limit {budget:.1f} GB; the frame size is measured "
+                "when the first frame is cached.")
     frames = min(CACHE_FRAME_CEILING, max(1, int(budget * (1 << 30) // size)))
-    return (f"{held}limit {budget:.1f} GB holds {frames} "
+    return (f"{held}Limit {budget:.1f} GB holds {frames} "
             f"frame{'s' if frames != 1 else ''} of "
-            f"{size / float(1 << 30):.2f} GB, oldest dropped first."
-            + total_text)
+            f"{size / float(1 << 30):.2f} GB; the oldest are dropped first.")
+
+
+def memory_status_text(node):
+    hou.frame()   # time-dependent, so the readout refreshes as frames load
+    gb = float(1 << 30)
+    parts = []
+    houdini = _houdini_memory_bytes()
+    if houdini:
+        parts.append(f"Houdini {houdini / gb:.1f} GB")
+    memory = _system_memory()
+    if memory:
+        total, available = memory
+        parts.append(f"System {(total - available) / gb:.1f} of "
+                     f"{total / gb:.1f} GB used, {available / gb:.1f} GB "
+                     "available")
+    return " | ".join(parts) or "Memory use is not available on this system."
 
 
 def autoscale(kwargs):

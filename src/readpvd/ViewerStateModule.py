@@ -104,7 +104,7 @@ class State:
         geo = output.geometry()
         origin, direction = ui_event.ray()
         # Probe the primary result only. Excluding the readpvd_* decoration
-        # groups (glyphs, legend, gnomon, diagnostics, supplementary blocks)
+        # groups (glyphs, legend, gnomon, supplementary blocks)
         # keeps the pick from snapping to a decoration point that carries no
         # field data -- the cause of "position is right but values are zero".
         intersector = su.GeometryIntersector(

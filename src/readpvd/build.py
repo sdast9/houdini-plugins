@@ -36,11 +36,6 @@ node = hou.pwd()
 node.parent().hdaModule().cook_gnomon(node)
 """
 
-DIAGNOSTICS_SOP_CODE = """\
-node = hou.pwd()
-node.parent().hdaModule().cook_diagnostics(node)
-"""
-
 MULTI_BLOCK_SOP_CODE = """\
 node = hou.pwd()
 node.evalParm("pvdpath"); node.evalParm("frame")
@@ -661,6 +656,9 @@ _INFRARED_COLORS = ((0.2, 0.0, 1.0), (0.0, 0.85, 1.0), (0.0, 1.0, 0.1),
 # leaving ramps in saved scenes untouched).
 ON_CREATED_CODE = f"""\
 import hou
+_limit = kwargs["node"].parm("cache_memory_gb")
+if _limit is not None:
+    _limit.set(kwargs["node"].hdaModule().available_memory_gb())
 _parm = kwargs["node"].parm("color_ramp")
 if _parm is not None:
     _parm.set(hou.Ramp(
@@ -742,7 +740,7 @@ def _parms():
              "positions and fields change). Leave at 0 unless the first "
              "frame is missing or damaged."))
     main.addParmTemplate(hou.ToggleParmTemplate(
-        "cache", "Cache Frames", default_value=False,
+        "cache", "Cache Frames", default_value=True,
         script_callback="hou.phm().toggle_cache(kwargs)",
         script_callback_language=hou.scriptLanguage.Python,
         help="Keep each frame's imported data in memory once it has been "
@@ -758,11 +756,13 @@ def _parms():
     cache_limit = hou.FloatParmTemplate(
         "cache_memory_gb", "Cache Memory Limit (GB)", 1,
         default_value=(0.0,), min=0.0, max=512.0,
-        help="Most memory the frame cache may use. 0 = automatic (half of "
-             "this computer's memory). Each frame's size is measured when "
-             "it is cached, and once the limit is reached the oldest cached "
-             "frames are dropped first, so a long run of a large mesh never "
-             "pushes the computer into swapping.")
+        help="Most memory the frame cache may use. A new node starts at the "
+             "system memory available when it was created; 0 = half of this "
+             "computer's memory. Each frame's size is measured when it is "
+             "cached, and once the limit is reached the oldest cached frames "
+             "are dropped first, so a long run of a large mesh does not push "
+             "the computer into swapping. Lower it if other programs need "
+             "the memory.")
     cache_limit.setConditional(hou.parmCondType.DisableWhen, "{ cache == 0 }")
     main.addParmTemplate(cache_limit)
     cache_status = hou.StringParmTemplate(
@@ -771,10 +771,26 @@ def _parms():
             "hou.pwd().hdaModule().cache_status_text(hou.pwd())",),
         default_expression_language=(hou.scriptLanguage.Python,),
         help="Read-only: how many frames the cache holds and the memory "
-             "they use, how many fit within Cache Memory Limit at the "
-             "measured size of one frame, and Houdini's total memory use.")
+             "they use, and how many fit within Cache Memory Limit at the "
+             "measured size of one frame. Clear Cache resets it to zero.")
     cache_status.setConditional(hou.parmCondType.DisableWhen, "{ 1 == 1 }")
     main.addParmTemplate(cache_status)
+    memory_status = hou.StringParmTemplate(
+        "memory_status", "Memory", 1,
+        default_expression=(
+            "hou.pwd().hdaModule().memory_status_text(hou.pwd())",),
+        default_expression_language=(hou.scriptLanguage.Python,),
+        help="Read-only: memory used by Houdini, and the computer's used, "
+             "total and available memory (available = what can still be "
+             "handed out without swapping).")
+    memory_status.setConditional(hou.parmCondType.DisableWhen, "{ 1 == 1 }")
+    main.addParmTemplate(memory_status)
+    cache_epoch = hou.IntParmTemplate(
+        "cache_epoch", "cache_epoch", 1, default_value=(0,),
+        help="Internal, hidden: counts Clear Cache presses so Cache Status "
+             "refreshes immediately.")
+    cache_epoch.setConditional(hou.parmCondType.HideWhen, "{ 1 == 1 }")
+    main.addParmTemplate(cache_epoch)
     main.addParmTemplate(hou.ButtonParmTemplate(
         "clear_cache", "Clear Cache",
         script_callback="hou.phm().clear_cache(kwargs)",
@@ -1297,56 +1313,6 @@ def _parms():
         help="Thickness of the kept slab (scene units) in Thin Slice mode."))
     ptg.append(section)
 
-    diagnostics = hou.FolderParmTemplate(
-        "diagnostics_folder", "Timeline Diagnostics",
-        folder_type=hou.folderType.Tabs)
-    diagnostics.addParmTemplate(hou.ButtonParmTemplate(
-        "diagnostics_compute", "Compute Selected Field Over Time (scans sequence)",
-        script_callback="hou.phm().compute_diagnostics(kwargs)",
-        script_callback_language=hou.scriptLanguage.Python,
-        help="Scans the selected displayed value over all PVD frames and "
-             "stores minimum, mean, and maximum curves. This reads every frame "
-             "once, so it can take a while for long sequences of large meshes "
-             "-- unavoidable, the values live inside each file."))
-    diagnostics.addParmTemplate(hou.ToggleParmTemplate(
-        "diagnostics_show", "Show Renderable Timeline Plot",
-        default_value=False,
-        help="Add a plot of the computed minimum/mean/maximum curves to the "
-             "scene as real geometry (it renders). Compute Selected Field "
-             "Over Time must have been run first."))
-    diagnostics.addParmTemplate(hou.MenuParmTemplate(
-        "diagnostics_x_axis", "Horizontal Axis", ("time", "frame"),
-        menu_labels=("Simulation Time", "Frame Index"), default_value=0,
-        help="Plot against the PVD timestep value or the integer frame index. "
-             "Axis tick numbers are drawn from the actual values."))
-    diagnostics.addParmTemplate(hou.StringParmTemplate(
-        "diagnostics_time_units", "Time Units", 1, default_value=("s",),
-        help="Label appended to the time axis title (e.g. s, ms)."))
-    diagnostics.addParmTemplate(hou.ToggleParmTemplate(
-        "diagnostics_grid", "Show Gridlines", default_value=True,
-        help="Draw horizontal and vertical gridlines on the timeline plot."))
-    diagnostics.addParmTemplate(hou.ToggleParmTemplate(
-        "diagnostics_band", "Shade Min-Max Range", default_value=False,
-        help="Fill the area between the minimum and maximum curves."))
-    diagnostics.addParmTemplate(hou.FloatParmTemplate(
-        "diagnostics_translate", "Timeline Plot Translation", 3,
-        default_value=(0, 0, 0),
-        help="Where in the scene the timeline plot geometry is placed."))
-    diagnostics.addParmTemplate(hou.FloatParmTemplate(
-        "diagnostics_scale", "Timeline Plot Scale", 1,
-        default_value=(1.0,), min=1e-8, max=1e9,
-        help="Overall size of the timeline plot geometry."))
-    diagnostics.addParmTemplate(hou.StringParmTemplate(
-        "diagnostics_status", "Timeline Diagnostic Status", 1,
-        default_value=("No timeline diagnostic has been computed.",),
-        help="Read-only: which field and reduction were scanned, over how "
-             "many frames, and when."))
-    diagnostics_data = hou.StringParmTemplate(
-        "diagnostics_data", "diagnostics_data", 1, default_value=("",),
-        help="Internal: the computed min/mean/max curves (JSON).")
-    diagnostics_data.setConditional(hou.parmCondType.HideWhen, "{ 1 == 1 }")
-    diagnostics.addParmTemplate(diagnostics_data)
-    ptg.append(diagnostics)
 
     legend = hou.FolderParmTemplate("legend_folder", "Legend",
                                     folder_type=hou.folderType.Tabs)
@@ -1745,20 +1711,11 @@ def build(out_dir):
     gnomon_switch.setNextInput(empty_gnomon)
     gnomon_switch.setNextInput(gnomon)
 
-    diagnostics_geo = asset.createNode("python", "timeline_diagnostics")
-    diagnostics_geo.parm("python").set(DIAGNOSTICS_SOP_CODE)
-    empty_diagnostics = asset.createNode("null", "empty_diagnostics")
-    diagnostics_switch = asset.createNode("switch", "diagnostics_switch")
-    diagnostics_switch.parm("input").setExpression(
-        'ch("../diagnostics_show")')
-    diagnostics_switch.setNextInput(empty_diagnostics)
-    diagnostics_switch.setNextInput(diagnostics_geo)
 
     final_merge = asset.createNode("merge", "display_merge")
     final_merge.setNextInput(out_src)
     final_merge.setNextInput(legend_switch)
     final_merge.setNextInput(gnomon_switch)
-    final_merge.setNextInput(diagnostics_switch)
 
     out = asset.createNode("output", "output")
     out.setNextInput(final_merge)
