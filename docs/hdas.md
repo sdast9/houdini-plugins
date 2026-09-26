@@ -11,7 +11,7 @@ old definitions; installed-library state should be checked in Houdini.
 | `stevenabramowitch::dev::PolyFEM::2.0` (Object) | `object_stevenabramowitch.dev.PolyFEM.2.0.hdanc` | 1.2 |
 | `readPVD::1.0` (Object) | `object_readPVD.1.0.hdanc` | readPVD_higher_order 0.26 |
 
-Design notes: [SPEC_per_element_materials.md](per-element-materials.md) —
+Design notes: [SPEC_per_element_materials.md](SPEC_per_element_materials.md) —
 fiber models, composites, and per-element material data. **Implemented**
 2026-07-30 (phases 0–4 and readPVD material/fiber support, including sign-aware
 smoothing and dispersion coloring); the spec is kept as the rationale and

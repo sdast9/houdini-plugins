@@ -2991,6 +2991,26 @@
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
+                    name    "si_band_statistic"
+                    label   "Band Statistic"
+                    type    ordinal
+                    default { "0" }
+                    menu {
+                        "rms"            "RMS (production)"
+                        "force_weighted" "Force-Weighted (experimental)"
+                    }
+                    help    "Statistic used by the optional global trim band. RMS is the production behavior. Force-Weighted uses local barrier-gradient force to weight normalized gaps; it is experimental and does not change the default coefficient law."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_initial_trim_estimate"
+                    label   "Initial Trim Estimate"
+                    type    toggle
+                    default { "0" }
+                    help    "Experimental: estimate the first trim from the off-equilibrium elastic/barrier gradient balance. Disabled by default; the collapse guard remains active."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
                     name    "si_kappa_spread"
                     label   "Stiffness Spread Cap"
                     type    log

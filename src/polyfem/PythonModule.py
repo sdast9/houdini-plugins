@@ -2947,6 +2947,9 @@ def build_solver(parent, data):
             "trim_lower": parent.evalParm("si_trim_lower"),
             "trim_upper": parent.evalParm("si_trim_upper"),
             "trim_factor": parent.evalParm("si_trim_factor"),
+            "band_statistic": _menu_token(parent, "si_band_statistic"),
+            "initial_trim_estimate":
+                bool(parent.evalParm("si_initial_trim_estimate")),
             "kappa_spread": parent.evalParm("si_kappa_spread"),
             "kappa_min": parent.evalParm("si_kappa_min"),
             "conditioning_cap": parent.evalParm("si_conditioning_cap"),
@@ -4374,6 +4377,7 @@ def _restore_solver(parent, data, legacy, warnings):
                         ("trim_lower", "si_trim_lower"),
                         ("trim_upper", "si_trim_upper"),
                         ("trim_factor", "si_trim_factor"),
+                        ("initial_trim_estimate", "si_initial_trim_estimate"),
                         ("kappa_spread", "si_kappa_spread"),
                         ("kappa_min", "si_kappa_min"),
                         ("refresh_interval", "si_refresh_interval"),
@@ -4393,6 +4397,10 @@ def _restore_solver(parent, data, legacy, warnings):
                 lag_modes = {"realized_force": 0, "follow_stiffness": 1}
                 if semi.get("friction_lag") in lag_modes:
                     parms["si_friction_lag"] = lag_modes[semi["friction_lag"]]
+                band_statistics = {"rms": 0, "force_weighted": 1}
+                if semi.get("band_statistic") in band_statistics:
+                    parms["si_band_statistic"] = \
+                        band_statistics[semi["band_statistic"]]
                 if semi.get("gap_floor", 0) != 0:
                     warnings.append(
                         "gap_floor is experimental and not exposed by the "

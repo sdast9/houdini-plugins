@@ -114,6 +114,8 @@ def main():
     assert contact["barrier_stiffness"] == "semi_implicit", contact
     assert "semi_implicit" in contact
     assert "constraint_floor" not in contact["semi_implicit"]
+    assert contact["semi_implicit"]["band_statistic"] == "rms", contact
+    assert contact["semi_implicit"]["initial_trim_estimate"] is False, contact
     assert "adaptive_barrier_stiffness_multiplier" not in contact
     # GCP-only settings live on the GCP tab and are exported only with GCP
     gcp_keys = {"use_adaptive_dhat", "min_distance_ratio", "alpha_n", "alpha_t"}
@@ -219,6 +221,16 @@ def main():
         roundtrip_data = json.load(f)
     assert "constraint_floor" not in roundtrip_data["solver"]["contact"]["semi_implicit"]
     print("PASS: params.json round-trip import; retired floor dropped")
+
+    node2.parm("si_band_statistic").set("force_weighted")
+    node2.parm("si_initial_trim_estimate").set(1)
+    experiment_path = node2.hdaModule().write_params_only({"node": node2})
+    with open(experiment_path) as f:
+        experiment_data = json.load(f)
+    experiment_semi = experiment_data["solver"]["contact"]["semi_implicit"]
+    assert experiment_semi["band_statistic"] == "force_weighted", experiment_semi
+    assert experiment_semi["initial_trim_estimate"] is True, experiment_semi
+    print("PASS: EF-02/03 opt-in controller settings export and round-trip")
 
     # --- RB-05 resource limits: automatic by default, off / custom round-trip
     limits = data["solver"]["contact"]["CCD"]["resource_limits"]
