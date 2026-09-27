@@ -101,6 +101,8 @@ def main():
     node.setParms({"quasistatic": 1, "end_time_bool": 1, "tend": 0.5,
                    "time_inc_bool": 1, "dt": 0.125})
     node.setParms({"enable": 1, "dhat": 1e-3})
+    # Restart JSON must bring its own per-step state (State toggle left off).
+    node.setParms({"restart_json": 1, "state_file": 0})
     # barrier_mode default 0 (semi-implicit); al_hessian_scaled default 1
 
     # --- write + validate ---------------------------------------------------
@@ -136,6 +138,9 @@ def main():
     assert pv["options"]["tensor_values"] is True
     assert pv["options"]["use_hdf5"] is True
     assert data["space"]["remesh"] == {"enabled": False}
+    assert data["output"]["restart_json"] == "../output/restart.json"
+    assert data["output"]["data"]["state"] == "../output/state_{:d}.hdf5", \
+        data["output"]["data"]
     assert data["materials"][0]["id"] == 1001
     geo1 = data["geometry"][0]
     sel = geo1["surface_selection"]
@@ -184,6 +189,22 @@ def main():
     linf = [float(m.group(1)) for m in _re.finditer(
         r"-- Linf error: ([0-9.e+-]+)", result.stdout)]
     assert linf and linf[-1] > 0.05, f"no displacement; Linf={linf}"
+
+    # restart.json names the last step's state and keeps dt (tend + dt
+    # scene: 0.5 / 0.125 = 4 steps, none left after the last one).
+    with open(os.path.join(out_dir, "restart.json")) as f:
+        restart = json.load(f)
+    state_path = restart["input"]["data"]["state"]
+    assert os.path.isabs(state_path) and state_path.endswith("state_4.hdf5"), state_path
+    assert os.path.isfile(state_path), state_path
+    assert os.path.isabs(restart["root_path"]), restart["root_path"]
+    assert restart["output"]["data"]["file_index_offset"] == 4, restart
+    assert abs(restart["time"]["t0"] - 0.5) < 1e-12, restart["time"]
+    assert restart["time"]["dt"] == 0.125, restart["time"]
+    assert restart["time"]["time_steps"] == 0, restart["time"]
+    assert restart["time"]["tend"] is None, restart["time"]
+    for step in range(1, 5):
+        assert os.path.isfile(os.path.join(out_dir, f"state_{step}.hdf5")), step
     # Import a legacy positive floor; it must be dropped on re-export.
     data["solver"]["contact"]["semi_implicit"]["constraint_floor"] = 1e-4
     with open(params_path, "w") as f:
@@ -216,10 +237,14 @@ def main():
     assert node2.evalParm("obstacle_disp2").replace(" ", "") == "[0,0,0]", \
         node2.evalParm("obstacle_disp2")
     assert node2.parm("si_constraint_floor") is None
+    assert node2.evalParm("restart_json") == 1
+    assert node2.evalParm("state_file") == 0, "restart state imported as State toggle"
     roundtrip_path = node2.hdaModule().write_params_only({"node": node2})
     with open(roundtrip_path) as f:
         roundtrip_data = json.load(f)
     assert "constraint_floor" not in roundtrip_data["solver"]["contact"]["semi_implicit"]
+    assert roundtrip_data["output"]["data"] == data["output"]["data"], \
+        (roundtrip_data["output"]["data"], data["output"]["data"])
     print("PASS: params.json round-trip import; retired floor dropped")
 
     node2.parm("si_band_statistic").set("force_weighted")

@@ -2518,6 +2518,10 @@ def build_material(parent, geo, vol):
     return material
 
 
+# PolyFEM formats {:d} with the output step index.
+RESTART_STATE_FILE = "../output/state_{:d}.hdf5"
+
+
 def build_time(parent, data):
     quasistatic = bool(parent.evalParm("quasistatic"))
     t0 = parent.evalParm("t0")
@@ -3103,6 +3107,11 @@ def build_output(parent, data):
             ("nodes", "nodes", "nodes.txt")):
         if b(parm):
             data_output[key] = "../output/" + fname
+    # restart.json names the state of its own step, so a restart needs one
+    # state file per step (a single overwritten file can run a step ahead of
+    # restart.json if the solver dies between the two writes).
+    if b("restart_json"):
+        data_output["state"] = RESTART_STATE_FILE
 
     advanced = {
         "timestep_prefix": parent.evalParm("timestep_prefix"),
@@ -4670,6 +4679,10 @@ def _restore_output(parent, data):
                 ("rest_mesh", "rest_mesh_file"), ("mises", "mises_file"),
                 ("nodes", "nodes")):
             parms[parm] = int(key in output_data)
+        # The per-step restart state is implied by restart_json, not the
+        # State toggle.
+        if output_data.get("state") == RESTART_STATE_FILE:
+            parms["state_file"] = 0
     advanced = output.get("advanced", {})
     if isinstance(advanced, dict):
         for key, parm in (

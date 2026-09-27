@@ -4654,7 +4654,7 @@
                 label   "Restart JSON"
                 type    toggle
                 default { "0" }
-                help    "Write output/restart.json after each step: a small JSON describing the last completed state (time, file index, remesh limits) that can be merged with params.json to continue a run. Restarting also needs the State and Rest Mesh data files."
+                help    "Write output/restart.json after each step, plus the solver state it points to (output/state_N.hdf5, one per step). To continue a stopped run: PolyFEM_bin -j output/restart.json (from any folder). The run resumes after the last completed step with the same dt and end time, and appends frames to the same output. The contact controller (barrier trim, per-contact stiffness) starts fresh on resume, so a resumed contact run follows a close but not identical path. Leave Rest Mesh off unless remeshing: with it, restart.json replaces the scene geometry by the bare rest mesh, dropping transforms and selections."
                 parmtag { "filechooser_mode" "write" }
                 parmtag { "script_callback_language" "python" }
             }
@@ -4947,7 +4947,7 @@
                         label   "State"
                         type    toggle
                         default { "0" }
-                        help    "Write the complete solver state to output/state (PolyFEM's state format, used to restart a run)."
+                        help    "Write the solver state (displacement, velocity, acceleration history; HDF5 content) to output/state.txt, overwritten each step. Not needed for restarting: Restart JSON writes its own per-step state files."
                         parmtag { "filechooser_mode" "write" }
                         parmtag { "script_callback_language" "python" }
                     }

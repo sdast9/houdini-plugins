@@ -11,7 +11,7 @@ old definitions; installed-library state should be checked in Houdini.
 | `stevenabramowitch::dev::PolyFEM::2.0` (Object) | `object_stevenabramowitch.dev.PolyFEM.2.0.hdanc` | 1.2 |
 | `readPVD::1.0` (Object) | `object_readPVD.1.0.hdanc` | readPVD_higher_order 0.26 |
 
-Design notes: [SPEC_per_element_materials.md](SPEC_per_element_materials.md) —
+Design notes: [SPEC_per_element_materials.md](per-element-materials.md) —
 fiber models, composites, and per-element material data. **Implemented**
 2026-07-30 (phases 0–4 and readPVD material/fiber support, including sign-aware
 smoothing and dispersion coloring); the spec is kept as the rationale and
@@ -320,6 +320,28 @@ Targets the current build's strict-validated schema — the old fork keys
    viewport overlay legend, and scene gnomon; try both Auto Range buttons;
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
+
+### Restart JSON writes its own state (2026-09-27)
+
+*Restart JSON* now also exports `output/data/state` as
+`../output/state_{:d}.hdf5`, so every step leaves the state file that its
+`restart.json` names (before, with the *State* toggle off, `restart.json`
+pointed at an empty path and a resume started from the undeformed mesh). The
+per-step name keeps `restart.json` and its state consistent if the solver
+dies between the two writes. On import, that per-step state does not switch
+the *State* toggle on. Cost: three history vectors per step (about 16 MB per
+step for a 217k-node mesh).
+
+To continue a stopped run: `PolyFEM_bin -j <output>/restart.json` from any
+folder. It needs PolyFEM `7dd45a606` or later: the restart keeps the
+original dt and end time (older binaries re-derived dt from the
+restart time when the scene used *End Time* + *Number of Time Steps*), the
+paths are absolute, and `sim.pvd` keeps the original frame times. The
+contact controller's memory (barrier trim, per-contact stiffness) is not in
+the state file, so a resumed contact run is close to, not identical with,
+the uninterrupted run; without contact it matches to roundoff. Leave *Rest
+Mesh* off unless remeshing: with it, `restart.json` replaces the scene
+geometry by the bare rest mesh.
 
 ### Strong Wolfe line search (2026-09-22, BFGS audit stage 3)
 
