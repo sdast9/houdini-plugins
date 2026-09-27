@@ -4654,7 +4654,7 @@
                 label   "Restart JSON"
                 type    toggle
                 default { "0" }
-                help    "Write output/restart.json after each step, plus the solver state it points to (output/state_N.hdf5, one per step). To continue a stopped run: PolyFEM_bin -j output/restart.json (from any folder). The run resumes after the last completed step with the same dt and end time, and appends frames to the same output. The contact controller (barrier trim, per-contact stiffness) starts fresh on resume, so a resumed contact run follows a close but not identical path. Leave Rest Mesh off unless remeshing: with it, restart.json replaces the scene geometry by the bare rest mesh, dropping transforms and selections."
+                help    "Write output/restart.json after each step, plus the solver state it points to (output/state_N.hdf5, one per step). To continue a stopped run: PolyFEM_bin -j output/restart.json (from any folder). The run resumes after the last completed step with the same dt and end time, and appends frames to the same output. The state file also carries the contact controller (barrier trim, per-contact stiffness, friction lag), so a resumed run matches the uninterrupted one to roundoff (state files from PolyFEM before c133948cf resume with a fresh controller and a warning). Leave Rest Mesh off unless remeshing: with it, restart.json replaces the scene geometry by the bare rest mesh, dropping transforms and selections."
                 parmtag { "filechooser_mode" "write" }
                 parmtag { "script_callback_language" "python" }
             }

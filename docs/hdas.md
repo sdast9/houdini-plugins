@@ -336,10 +336,12 @@ To continue a stopped run: `PolyFEM_bin -j <output>/restart.json` from any
 folder. It needs PolyFEM `7dd45a606` or later: the restart keeps the
 original dt and end time (older binaries re-derived dt from the
 restart time when the scene used *End Time* + *Number of Time Steps*), the
-paths are absolute, and `sim.pvd` keeps the original frame times. The
-contact controller's memory (barrier trim, per-contact stiffness) is not in
-the state file, so a resumed contact run is close to, not identical with,
-the uninterrupted run; without contact it matches to roundoff. Leave *Rest
+paths are absolute, and `sim.pvd` keeps the original frame times. From
+PolyFEM `c133948cf` the state file also carries the contact controller's
+memory (barrier trim, per-contact stiffness caches, the realized friction
+lag), so a resumed run matches the uninterrupted one to roundoff with or
+without contact; older state files resume with a fresh controller and a
+warning. Leave *Rest
 Mesh* off unless remeshing: with it, `restart.json` replaces the scene
 geometry by the bare rest mesh.
 
