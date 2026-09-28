@@ -2999,7 +2999,7 @@
                         "rms"            "RMS (production)"
                         "force_weighted" "Force-Weighted (experimental)"
                     }
-                    help    "Statistic used by the optional global trim band. RMS is the production behavior. Force-Weighted uses local barrier-gradient force to weight normalized gaps; it is experimental and does not change the default coefficient law."
+                    help    "Gap statistic the global trim band compares with its edges. RMS (production) is the root-mean-square gap of the active contacts, each weighted by its contact weight, so a contact the solver records once or splits in two gives the same value. Force-Weighted uses local barrier-gradient force to weight normalized gaps; it is experimental and does not change the default coefficient law."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
