@@ -321,6 +321,23 @@ Targets the current build's strict-validated schema — the old fork keys
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
 
+### Force-weighted band: experimental, pair guard enforced (2026-09-28, EF-07)
+
+* **Band Statistic** (Contact ▸ Barrier ▸ Semi-Implicit Options) now reads
+  *RMS (production, recommended)* / *Force-Weighted (experimental)*. Production
+  RMS is the default and the recommended choice.
+* Choosing *Force-Weighted* shows a warning and always exports
+  `collapse_guard_basis: pair`: the EF-07 study found that without it the
+  force-weighted band loops on contact-dense scenes (the ball-burst run) and
+  stops with "Final reduced solve did not converge"; with it every looping
+  step measured completed. PolyFEM itself uses `pair` for this mode by default
+  since `1cb1efc25`.
+* The mode stays experimental. It first needs an agreed accuracy standard for
+  trajectory-sensitive scenes, and repeat evidence on dynamic scenes not used
+  for tuning, before it can be considered for adoption.
+* Importing a params.json that asks for `collapse_guard_basis: proxy` notes it
+  in the import report; the asset re-exports `pair`.
+
 ### Restart JSON writes its own state (2026-09-27)
 
 *Restart JSON* now also exports `output/data/state` as

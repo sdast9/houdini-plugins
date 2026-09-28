@@ -2977,6 +2977,11 @@ def build_solver(parent, data):
                 "max_restarts": parent.evalParm("si_max_restarts"),
                 "stall_trim_factor":
                     parent.evalParm("si_stall_trim_factor")}}
+        # The experimental force-weighted band always runs with the EF-07
+        # pair-basis downward guard (user decision 2026-09-28); without it the
+        # band loops on contact-dense scenes.
+        if contact["semi_implicit"]["band_statistic"] == "force_weighted":
+            contact["semi_implicit"]["collapse_guard_basis"] = "pair"
     elif barrier_mode == 1:  # classic adaptive
         contact["barrier_stiffness"] = "adaptive"
         contact["initial_barrier_stiffness"] = \
@@ -4410,6 +4415,12 @@ def _restore_solver(parent, data, legacy, warnings):
                 if semi.get("band_statistic") in band_statistics:
                     parms["si_band_statistic"] = \
                         band_statistics[semi["band_statistic"]]
+                if semi.get("collapse_guard_basis", "pair") != "pair":
+                    warnings.append(
+                        "collapse_guard_basis {!r} is not supported by the asset: "
+                        "the experimental force-weighted band is always exported "
+                        "with the pair-basis guard (EF-07).".format(
+                            semi.get("collapse_guard_basis")))
                 if semi.get("gap_floor", 0) != 0:
                     warnings.append(
                         "gap_floor is experimental and not exposed by the "

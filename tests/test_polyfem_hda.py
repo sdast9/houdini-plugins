@@ -118,6 +118,8 @@ def main():
     assert "constraint_floor" not in contact["semi_implicit"]
     assert contact["semi_implicit"]["band_statistic"] == "rms", contact
     assert contact["semi_implicit"]["initial_trim_estimate"] is False, contact
+    # EF-07: production (RMS) exports no band guard key.
+    assert "collapse_guard_basis" not in contact["semi_implicit"], contact
     assert "adaptive_barrier_stiffness_multiplier" not in contact
     # GCP-only settings live on the GCP tab and are exported only with GCP
     gcp_keys = {"use_adaptive_dhat", "min_distance_ratio", "alpha_n", "alpha_t"}
@@ -255,7 +257,40 @@ def main():
     experiment_semi = experiment_data["solver"]["contact"]["semi_implicit"]
     assert experiment_semi["band_statistic"] == "force_weighted", experiment_semi
     assert experiment_semi["initial_trim_estimate"] is True, experiment_semi
-    print("PASS: EF-02/03 opt-in controller settings export and round-trip")
+    # EF-07 (user decision 2026-09-28): the experimental force-weighted band is
+    # always exported with the pair-basis guard, the production choice is
+    # labelled recommended, and a warning shows only for the experiment.
+    assert experiment_semi["collapse_guard_basis"] == "pair", experiment_semi
+    band = node2.parm("si_band_statistic").parmTemplate()
+    assert "recommended" in band.menuLabels()[0], band.menuLabels()
+    assert "experimental" in band.menuLabels()[1].lower(), band.menuLabels()
+    assert "collapse_guard_basis: pair" in band.help(), band.help()
+    assert "agreed accuracy standard" in band.help(), band.help()
+    band_warning = node2.parm("si_band_statistic_warning")
+    assert band_warning is not None
+    assert "si_band_statistic == rms" in band_warning.parmTemplate().conditionals().get(
+        hou.parmCondType.HideWhen, "")
+    assert "Production (RMS) is recommended" in " ".join(
+        band_warning.parmTemplate().columnLabels())
+    # A file asking for the EF-02/03 proxy guard imports with a note and is
+    # re-exported with the pair basis.
+    experiment_data["solver"]["contact"]["semi_implicit"]["collapse_guard_basis"] = "proxy"
+    with open(experiment_path, "w") as f:
+        json.dump(experiment_data, f)
+    proxy_node = hou.node("/obj").createNode(
+        "stevenabramowitch::dev::PolyFEM::2.0", "polyfem_proxy_guard")
+    proxy_node.setParms({"old_input_dir": os.path.dirname(experiment_path)})
+    proxy_node.hdaModule().read_params({"node": proxy_node})
+    assert "collapse_guard_basis 'proxy' is not supported" in proxy_node.evalParm("import_report"), \
+        proxy_node.evalParm("import_report")
+    reexport_path = proxy_node.hdaModule().write_params_only({"node": proxy_node})
+    with open(reexport_path) as f:
+        reexport_semi = json.load(f)["solver"]["contact"]["semi_implicit"]
+    assert reexport_semi["band_statistic"] == "force_weighted", reexport_semi
+    assert reexport_semi["collapse_guard_basis"] == "pair", reexport_semi
+    proxy_node.destroy()
+    print("PASS: EF-02/03 opt-in controller settings export and round-trip; "
+          "force-weighted band enforced with the pair guard (EF-07)")
 
     # --- RB-05 resource limits: automatic by default, off / custom round-trip
     limits = data["solver"]["contact"]["CCD"]["resource_limits"]

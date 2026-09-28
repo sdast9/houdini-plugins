@@ -2996,11 +2996,19 @@
                     type    ordinal
                     default { "0" }
                     menu {
-                        "rms"            "RMS (production)"
+                        "rms"            "RMS (production, recommended)"
                         "force_weighted" "Force-Weighted (experimental)"
                     }
-                    help    "Gap statistic the global trim band compares with its edges. RMS (production) is the root-mean-square gap of the active contacts, each weighted by its contact weight, so a contact the solver records once or splits in two gives the same value. Force-Weighted uses local barrier-gradient force to weight normalized gaps; it is experimental and does not change the default coefficient law."
+                    help    "Gap statistic the global trim band compares with its edges. RMS (production, recommended) is the root-mean-square gap of the active contacts, each weighted by its contact weight, so a contact the solver records once or splits in two gives the same value. Force-Weighted (experimental) weights normalized gaps by each contact's local barrier force; it is cheaper on some scenes but loops on contact-dense ones unless its downward guard is evaluated on each contact's own gap, so it is always exported with collapse_guard_basis: pair (EF-07). It first needs an agreed accuracy standard for trajectory-sensitive scenes, and repeat evidence on dynamic scenes not used for tuning, before it can be considered for adoption. It does not change the coefficient law."
                     parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_band_statistic_warning"
+                    label   "Warning"
+                    type    label
+                    default { "Experimental: Production (RMS) is recommended. Exported with collapse_guard_basis: pair. Needs an agreed accuracy standard for trajectory-sensitive scenes and repeat evidence on untuned dynamic scenes before adoption." }
+                    hidewhen "{ si_band_statistic == rms }"
+                    parmtag { "sidefx::look" "block" }
                 }
                 parm {
                     name    "si_initial_trim_estimate"
