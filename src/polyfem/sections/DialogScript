@@ -3096,10 +3096,10 @@
                     name    "si_max_restarts"
                     label   "Max Restarts"
                     type    integer
-                    default { "20" }
+                    default { "200" }
                     disablewhen "{ si_restart_enabled == 0 }"
-                    range   { 0 50 }
-                    help    "Maximum number of stall restarts per solve. If nothing changes between two restarts the solver stops early instead of repeating identical attempts."
+                    range   { 0 500 }
+                    help    "Maximum number of stall restarts per solve. If nothing changes between two restarts the solver stops early instead of repeating identical attempts. A snap-through past a structural limit (for example an inflation passing its pressure maximum) can need well over 100."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
