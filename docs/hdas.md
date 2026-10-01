@@ -28,6 +28,7 @@ Tests (headless, also exercise the real PolyFEM binary):
 
 ```bash
 hython tests/test_polyfem_hda.py         # end-to-end: scene -> json -> sim -> pvd
+hython tests/test_sideset_conditions.py  # every sideset condition reaches PolyFEM
 hython tests/test_readpvd_hda.py         # result loading incl. Contact block
 hython tests/test_legacy_import.py       # old params.json migration
 hython tests/test_polyfem_materials.py   # fiber models, composites, per-element data
@@ -61,13 +62,16 @@ Targets the current build's strict-validated schema — the old fork keys
 * **Augmented Lagrangian**: `hessian_scaled` initial weight (default on) or a
   manual value; `scaling` / `max_weight` / `eta` are real controls now
   (1.2 hardcoded them).
-* **New collision-free IDs**: volume id = `1000*geo + vol`; boundary id =
-  `vol_id*10000 + sideset*100 + bc`; obstacle id = `100000 + 1000*geo`.
-  (1.2's string concatenation collided: geo 1/vol 12 == geo 11/vol 2.)
-* **Sideset export rewritten**: boundary faces carry their gmsh vertex ids
-  (stamped by VEX at build time), export is a bulk numpy dump; tri and quad
-  faces go to **separate files** (mixed tet/hex meshes were broken before);
-  files are emitted as `{"file": ...}` selection-list entries.
+* **New collision-free IDs**: volume id = `1000*geo + vol`; sideset id =
+  `vol_id*10000 + sideset*100 + 1`, shared by every condition of the
+  sideset; faces that lie in several sidesets get `vol_id*10000 + n`;
+  obstacle id = `100000 + 1000*geo`. (1.2's string concatenation collided:
+  geo 1/vol 12 == geo 11/vol 2.)
+* **Sideset export rewritten**: boundary faces carry their mesh node tags
+  (stamped by VEX at build time) and are written with PolyFEM's own vertex
+  numbers; export is a bulk numpy dump; tri and quad faces go to **separate
+  files** (mixed tet/hex meshes were broken before); files are emitted as
+  `{"file": ...}` selection-list entries.
 * **Sideset picking is scoped to one subdomain**: on a multi-material mesh,
   picking faces for a subdomain's sideset hides that geometry's *other*
   subdomains for the duration of the pick (a Visibility SOP per subdomain, so
@@ -105,10 +109,11 @@ Targets the current build's strict-validated schema — the old fork keys
   in simulation/world coordinates. Fiber-SOP element matching is performed
   against the untransformed mesh first, so applying a geometry transform cannot
   invalidate an otherwise matching source field or silently rotate its values.
-* **Native selections without picking**: type into any sideset *Base Group*
+* **Typed selections without picking**: type into any sideset *Base Group*
   field — `axis:+z:0.99`, `box:[0,0,0],[1,1,1]`, `sphere:[0,0,0],0.5`,
-  `plane:[0,0,1],[0,0,0.5]` — emitted directly as polyfem selection objects
-  (these take precedence over face-list files).
+  `plane:[0,0,1],[0,0,0.5]` — evaluated on face centres with PolyFEM's own
+  rules and exported as the faces they select (see *Sideset conditions*
+  below).
 * **Run buttons**: *Run PolyFEM* (terminal, as before), *Run in Background*
   (headless with `output/log.txt` + *Show Log*), *Write params.json Only*.
 * **Compressed HDF5 output is the default.** PolyFEM writes each result frame
@@ -320,6 +325,68 @@ Targets the current build's strict-validated schema — the old fork keys
    viewport overlay legend, and scene gnomon; try both Auto Range buttons;
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
+
+### Sideset conditions: every condition acts (2026-10-01)
+
+Fixes for the five highest-priority defects found in the 2026-10-01 review
+of the assets. Each was reproduced with the real solver first; all of them
+produced a wrong result or lost data **without any error** (PolyFEM exited
+0).
+
+* **Several conditions on one sideset now all act.** PolyFEM gives every
+  boundary face one id (the first matching selection, and inside a selection
+  file the first matching row) and honours one `dirichlet_boundary` entry and
+  the first load entry of each kind per id. The asset gave every condition
+  its own id, so the second condition on a sideset never reached a face: a
+  top face with "hold x" + "push z" did not move. Now every condition of a
+  sideset shares its id and is merged into the entries PolyFEM honours:
+  Dirichlet components are combined (one entry, `dimension` = the union; a
+  component prescribed twice must have the same value, `"0*t"` and `0` count
+  as the same), loads of one kind are added, and a Neumann + Normal Aligned
+  Neumann pair on the same faces is refused by name (PolyFEM replaces one by
+  the other). Two pressure cavities on the same faces are refused too.
+* **Overlapping sidesets combine.** A face in several sidesets used to keep
+  only the lowest-numbered one (e.g. a picked "fixed" patch inside a `*`
+  load sideset lost its prescription). Such faces now get one combined id
+  carrying the conditions of all their sidesets, with the same merge rules.
+  A Pressure Cavity sideset must not be split by an overlap (PolyFEM
+  computes a cavity's volume from the faces sharing one id): that is refused
+  by name. Typed selections (`axis`/`box`/`sphere`/`plane`) are evaluated
+  here on face barycentres, exactly as PolyFEM evaluates them, so they take
+  part in the same rules, and one that selects nothing is an error. A load
+  on a *Points* sideset (which PolyFEM ignores) is refused.
+* **Picked sidesets on meshes whose node tags are not 1..N.** PolyFEM
+  numbers nodes `tag − 1` only when the tags are exactly 1..N, and by file
+  position otherwise; the asset always wrote `tag − 1`, so picks on such
+  meshes selected nothing. Selection files now hold PolyFEM's vertex
+  numbers (offset, gapped and shuffled tags are tested).
+* **Meshes with the same file name no longer replace each other.** Staging
+  went by file name, so `a/part.msh` and `b/part.msh` both became
+  `input/part.msh` and both geometries simulated the second mesh. A clashing
+  name is now staged as `part_geo2.msh`; an identical file is shared.
+* **An earlier run is not overwritten without asking.** *Import* points the
+  working directory at the imported run, and *Write*/*Run* then replaced its
+  inputs and results silently. When `output/` holds an earlier run, *Write
+  params.json Only*, *Run PolyFEM* and *Run in Background* now ask:
+  *Overwrite* (remembered for that node and folder), *Use a New Folder*
+  (`<folder>_run2`, ...) or *Cancel*. Import forgets the approval; hython
+  (no interface) proceeds and prints a note.
+* **Export Report** (Main tab, read-only): what the last export applied to
+  every sideset, and which faces were combined.
+* **Import** restores sidesets exactly as entered — `*`, typed selections,
+  picks, group types and every condition — from `input/hda_sidesets.json`, a
+  record the export writes next to `params.json` (PolyFEM does not read it).
+  The record is used only while `params.json` and the selection files are the
+  ones it describes; otherwise the scene is rebuilt from `params.json` with
+  the same per-face conditions (each combined id becomes a sideset of its
+  own). Files written before this change import as before; a sideset that
+  had several conditions gets a note that only the first one was applied by
+  that run.
+* Tests: `tests/test_sideset_conditions.py` (real solver runs: merged and
+  added conditions equal their single-condition references, overlaps equal
+  the control, refusals, node numbering, staging, the confirmation, and the
+  import round trips); `test_polyfem_hda.py` and `test_sideset_selection.py`
+  now expect file selections only and combined ids for overlaps.
 
 ### Force-weighted band: experimental, pair guard enforced (2026-09-28, EF-07)
 

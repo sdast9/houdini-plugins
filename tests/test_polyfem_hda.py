@@ -146,7 +146,17 @@ def main():
     assert data["materials"][0]["id"] == 1001
     geo1 = data["geometry"][0]
     sel = geo1["surface_selection"]
-    assert any(isinstance(s, dict) and s.get("axis") for s in sel), sel
+    # Every sideset, the typed axis selection included, is exported as
+    # explicit faces (PolyFEM gives each face one id). The axis sideset lies
+    # inside the "*" sideset, so its faces carry one combined id with the
+    # conditions of both.
+    assert all(isinstance(s, dict) and "file" in s for s in sel), sel
+    plan = mod.resolve_sidesets(node, 1, 1)
+    combined = [sid for sid, owners in plan["combinations"].items()
+                if sorted(map(tuple, owners)) == [(1, 1), (1, 2)]]
+    assert len(combined) == 1, plan["combinations"]
+    kinds = sorted(key for key, _ in plan["conditions"][combined[0]])
+    assert kinds == ["dirichlet_boundary", "neumann_boundary"], kinds
     assert any(isinstance(s, dict) and str(s.get("file", "")).endswith("_tri.txt")
                for s in sel), sel
     assert data["geometry"][1]["surface_selection"] == 102000  # obstacle_id(2)
@@ -228,13 +238,10 @@ def main():
         node2.evalParm("vector_1_1_1_1")
     assert node2.evalParm("z_dimension1_1_1_1") == 1
     assert node2.evalParm("boundary_type1_1_2_1") == 1  # Neumann
-    # the file-based sideset selected every face; matching through the
-    # provenance attributes must recover all of them
-    surf = node2.node("null_1").geometry()
-    restored = node2.hdaModule().expand_group_str(
-        node2.evalParm("basegroup1_1_2"))
-    assert len(restored) == surf.intrinsicValue("primitivecount"), \
-        (len(restored), surf.intrinsicValue("primitivecount"))
+    # the asset's sideset record restores "*" as typed (it is evaluated
+    # again on export)
+    assert node2.evalParm("basegroup1_1_2") == "*", \
+        node2.evalParm("basegroup1_1_2")
     assert node2.evalParm("is_obstacle2") == 1
     assert node2.evalParm("obstacle_disp2").replace(" ", "") == "[0,0,0]", \
         node2.evalParm("obstacle_disp2")
@@ -245,6 +252,8 @@ def main():
     with open(roundtrip_path) as f:
         roundtrip_data = json.load(f)
     assert "constraint_floor" not in roundtrip_data["solver"]["contact"]["semi_implicit"]
+    assert roundtrip_data["boundary_conditions"] == data["boundary_conditions"], \
+        (roundtrip_data["boundary_conditions"], data["boundary_conditions"])
     assert roundtrip_data["output"]["data"] == data["output"]["data"], \
         (roundtrip_data["output"]["data"], data["output"]["data"])
     print("PASS: params.json round-trip import; retired floor dropped")

@@ -25,6 +25,8 @@
 #   * background run with log capture, alongside the terminal launch
 
 import ast
+import filecmp
+import hashlib
 import json
 import math
 import os
@@ -446,6 +448,66 @@ def _stage_material_file(parent, source, label="material file"):
     return destination
 
 
+def _same_file(first, second):
+    try:
+        return filecmp.cmp(first, second, shallow=False)
+    except OSError:
+        return False
+
+
+def _staged_meshes(parent, input_dir, exclude=None):
+    """{path: path} for every geometry whose mesh already sits in input_dir
+    (except geometry `exclude`); the starting point for _stage_mesh."""
+    input_dir = os.path.normpath(os.path.abspath(input_dir))
+    taken = {}
+    for geo in range(1, parent.evalParm("num_geos") + 1):
+        if exclude is not None and int(geo) == int(exclude):
+            continue
+        parm = parent.parm(f"file_location{geo}")
+        path = parm.eval() if parm is not None else ""
+        if not path:
+            continue
+        path = os.path.normpath(os.path.abspath(path))
+        if os.path.dirname(path) == input_dir:
+            taken[path] = path
+    return taken
+
+
+def _stage_mesh(geo, source, input_dir, taken):
+    """Copy a mesh into input_dir under a name no other geometry uses for a
+    different file, and return the staged path.
+
+    Staging used to go by file name alone, so part.msh from two folders became
+    one input/part.msh and both geometries simulated the second mesh. A name
+    already holding a different mesh gets _geo<N> appended instead. `taken`
+    maps staged paths to the file each holds; it is updated.
+    """
+    source = os.path.normpath(os.path.abspath(os.path.expandvars(source)))
+    input_dir = os.path.normpath(os.path.abspath(input_dir))
+    if not os.path.isfile(source):
+        raise hou.NodeError(f"Mesh file not found: {source}")
+    if os.path.dirname(source) == input_dir:
+        taken[source] = source
+        return source
+    os.makedirs(input_dir, exist_ok=True)
+    stem, extension = os.path.splitext(os.path.basename(source))
+    names = [stem + extension, f"{stem}_geo{int(geo)}{extension}"] + [
+        f"{stem}_geo{int(geo)}_{number}{extension}"
+        for number in range(2, 100)]
+    for name in names:
+        target = os.path.join(input_dir, name)
+        holder = taken.get(target)
+        if holder is not None and holder != source \
+                and not _same_file(holder, source):
+            continue  # another geometry's different mesh has this name
+        if not (os.path.isfile(target) and _same_file(target, source)):
+            shutil.copy2(source, target)
+        taken[target] = source
+        return target
+    raise hou.NodeError(
+        f"No free file name for {stem}{extension} in {input_dir}")
+
+
 def material_file_changed(kwargs):
     """Stage fiber/scalar files, then refresh their material preview."""
     parent = kwargs["node"]
@@ -514,15 +576,17 @@ def create_geo_nodes(kwargs):
     obstacle_check = parent.parm("is_obstacle" + geo_number).eval()
     destroy_geo_nodes(parent, geo_number)
 
-    # stage a copy in <working_dir>/input/
+    # stage a copy in <working_dir>/input/, under a name no other geometry
+    # uses for a different mesh
     working_dir = parent.evalParm("working_dir")
-    dst = os.path.join(working_dir, "input", os.path.basename(path_parm))
-    if os.path.abspath(dst) != os.path.abspath(path_parm):
-        try:
-            shutil.copy(path_parm, dst)
-        except OSError as e:
-            _message(f"Could not copy mesh into working dir: {e}")
-            return
+    input_dir = os.path.join(working_dir, "input")
+    try:
+        dst = _stage_mesh(
+            geo_number, path_parm, input_dir,
+            _staged_meshes(parent, input_dir, exclude=geo_number))
+    except (OSError, hou.Error) as e:
+        _message(f"Could not copy mesh into working dir: {e}")
+        return
     parent.setParms({f"file_location{geo_number}": dst})
 
     if obstacle_check == 0 or not non_msh:
@@ -829,7 +893,7 @@ def create_group(kwargs):
     _rebuild_group_chain(parent, geo_number, vol_num)
 
 
-def _rebuild_group_chain(parent, geo_number, vol_num):
+def _rebuild_group_chain(parent, geo_number, vol_num, default_condition=True):
     sideset_number = parent.evalParm(
         f"sideset_selection{geo_number}_{vol_num}")
 
@@ -887,8 +951,8 @@ def _rebuild_group_chain(parent, geo_number, vol_num):
                 f"Boundary_Condition__{geo_number}_{vol_num}_{num}")
             basegroup = parent.evalParm(
                 f"basegroup{geo_number}_{vol_num}_{num}")
-            if bc_count is not None and bc_count.eval() == 0 \
-                    and not basegroup.strip():
+            if default_condition and bc_count is not None \
+                    and bc_count.eval() == 0 and not basegroup.strip():
                 bc_count.set(1)
             group_node.parm("grouptype").setExpression(
                 f'ch("../grouptype{geo_number}_{vol_num}_{num}")')
@@ -976,14 +1040,58 @@ def deter_min_edge(kwargs):
 
 # =============================================================================
 # Sideset / selection export (numpy bulk)
+#
+# PolyFEM gives every boundary face exactly ONE boundary id: the first surface
+# selection that matches it and, inside a selection file, the first matching
+# row (utils/Selection.cpp FileSelection::id, mesh/GeometryReader.cpp). Its
+# conditions then act per id: a second dirichlet entry for one id is refused,
+# a second neumann / normal-aligned / pressure entry is silently ignored, and
+# a normal-aligned traction replaces a neumann one on the same id
+# (assembler/GenericProblem.cpp). The HDA therefore resolves sidesets itself:
+#   * every sideset -- picked faces, "*", or a typed axis/box/sphere/plane
+#     selection evaluated here on face barycentres with PolyFEM's own rules --
+#     becomes an explicit set of faces (or of nodes, for point sidesets);
+#   * all conditions of one sideset share its id, and faces that lie in
+#     several sidesets get one combined id carrying the conditions of all of
+#     them, merged into the single entries PolyFEM honours;
+#   * conflicting prescriptions are refused by name instead of one of them
+#     being dropped silently.
+# Selection files hold PolyFEM's own vertex numbers (see mesh_vertex_ids).
 # =============================================================================
+
+
+_BC_TYPE_NAMES = ("Dirichlet", "Neumann", "Normal Aligned Neumann",
+                  "Pressure Boundary", "Pressure Cavity")
+_BC_LIST_KEYS = ("dirichlet_boundary", "neumann_boundary",
+                 "normal_aligned_neumann_boundary", "pressure_boundary",
+                 "pressure_cavity")
+# Written next to params.json: the sidesets as entered (patterns, group
+# types, conditions) so Import can restore them exactly. PolyFEM never reads
+# it.
+SIDESET_RECORD_FILE = "hda_sidesets.json"
+SIDESET_RECORD_SCHEMA = "polyfem-houdini-sidesets"
+
+
+def sideset_id(geo, vol, sideset):
+    """Boundary id shared by every condition of one sideset."""
+    return boundary_id(geo, vol, sideset, 1)
+
+
+def combination_id(geo, vol, index):
+    """Boundary id of faces/nodes that lie in several sidesets.
+
+    The sideset field is 0, which no sideset uses, so these never collide
+    with sideset ids.
+    """
+    return boundary_id(geo, vol, 0, index)
 
 
 def _surface_arrays(surf_geo):
     """Bulk read of the provenance attributes stamped by SURFACE_VEX.
 
     Returns (entity, face_ids) where face_ids is (N, 4) int64 with -1 in
-    the last column for triangles.
+    the last column for triangles. The ids are node tag - 1; PolyFEM's own
+    vertex numbers come from mesh_vertex_ids.
     """
     entity = np.frombuffer(
         surf_geo.primIntAttribValuesAsString("Entity"), dtype=np.int32)
@@ -993,101 +1101,611 @@ def _surface_arrays(surf_geo):
     return entity, face_ids
 
 
-def export_sidesets(parent, geo, num_vols, input_dir):
-    """Write per-arity sideset files + native selections for one geometry.
+def mesh_vertex_ids(parent, geo):
+    """PolyFEM's vertex number for every node of one geometry's .msh file.
 
-    Returns (surface_selection_list, point_selection_list) for the json.
+    PolyFEM numbers a node tag - 1 when the node tags are exactly 1..N, and
+    by its position in the file otherwise (io/MshReader.cpp). The MSH Reader
+    keeps file order and stores the tag in msh_pt_id. Returns
+    (vid_of_key, key_of_vid): vid_of_key[tag - 1] is the PolyFEM vertex
+    number (-1 for tags no node carries) and key_of_vid[vid] = tag - 1.
+    The surface provenance (fp*, msh_pt_id) is tag based and is translated
+    with these at export and import.
     """
+    source = parent.node(f"geo_{geo}")
+    if source is None:
+        raise hou.NodeError(
+            f"Geometry {geo} has no mesh node; import its mesh again")
+    tags = np.frombuffer(
+        source.geometry().pointIntAttribValuesAsString("msh_pt_id"),
+        dtype=np.int32).astype(np.int64)
+    if not len(tags):
+        raise hou.NodeError(f"Geometry {geo}: the mesh has no nodes")
+    if tags.min() < 1:
+        raise hou.NodeError(
+            f"Geometry {geo}: the .msh file has node tag {int(tags.min())}; "
+            f"Gmsh node tags start at 1")
+    count, max_tag = len(tags), int(tags.max())
+    vid_of_key = np.full(max_tag, -1, dtype=np.int64)
+    if max_tag == count:
+        vid_of_key[tags - 1] = tags - 1
+        key_of_vid = np.arange(count, dtype=np.int64)
+    else:
+        vid_of_key[tags - 1] = np.arange(count, dtype=np.int64)
+        key_of_vid = tags - 1
+    return vid_of_key, key_of_vid
+
+
+def native_selection_mask(pattern, positions, label):
+    """Evaluate a typed selection on face barycentres or node positions.
+
+    Same rules as PolyFEM's own selections (utils/Selection.cpp): box bounds
+    inclusive, sphere |p - c|^2 <= r^2, "axis:+z:v" -> z >= v and
+    "axis:-z:v" -> z <= v, plane (p - point) . normal >= 0. Positions are the
+    transformed ones, as PolyFEM applies the geometry transformation before
+    it evaluates selections.
+    """
+    spec = parse_native_selection(pattern, 0, label)
+    points = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    try:
+        if "axis" in spec:
+            axis = str(spec["axis"]).strip().lower()
+            if not axis or axis[-1] not in "xyz" or axis[:-1] not in ("", "+", "-"):
+                raise ValueError(axis)
+            values = points[:, "xyz".index(axis[-1])]
+            position = float(spec["position"])
+            if axis.startswith("-"):
+                return values <= position
+            return values >= position
+        if "box" in spec:
+            low = np.asarray(spec["box"][0], dtype=np.float64).reshape(3)
+            high = np.asarray(spec["box"][1], dtype=np.float64).reshape(3)
+            return np.all((points >= low) & (points <= high), axis=1)
+        if "center" in spec:
+            centre = np.asarray(spec["center"], dtype=np.float64).reshape(3)
+            delta = points - centre
+            radius = float(spec["radius"])
+            return np.einsum("ij,ij->i", delta, delta) <= radius * radius
+        normal = np.asarray(spec["normal"], dtype=np.float64).reshape(3)
+        length = float(np.linalg.norm(normal))
+        if length == 0.0:
+            raise ValueError("zero normal")
+        point = np.asarray(spec["point"], dtype=np.float64).reshape(3)
+        return np.einsum("ij,j->i", points - point, normal / length) >= 0.0
+    except (ValueError, TypeError, KeyError, IndexError):
+        raise hou.NodeError(
+            f"Could not evaluate the selection '{pattern}' for {label}. "
+            "Examples: axis:+z:0.95 | box:[0,0,0],[1,1,1] | "
+            "sphere:[0,0,0],0.5 | plane:[0,0,1],[0,0,0.5]")
+
+
+def _sideset_conditions(parent, geo, vol, sideset):
+    """The conditions entered on one sideset, parsed, in interface order."""
+    conditions = []
+    count = parent.evalParm(f"Boundary_Condition__{geo}_{vol}_{sideset}")
+    for k in range(1, count + 1):
+        suffix = f"{geo}_{vol}_{sideset}_{k}"
+        kind = parent.evalParm(f"boundary_type{suffix}")
+        if not 0 <= kind < len(_BC_TYPE_NAMES):
+            raise hou.NodeError(f"Unknown boundary type {kind} on {suffix}")
+        vector_text = parent.evalParm(f"vector_{suffix}")
+        value_text = parent.evalParm(f"value_{suffix}")
+        text = vector_text if kind in (0, 1) else value_text
+        condition = {
+            "k": k, "type": kind,
+            "label": (f"geo {geo} subdomain {vol} sideset {sideset} "
+                      f"condition {k} ({_BC_TYPE_NAMES[kind]})"),
+            "value": parse_vector(text, f"BC {geo}/{vol}/{sideset}/{k}"),
+            "record": {"type": int(kind), "vector": vector_text,
+                       "value": value_text}}
+        if kind == 0:
+            condition["dims"] = [
+                bool(parent.evalParm(f"{axis}_dimension{suffix}"))
+                for axis in "xyz"]
+            condition["record"]["dimension"] = [
+                int(flag) for flag in condition["dims"]]
+        conditions.append(condition)
+    return conditions
+
+
+# A few points (x, y, z, t) at which two entered values are compared.
+_COMPARISON_SAMPLES = (
+    {"x": 0.31, "y": -0.72, "z": 1.13, "t": 0.37},
+    {"x": -1.27, "y": 0.21, "z": 0.05, "t": 1.93},
+    {"x": 2.0, "y": 1.5, "z": -0.4, "t": 0.0})
+_EXPRESSION_FUNCTIONS = {
+    "sin": math.sin, "cos": math.cos, "tan": math.tan, "exp": math.exp,
+    "log": math.log, "sqrt": math.sqrt, "abs": abs, "pi": math.pi}
+_EXPRESSION_NODES = (
+    ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant, ast.Name,
+    ast.Load, ast.Call, ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow,
+    ast.USub, ast.UAdd)
+
+
+def _sampled(value):
+    """Values of an entered scalar at the comparison samples, or None when it
+    is not a plain arithmetic expression of x, y, z, t."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return [float(value)] * len(_COMPARISON_SAMPLES)
+    if not isinstance(value, str):
+        return None
+    try:
+        tree = ast.parse(value.strip(), mode="eval")
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        if not isinstance(node, _EXPRESSION_NODES):
+            return None
+        if isinstance(node, ast.Name) and node.id not in "xyzt" \
+                and node.id not in _EXPRESSION_FUNCTIONS:
+            return None
+        if isinstance(node, ast.Call) and not (
+                isinstance(node.func, ast.Name)
+                and node.func.id in _EXPRESSION_FUNCTIONS):
+            return None
+        if isinstance(node, ast.Constant) \
+                and not isinstance(node.value, (int, float)):
+            return None
+    code = compile(tree, "<condition>", "eval")
+    values = []
+    for sample in _COMPARISON_SAMPLES:
+        scope = dict(_EXPRESSION_FUNCTIONS)
+        scope.update(sample)
+        try:
+            values.append(float(eval(code, {"__builtins__": {}}, scope)))
+        except Exception:
+            return None
+    return values
+
+
+def _same_value(first, second):
+    """Whether two entered values prescribe the same thing ("0*t" and 0 do)."""
+    a, b = _sampled(first), _sampled(second)
+    if a is not None and b is not None:
+        return all(abs(p - q) <= 1e-12 * max(1.0, abs(p), abs(q))
+                   for p, q in zip(a, b))
+    return str(first).replace(" ", "") == str(second).replace(" ", "")
+
+
+def _value_text(value):
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return repr(float(value))
+    return str(value)
+
+
+def _added(conditions):
+    """Sum of the values of several loads of one kind on the same faces."""
+    values = [condition["value"] for condition in conditions]
+    if len(values) == 1:
+        return values[0]
+    vector = isinstance(values[0], list)
+    for condition in conditions:
+        value = condition["value"]
+        if isinstance(value, list) != vector or (vector and len(value) != 3):
+            raise hou.NodeError(
+                f"{condition['label']}: several "
+                f"{_BC_TYPE_NAMES[condition['type']]} conditions act on the "
+                f"same faces and are added together, so each must be "
+                f"[x, y, z] (vector loads) or a single value (normal loads)")
+
+    def add(parts):
+        if all(isinstance(part, (int, float)) and not isinstance(part, bool)
+               for part in parts):
+            return float(sum(parts))
+        return " + ".join(f"({_value_text(part)})" for part in parts)
+
+    if vector:
+        return [add([value[axis] for value in values]) for axis in range(3)]
+    return add(values)
+
+
+def merge_conditions(conditions, where):
+    """The entries PolyFEM honours for one boundary id: at most one of each kind.
+
+    Dirichlet components are combined, and a component prescribed by two
+    conditions must agree (PolyFEM refuses a second dirichlet entry for an
+    id). Loads of one kind are added (PolyFEM applies only the first entry of
+    a kind). A Neumann and a normal-aligned traction cannot share faces:
+    PolyFEM replaces the first by the second instead of adding them. A cavity
+    has one pressure. Returns [(list key, entry without id)].
+    """
+    by_kind = [[condition for condition in conditions
+                if condition["type"] == kind] for kind in range(5)]
+    entries = []
+    dirichlet = by_kind[0]
+    if len(dirichlet) == 1:
+        entries.append(("dirichlet_boundary", {
+            "value": dirichlet[0]["value"],
+            "dimension": list(dirichlet[0]["dims"])}))
+    elif dirichlet:
+        value, dims, owner = [0, 0, 0], [False, False, False], [None] * 3
+        for condition in dirichlet:
+            vector = condition["value"]
+            if not (isinstance(vector, list) and len(vector) == 3):
+                raise hou.NodeError(
+                    f"{condition['label']}: several Dirichlet conditions act "
+                    f"on {where}; to combine them each must give [x, y, z]")
+            for axis in range(3):
+                if not condition["dims"][axis]:
+                    continue
+                if dims[axis]:
+                    if not _same_value(value[axis], vector[axis]):
+                        raise hou.NodeError(
+                            f"{owner[axis]['label']} and {condition['label']} "
+                            f"both prescribe the {'xyz'[axis]} displacement on "
+                            f"{where}, with different values "
+                            f"({_value_text(value[axis])} and "
+                            f"{_value_text(vector[axis])}). A face can have only "
+                            f"one prescription per component: remove the "
+                            f"overlap, or turn {'xyz'[axis]} off on one of them.")
+                    continue
+                value[axis] = vector[axis]
+                dims[axis] = True
+                owner[axis] = condition
+        entries.append(("dirichlet_boundary",
+                        {"value": value, "dimension": dims}))
+    neumann, normal = by_kind[1], by_kind[2]
+    if neumann and normal:
+        raise hou.NodeError(
+            f"{neumann[0]['label']} and {normal[0]['label']} act on {where}: "
+            f"PolyFEM replaces a Neumann traction by a normal-aligned one on "
+            f"the same faces instead of adding them. Use Pressure Boundary "
+            f"for the normal load (it adds to the traction), or keep the two "
+            f"loads on separate faces.")
+    if neumann:
+        entries.append(("neumann_boundary", {"value": _added(neumann)}))
+    if normal:
+        entries.append(("normal_aligned_neumann_boundary",
+                        {"value": _added(normal)}))
+    if by_kind[3]:
+        entries.append(("pressure_boundary", {"value": _added(by_kind[3])}))
+    cavities = by_kind[4]
+    if len(cavities) > 1:
+        raise hou.NodeError(
+            f"{cavities[0]['label']} and {cavities[1]['label']} act on "
+            f"{where}: a cavity has a single pressure.")
+    if cavities:
+        entries.append(("pressure_cavity", {"value": cavities[0]["value"]}))
+    return entries
+
+
+def resolve_sidesets(parent, geo, num_vols):
+    """Every sideset of one geometry as explicit faces/nodes, the boundary id
+    each face and node ends up with, and the merged conditions of every id.
+
+    Returns a dict:
+      face_ids, point_ids      boundary id per surface face / point (0 = none)
+      face_vids, point_vids    their PolyFEM vertex numbers (-1 pads triangles)
+      conditions               {id: [(list key, entry without id)]}
+      combinations             {id: [[subdomain, sideset], ...]} for faces or
+                               nodes that lie in several sidesets
+      records                  the sidesets as entered, for the import record
+      warnings, notes          problems to show / overlaps that were combined
+    """
+    plan = {"face_ids": np.zeros(0, dtype=np.int64),
+            "face_vids": np.zeros((0, 4), dtype=np.int64),
+            "point_ids": np.zeros(0, dtype=np.int64),
+            "point_vids": np.zeros(0, dtype=np.int64),
+            "conditions": {}, "combinations": {}, "records": [],
+            "warnings": [], "notes": []}
     null_node = parent.node(f"null_{geo}")
     if null_node is None:
-        return [], []
+        return plan
     surf_geo = null_node.geometry()
-    entity, face_ids = _surface_arrays(surf_geo)
-    n_prims = len(entity)
+    entity, face_keys = _surface_arrays(surf_geo)
+    n_faces = len(entity)
+    point_keys = np.frombuffer(
+        surf_geo.pointIntAttribValuesAsString("msh_pt_id"),
+        dtype=np.int32).astype(np.int64) - 1
+    positions = np.frombuffer(
+        surf_geo.pointFloatAttribValuesAsString("P"),
+        dtype=np.float32).astype(np.float64).reshape(-1, 3)
 
-    surface_rows = {3: [], 4: []}  # arity -> list of [id, v0, v1, v2(, v3)]
-    point_rows = []
-    native_selections = []
-    cross_volume = []  # explicit picks that landed on another subdomain
+    vid_of_key, _ = mesh_vertex_ids(parent, geo)
 
+    def vertex_numbers(keys):
+        keys = np.asarray(keys, dtype=np.int64)
+        valid = keys >= 0
+        if np.any(keys[valid] >= len(vid_of_key)):
+            raise hou.NodeError(
+                f"Geometry {geo}: the surface refers to nodes the mesh does "
+                f"not have; import the mesh again")
+        vids = np.full(keys.shape, -1, dtype=np.int64)
+        vids[valid] = vid_of_key[keys[valid]]
+        if np.any(vids[valid] < 0):
+            raise hou.NodeError(
+                f"Geometry {geo}: the surface refers to node tags the mesh "
+                f"does not have; import the mesh again")
+        return vids
+
+    face_vids = vertex_numbers(face_keys)
+    point_vids = vertex_numbers(point_keys)
+
+    # Face barycentres in the transformed (world) frame, as PolyFEM computes
+    # them for its own selections.
+    point_of_key = np.full(len(vid_of_key), -1, dtype=np.int64)
+    point_of_key[point_keys] = np.arange(len(point_keys))
+    corners = np.where(face_keys >= 0,
+                       point_of_key[np.maximum(face_keys, 0)], -1)
+    if np.any((face_keys >= 0) & (corners < 0)):
+        raise hou.NodeError(
+            f"Geometry {geo}: the surface display is out of date; import the "
+            f"mesh again")
+    used = corners >= 0
+    centres = np.zeros((n_faces, 3))
+    for column in range(4):
+        rows = used[:, column]
+        centres[rows] += positions[corners[rows, column]]
+    centres /= np.maximum(used.sum(axis=1), 1)[:, None]
+
+    face_sets, point_sets = [], []
     for vol in range(1, num_vols + 1):
-        sidesets = parent.evalParm(f"sideset_selection{geo}_{vol}")
-        for j in range(1, sidesets + 1):
-            num_bcs = parent.evalParm(f"Boundary_Condition__{geo}_{vol}_{j}")
+        vol_faces = np.flatnonzero(entity == vol)
+        vol_points = None
+        for j in range(1, parent.evalParm(f"sideset_selection{geo}_{vol}") + 1):
             pattern = parent.evalParm(f"basegroup{geo}_{vol}_{j}")
             grouptype = parent.evalParm(f"grouptype{geo}_{vol}_{j}")
-            for k in range(1, num_bcs + 1):
-                sel_id = boundary_id(geo, vol, j, k)
-                if is_native_selection(pattern):
-                    native_selections.append(parse_native_selection(
-                        pattern, sel_id, f"geo {geo} vol {vol} sideset {j}"))
-                    continue
-                if grouptype == 1:  # points
-                    if pattern.strip() == "*":
-                        idx = np.arange(surf_geo.intrinsicValue("pointcount"))
-                    else:
-                        idx = np.asarray(expand_group_str(pattern), dtype=np.int64)
-                    msh = np.frombuffer(
-                        surf_geo.pointIntAttribValuesAsString("msh_pt_id"),
-                        dtype=np.int32)
-                    for m in msh[idx] - 1:
-                        point_rows.append((sel_id, int(m)))
-                    continue
-                # primitive sideset
-                wildcard = pattern.strip() == "*"
-                if wildcard:
-                    idx = np.arange(n_prims)
+            conditions = _sideset_conditions(parent, geo, vol, j)
+            record = {"subdomain": vol, "sideset": j,
+                      "group_type": int(grouptype), "pattern": pattern,
+                      "conditions": [c["record"] for c in conditions]}
+            plan["records"].append(record)
+            if not conditions:
+                continue  # nothing acts on it; it is only kept as a record
+            text = pattern.strip()
+            name = f"geo {geo} subdomain {vol} sideset {j}"
+            if grouptype == 1:  # nodes
+                loads = [c for c in conditions if c["type"] != 0]
+                if loads:
+                    raise hou.NodeError(
+                        f"{loads[0]['label']}: sideset {j} of geo {geo}/vol "
+                        f"{vol} selects points, and PolyFEM applies tractions "
+                        f"and pressures to faces only, so this load would do "
+                        f"nothing. Set its Group Type to Primitives.")
+                if vol_points is None:
+                    touched = corners[vol_faces]
+                    vol_points = np.unique(touched[touched >= 0])
+                if text == "*":
+                    members = vol_points
+                elif is_native_selection(text):
+                    members = vol_points[native_selection_mask(
+                        text, positions[vol_points], name)]
                 else:
-                    idx = np.asarray(expand_group_str(pattern), dtype=np.int64)
+                    members = np.asarray(expand_group_str(text),
+                                         dtype=np.int64)
+                    outside = members[(members < 0)
+                                      | (members >= len(point_keys))]
+                    if len(outside):
+                        raise hou.NodeError(
+                            f"Sideset {j} of geo {geo}/vol {vol}: point(s) "
+                            f"{list(outside[:10])} are not on this surface; "
+                            f"pick the points again")
+                members = np.unique(members)
+                if not len(members):
+                    raise hou.NodeError(
+                        f"Sideset {j} of geo {geo}/vol {vol} selects nothing")
+                record.update(kind="nodes", count=int(len(members)))
+                point_sets.append((vol, j, members, conditions))
+                continue
+
+            if text == "*":
+                members = vol_faces
+            elif is_native_selection(text):
+                members = vol_faces[native_selection_mask(
+                    text, centres[vol_faces], name)]
+                if not len(members):
+                    raise hou.NodeError(
+                        f"Sideset {j} of geo {geo}/vol {vol} selects nothing: "
+                        f"no face centre of subdomain {vol} satisfies '{text}'")
+            else:
+                idx = np.unique(np.asarray(expand_group_str(text),
+                                           dtype=np.int64))
                 if len(idx) == 0:
                     raise hou.NodeError(
                         f"Sideset {j} of geo {geo}/vol {vol} selects nothing")
-                # Restrict to this volume's faces; "*" is defined as "every
-                # face of this subdomain", so filtering it is not a mistake.
-                # An explicit pick that loses faces here is one made against
-                # another subdomain's surface -- report it rather than
-                # quietly writing a sideset the user did not select.
-                kept = idx[entity[idx] == vol]
-                if len(kept) == 0:
+                outside = idx[(idx < 0) | (idx >= n_faces)]
+                if len(outside):
+                    raise hou.NodeError(
+                        f"Sideset {j} of geo {geo}/vol {vol}: face(s) "
+                        f"{list(outside[:10])} are not on this surface; pick "
+                        f"the faces again")
+                # Restrict to this volume's faces. An explicit pick that loses
+                # faces here was made against another subdomain's surface --
+                # report it rather than quietly writing a sideset the user did
+                # not select.
+                members = idx[entity[idx] == vol]
+                if len(members) == 0:
                     raise hou.NodeError(
                         f"Sideset {j} of geo {geo}/vol {vol} selects "
                         f"{len(idx)} face(s), none of which are on subdomain "
                         f"{vol}; pick faces on that subdomain instead")
-                if not wildcard and len(kept) != len(idx):
-                    cross_volume.append(
+                if len(members) != len(idx):
+                    plan["warnings"].append(
                         f"  geo {geo}, subdomain {vol}, sideset {j}: dropped "
-                        f"{len(idx) - len(kept)} of {len(idx)} faces")
-                ids = face_ids[kept]
-                tri_mask = ids[:, 3] < 0
-                for row in ids[tri_mask, :3]:
-                    surface_rows[3].append((sel_id,) + tuple(int(v) for v in row))
-                for row in ids[~tri_mask]:
-                    surface_rows[4].append((sel_id,) + tuple(int(v) for v in row))
+                        f"{len(idx) - len(members)} of {len(idx)} faces")
+            members = np.unique(members)
+            if not len(members):
+                raise hou.NodeError(
+                    f"Sideset {j} of geo {geo}/vol {vol} selects nothing")
+            record.update(kind="faces", count=int(len(members)))
+            face_sets.append((vol, j, members, conditions))
 
-    if cross_volume:
+    counters = {}
+
+    def next_combination(vol):
+        index = counters.get(vol, 0) + 1
+        if index > 99:
+            raise hou.NodeError(
+                f"Geometry {geo}, subdomain {vol}: more than 99 different "
+                f"groups of overlapping sidesets; simplify the selections")
+        counters[vol] = index
+        return combination_id(geo, vol, index)
+
+    def assign(sets, count, kind, scope):
+        ids = np.zeros(count, dtype=np.int64)
+        if not sets:
+            return ids
+        if len(sets) > 63:
+            raise hou.NodeError(
+                f"{scope}: more than 63 sidesets with conditions on {kind}")
+        masks = np.zeros(count, dtype=np.uint64)
+        for bit, (_, _, members, _) in enumerate(sets):
+            masks[members] |= np.uint64(1 << bit)
+        selected = np.flatnonzero(masks)
+        for mask in np.unique(masks[selected]):
+            items = selected[masks[selected] == mask]
+            owners = [sets[bit] for bit in range(len(sets))
+                      if (int(mask) >> bit) & 1]
+            vol, j = owners[0][0], owners[0][1]
+            if len(owners) == 1:
+                sid = sideset_id(geo, vol, j)
+                where = (f"the {len(items)} {kind} of sideset {j} (geo {geo} "
+                         f"subdomain {vol})")
+            else:
+                sid = next_combination(vol)
+                names = ", ".join(
+                    str(s) if v == vol else f"{s} (subdomain {v})"
+                    for v, s, _, _ in owners)
+                where = (f"the {len(items)} {kind} shared by sidesets {names} "
+                         f"of geo {geo} subdomain {vol}")
+                plan["combinations"][int(sid)] = [
+                    [int(v), int(s)] for v, s, _, _ in owners]
+                plan["notes"].append(
+                    f"geo {geo} subdomain {vol}: {len(items)} {kind} lie in "
+                    f"sidesets {names} and receive the conditions of all of "
+                    f"them (boundary id {sid})")
+            ids[items] = sid
+            plan["conditions"][int(sid)] = merge_conditions(
+                [condition for owner in owners for condition in owner[3]],
+                where)
+        return ids
+
+    # A face belongs to one subdomain, so face sidesets combine per subdomain;
+    # a node can be shared, so node sidesets combine across the geometry.
+    face_ids = np.zeros(n_faces, dtype=np.int64)
+    for vol in sorted({s[0] for s in face_sets}):
+        face_ids += assign([s for s in face_sets if s[0] == vol], n_faces,
+                           "faces", f"Geometry {geo}, subdomain {vol}")
+    point_ids = assign(point_sets, len(point_keys), "nodes",
+                       f"Geometry {geo}")
+
+    # PolyFEM computes a cavity's volume from the faces that share its id, so
+    # a cavity sideset must not be split between ids by an overlap.
+    for vol, j, members, conditions in face_sets:
+        if not any(condition["type"] == 4 for condition in conditions):
+            continue
+        ids = np.unique(face_ids[members])
+        if len(ids) > 1:
+            others = sorted({
+                s for sid in ids for v, s in plan["combinations"].get(
+                    int(sid), []) if (v, s) != (vol, j)})
+            raise hou.NodeError(
+                f"Sideset {j} of geo {geo}/vol {vol} carries a Pressure "
+                f"Cavity, but part of it is also in sideset(s) "
+                f"{', '.join(str(s) for s in others)}. PolyFEM computes a "
+                f"cavity's volume from the faces sharing one boundary id, so "
+                f"the overlap would split the cavity. Keep the cavity's faces "
+                f"out of other sidesets (or give another sideset exactly the "
+                f"same faces).")
+
+    plan.update(face_ids=face_ids, face_vids=face_vids, point_ids=point_ids,
+                point_vids=point_vids)
+    return plan
+
+
+_SELECTION_FILE_PATTERNS = ("surface_sidesets{geo}_tri.txt",
+                            "surface_sidesets{geo}_quad.txt",
+                            "point_sidesets{geo}.txt")
+
+
+def export_sidesets(parent, geo, num_vols, input_dir, plans=None):
+    """Write one geometry's selection files.
+
+    Returns (surface_selection_list, point_selection_list) for the json. The
+    resolved plan (ids and merged conditions) is stored in plans[geo] when a
+    dict is passed, for build_conditions and the import record.
+    """
+    plan = resolve_sidesets(parent, geo, num_vols)
+    if plans is not None:
+        plans[int(geo)] = plan
+    if plan["warnings"]:
         _message("Some sideset faces belong to a different subdomain than the "
                  "sideset they were assigned to, and were left out:\n"
-                 + "\n".join(cross_volume))
+                 + "\n".join(plan["warnings"]))
+    if plan["notes"]:
+        _status("Overlapping sidesets combined: " + "; ".join(plan["notes"]))
 
-    # Native selections first: polyfem applies the FIRST selection in the
-    # list that matches a face, and explicit axis/box/plane/sphere picks
-    # should win over broad face-list files.
-    surface_sel = list(native_selections)
-    for arity, rows in surface_rows.items():
-        if not rows:
+    written = set()
+    surface_sel = []
+    face_ids, face_vids = plan["face_ids"], plan["face_vids"]
+    selected = np.flatnonzero(face_ids)
+    for arity, name in ((3, _SELECTION_FILE_PATTERNS[0]),
+                        (4, _SELECTION_FILE_PATTERNS[1])):
+        faces = selected[(face_vids[selected, 3] < 0) == (arity == 3)]
+        if not len(faces):
             continue
-        fname = f"surface_sidesets{geo}_{'tri' if arity == 3 else 'quad'}.txt"
-        np.savetxt(os.path.join(input_dir, fname),
-                   np.asarray(rows, dtype=np.int64), fmt="%d")
+        fname = name.format(geo=geo)
+        rows = np.column_stack((face_ids[faces], face_vids[faces, :arity]))
+        np.savetxt(os.path.join(input_dir, fname), rows.astype(np.int64),
+                   fmt="%d")
         surface_sel.append({"file": fname})
+        written.add(fname)
 
     point_sel = []
-    if point_rows:
-        fname = f"point_sidesets{geo}.txt"
-        np.savetxt(os.path.join(input_dir, fname),
-                   np.asarray(point_rows, dtype=np.int64), fmt="%d")
+    point_ids, point_vids = plan["point_ids"], plan["point_vids"]
+    selected = np.flatnonzero(point_ids)
+    if len(selected):
+        fname = _SELECTION_FILE_PATTERNS[2].format(geo=geo)
+        rows = np.column_stack((point_ids[selected], point_vids[selected]))
+        np.savetxt(os.path.join(input_dir, fname), rows.astype(np.int64),
+                   fmt="%d")
         point_sel.append({"file": fname})
+        written.add(fname)
+
+    # Drop this geometry's selection files from an earlier export that this
+    # one no longer writes, so input/ only holds what params.json uses.
+    for name in _SELECTION_FILE_PATTERNS:
+        fname = name.format(geo=geo)
+        path = os.path.join(input_dir, fname)
+        if fname not in written and os.path.isfile(path):
+            os.remove(path)
     return surface_sel, point_sel
+
+
+def _condition_summary(record):
+    kind = record.get("type", 0)
+    name = _BC_TYPE_NAMES[kind] if 0 <= kind < len(_BC_TYPE_NAMES) else "?"
+    text = record.get("vector") if kind in (0, 1) else record.get("value")
+    if kind == 0:
+        axes = "".join(axis for axis, flag in zip(
+            "xyz", record.get("dimension", [1, 1, 1])) if flag)
+        return f"{name} {text} on {axes or 'no component'}"
+    return f"{name} {text}"
+
+
+def sideset_report(plans):
+    """Readable summary of what an export applied to every sideset."""
+    lines = []
+    for geo in sorted(plans):
+        plan = plans[geo]
+        for record in plan["records"]:
+            pattern = record["pattern"].strip()
+            shown = pattern if pattern == "*" or is_native_selection(pattern) \
+                else "picked"
+            where = (f"{record['count']} {record['kind']}"
+                     if "count" in record else "not exported (no conditions)")
+            conditions = "; ".join(_condition_summary(condition)
+                                   for condition in record["conditions"])
+            lines.append(
+                f"geo {geo} subdomain {record['subdomain']} sideset "
+                f"{record['sideset']} ({shown}): {where}"
+                + (f" -- {conditions}" if conditions else ""))
+        lines.extend("  " + note for note in plan["notes"])
+        lines.extend("  left out: " + warning.strip()
+                     for warning in plan["warnings"])
+    return lines
 
 
 def export_volumes(parent, geo, input_dir):
@@ -2286,7 +2904,7 @@ def export_per_element_materials(parent, input_dir, output_dir=None):
 # =============================================================================
 
 
-def build_geometry_and_materials(parent, data, input_dir):
+def build_geometry_and_materials(parent, data, input_dir, plans=None):
     num_geos = parent.evalParm("num_geos")
     if num_geos == 0:
         raise hou.NodeError("No input geometry provided!")
@@ -2299,15 +2917,18 @@ def build_geometry_and_materials(parent, data, input_dir):
         parent, input_dir,
         os.path.join(os.path.dirname(input_dir), "output"))
 
+    # Normally every mesh is already staged in input/; after a change of
+    # working directory they are staged again here, under names that two
+    # different meshes can never share.
+    taken = _staged_meshes(parent, input_dir)
     for geo in range(1, num_geos + 1):
         is_obstacle = bool(parent.parm(f"is_obstacle{geo}").eval())
         enabled = bool(parent.parm(f"is_enabled{geo}").eval())
         path_parm = parent.parm(f"file_location{geo}").eval()
         if not path_parm:
             raise hou.NodeError(f"No file location for geo {geo}!")
-        mesh_ref = os.path.basename(path_parm)
-        if not os.path.isfile(os.path.join(input_dir, mesh_ref)):
-            shutil.copy(path_parm, os.path.join(input_dir, mesh_ref))
+        mesh_ref = os.path.basename(
+            _stage_mesh(geo, path_parm, input_dir, taken))
 
         transform_node = parent.node(f"transform_{geo}")
         T, R, S = decompose_rowvec_xyz_4x4(
@@ -2325,7 +2946,7 @@ def build_geometry_and_materials(parent, data, input_dir):
         num_vols = parent.evalParm(f"num_volumes{geo}")
         volumefile = export_volumes(parent, geo, input_dir)
         surface_sel, point_sel = export_sidesets(
-            parent, geo, num_vols, input_dir)
+            parent, geo, num_vols, input_dir, plans)
 
         geo_data = {"mesh": mesh_ref, "enabled": enabled, "is_obstacle": False,
                     "volume_selection": volumefile,
@@ -2590,10 +3211,17 @@ def build_contact(parent, data):
             "min_distance_ratio": parent.evalParm("min_dist_ratio")})
 
 
-def build_conditions(parent, data):
+def build_conditions(parent, data, plans=None):
+    """Initial and boundary conditions.
+
+    Sideset conditions come from the resolved sideset plans (one boundary id
+    per sideset or per group of overlapping sidesets, conditions merged; see
+    resolve_sidesets). export_sidesets stores the plans while writing the
+    selection files; without them they are resolved here.
+    """
     solution, velocity, acceleration = [], [], []
-    dirichlet, neumann, neumann_normal = [], [], []
-    pressure_boundary, pressure_cavity, obstacle = [], [], []
+    lists = {key: [] for key in _BC_LIST_KEYS}
+    obstacle = []
     num_geos = parent.evalParm("num_geos")
 
     for geo in range(1, num_geos + 1):
@@ -2613,32 +3241,12 @@ def build_conditions(parent, data):
                 ctype = parent.evalParm(f"conditiontype{geo}_{vol}_{l}")
                 target = (solution, velocity, acceleration)[ctype]
                 target.append({"id": vol_id(geo, vol), "value": vector})
-            sidesets = parent.evalParm(f"sideset_selection{geo}_{vol}")
-            for j in range(1, sidesets + 1):
-                for k in range(1, parent.evalParm(
-                        f"Boundary_Condition__{geo}_{vol}_{j}") + 1):
-                    bid = boundary_id(geo, vol, j, k)
-                    btype = parent.evalParm(
-                        f"boundary_type{geo}_{vol}_{j}_{k}")
-                    if btype in (0, 1):
-                        vector = parse_vector(
-                            parent.evalParm(f"vector_{geo}_{vol}_{j}_{k}"),
-                            f"BC {geo}/{vol}/{j}/{k}")
-                        if btype == 0:
-                            dims = [bool(parent.evalParm(
-                                f"{ax}_dimension{geo}_{vol}_{j}_{k}"))
-                                for ax in "xyz"]
-                            dirichlet.append({"id": bid, "value": vector,
-                                              "dimension": dims})
-                        else:
-                            neumann.append({"id": bid, "value": vector})
-                    else:
-                        value = parse_vector(
-                            parent.evalParm(f"value_{geo}_{vol}_{j}_{k}"),
-                            f"BC {geo}/{vol}/{j}/{k}")
-                        target = {2: neumann_normal, 3: pressure_boundary,
-                                  4: pressure_cavity}[btype]
-                        target.append({"id": bid, "value": value})
+        plan = (plans or {}).get(geo)
+        if plan is None:
+            plan = resolve_sidesets(parent, geo, num_vols)
+        for sid in sorted(plan["conditions"]):
+            for key, entry in plan["conditions"][sid]:
+                lists[key].append(dict({"id": int(sid)}, **entry))
 
     if solution or velocity or acceleration:
         data["initial_conditions"] = {}
@@ -2649,12 +3257,8 @@ def build_conditions(parent, data):
 
     rhs = parent.evalParm("RHS")
     bc = {}
-    for key, lst in (("dirichlet_boundary", dirichlet),
-                     ("neumann_boundary", neumann),
-                     ("normal_aligned_neumann_boundary", neumann_normal),
-                     ("pressure_boundary", pressure_boundary),
-                     ("pressure_cavity", pressure_cavity),
-                     ("obstacle_displacements", obstacle)):
+    for key, lst in [(key, lists[key]) for key in _BC_LIST_KEYS] \
+            + [("obstacle_displacements", obstacle)]:
         if lst:
             bc[key] = lst
     if rhs:
@@ -3166,10 +3770,11 @@ def build_params(parent):
     os.makedirs(os.path.join(working_dir, "output"), exist_ok=True)
 
     data = {}
-    orders = build_geometry_and_materials(parent, data, input_dir)
+    plans = {}
+    orders = build_geometry_and_materials(parent, data, input_dir, plans)
     build_time(parent, data)
     build_contact(parent, data)
-    build_conditions(parent, data)
+    build_conditions(parent, data, plans)
     build_space(parent, data, orders)
     build_solver(parent, data)
     build_output(parent, data)
@@ -3179,6 +3784,8 @@ def build_params(parent):
     params_path = os.path.join(input_dir, "params.json")
     with open(params_path, "w") as f:
         json.dump(data, f, indent=4)
+    write_sideset_record(input_dir, data, plans)
+    _set_export_report(parent, plans)
     return params_path
 
 
@@ -3237,8 +3844,198 @@ def build_provenance(parent, data):
     }
 
 
+def _sideset_condition_lists(data):
+    """The sideset part of boundary_conditions, which the record describes."""
+    conditions = data.get("boundary_conditions")
+    if not isinstance(conditions, dict):
+        return {}
+    return {key: conditions[key] for key in _BC_LIST_KEYS if key in conditions}
+
+
+def _digest(value):
+    return hashlib.sha256(json.dumps(
+        value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _file_digest(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _selection_file_names(data):
+    names = []
+    geometry = data.get("geometry")
+    for entry in geometry if isinstance(geometry, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        for key in ("surface_selection", "point_selection"):
+            selections = entry.get(key)
+            if isinstance(selections, list):
+                names.extend(
+                    selection["file"] for selection in selections
+                    if isinstance(selection, dict)
+                    and isinstance(selection.get("file"), str))
+    return names
+
+
+def write_sideset_record(input_dir, data, plans):
+    """input/hda_sidesets.json: the sidesets as entered, for Import.
+
+    params.json and the selection files hold what PolyFEM needs (one id per
+    face, merged conditions); this keeps what the user typed -- "*", typed
+    selections, group types and every condition -- with hashes of the files it
+    belongs to, so an edited params.json is never contradicted on import.
+    """
+    record = {
+        "schema": SIDESET_RECORD_SCHEMA, "version": 1,
+        "boundary_conditions_sha256": _digest(_sideset_condition_lists(data)),
+        "selection_files": {
+            name: _file_digest(os.path.join(input_dir, name))
+            for name in _selection_file_names(data)
+            if os.path.isfile(os.path.join(input_dir, name))},
+        "geometries": {
+            str(geo): {
+                "sidesets": plan["records"],
+                "combinations": {
+                    str(sid): owners
+                    for sid, owners in sorted(plan["combinations"].items())}}
+            for geo, plan in sorted(plans.items())}}
+    path = os.path.join(input_dir, SIDESET_RECORD_FILE)
+    temporary = path + ".tmp"
+    with open(temporary, "w") as handle:
+        json.dump(record, handle, indent=2)
+    os.replace(temporary, path)
+
+
+def load_sideset_record(input_dir, data, resource_dir=None):
+    """(record, note): the HDA's sideset record if it still matches params.json.
+
+    note explains why an existing record was not used; it is None when there
+    is no record at all, or when the record was used.
+    """
+    path = os.path.join(input_dir, SIDESET_RECORD_FILE)
+    if not os.path.isfile(path):
+        return None, None
+    try:
+        with open(path) as handle:
+            record = json.load(handle)
+    except (OSError, ValueError) as exc:
+        return None, f"{SIDESET_RECORD_FILE} is unreadable ({exc})"
+    if not isinstance(record, dict) \
+            or record.get("schema") != SIDESET_RECORD_SCHEMA:
+        return None, f"{SIDESET_RECORD_FILE} is not a sideset record"
+    stale = ("so sidesets and their conditions were rebuilt from params.json "
+             "and the selection files instead of from the record of what was "
+             "entered")
+    if record.get("boundary_conditions_sha256") != _digest(
+            _sideset_condition_lists(data)):
+        return None, ("the boundary conditions in params.json differ from "
+                      f"the ones the asset wrote, {stale}")
+    files = record.get("selection_files", {})
+    for name in _selection_file_names(data):
+        selection_path = name if os.path.isabs(name) else os.path.join(
+            resource_dir or input_dir, name)
+        current = _file_digest(selection_path) \
+            if os.path.isfile(selection_path) else None
+        if files.get(name) != current:
+            return None, (f"the selection file {name} differs from the one "
+                          f"the asset wrote, {stale}")
+    return record, None
+
+
+def _set_export_report(parent, plans):
+    parm = parent.parm("export_report")
+    if parm is None:
+        return
+    import datetime
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = sideset_report(plans) \
+        or ["No sideset carries a boundary condition."]
+    parm.set("\n".join([f"Written {stamp}."] + lines))
+
+
+# Asked once per node and folder: user data holding the working directory the
+# user agreed to overwrite. Import forgets it, so an imported run is never
+# replaced without asking.
+_OVERWRITE_APPROVED = "polyfem_overwrite_approved"
+
+
+def previous_run_files(working_dir):
+    """What an earlier run left in <working_dir>/output (empty if nothing).
+
+    The fiber companion is the asset's own export file, not a result.
+    """
+    output = os.path.join(working_dir, "output")
+    if not os.path.isdir(output):
+        return []
+    return [name for name in sorted(os.listdir(output))
+            if not name.startswith(".")
+            and name not in (FIBER_FAMILY_FILE, FIBER_FAMILY_FILE + ".tmp")]
+
+
+def next_free_folder(working_dir):
+    """<working_dir>_run2, _run3, ...: the first that does not exist."""
+    base = os.path.normpath(os.path.abspath(working_dir))
+    match = re.match(r"^(.*)_run(\d+)$", base)
+    stem, number = (match.group(1), int(match.group(2)) + 1) if match \
+        else (base, 2)
+    while os.path.exists(f"{stem}_run{number}"):
+        number += 1
+    return f"{stem}_run{number}/"
+
+
+def confirm_output_folder(parent):
+    """Ask before replacing an earlier run's results; False means cancel.
+
+    Writing replaces the earlier run's input files and the solver then
+    overwrites its results, so a folder holding results (for instance one
+    just imported) is reused only after the user says so, once per node and
+    folder. "Use a New Folder" switches the node to <folder>_runN. Without an
+    interface (hython) there is nobody to ask: it proceeds and says so.
+    """
+    working_dir = parent.evalParm("working_dir")
+    if not working_dir or not os.path.isdir(working_dir):
+        return True  # build_params reports the missing folder
+    found = previous_run_files(working_dir)
+    if not found:
+        return True
+    folder = os.path.normpath(os.path.abspath(working_dir))
+    if parent.userData(_OVERWRITE_APPROVED) == folder:
+        return True
+    shown = ", ".join(found[:6]) + (", ..." if len(found) > 6 else "")
+    if not hou.isUIAvailable():
+        print(f"[PolyFEM HDA] {folder}/output already holds an earlier run "
+              f"({shown}); writing over it (no interface to ask).")
+        return True
+    choice = hou.ui.displayMessage(
+        "This working directory already holds the results of an earlier "
+        f"run:\n{folder}/output\n({shown})\n\nWriting or running here "
+        "replaces that run's input files, and the solver then overwrites its "
+        "results.",
+        buttons=("Overwrite", "Use a New Folder", "Cancel"),
+        severity=hou.severityType.Warning, default_choice=1, close_choice=2,
+        title="PolyFEM: earlier results found")
+    if choice == 0:
+        parent.setUserData(_OVERWRITE_APPROVED, folder)
+        return True
+    if choice == 1:
+        new_folder = next_free_folder(working_dir)
+        os.makedirs(os.path.join(new_folder, "input"), exist_ok=True)
+        os.makedirs(os.path.join(new_folder, "output"), exist_ok=True)
+        parent.parm("working_dir").set(new_folder)
+        _status(f"Working directory changed to {new_folder}")
+        return True
+    return False
+
+
 def write_params_only(kwargs):
     parent = kwargs["node"]
+    if not confirm_output_folder(parent):
+        return None
     try:
         path = build_params(parent)
     except hou.NodeError as e:
@@ -3265,6 +4062,8 @@ def _launch_command(parent, params_path):
 def write_params(kwargs):
     """Write params.json and launch PolyFEM in a terminal (1.2 behavior)."""
     parent = kwargs["node"]
+    if not confirm_output_folder(parent):
+        return
     try:
         params_path = build_params(parent)
         input_dir, args = _launch_command(parent, params_path)
@@ -3291,6 +4090,8 @@ def write_params(kwargs):
 def run_background(kwargs):
     """Write params.json and run PolyFEM headless with log capture."""
     parent = kwargs["node"]
+    if not confirm_output_folder(parent):
+        return
     try:
         params_path = build_params(parent)
         input_dir, args = _launch_command(parent, params_path)
@@ -3419,7 +4220,8 @@ def _ensure_sideset(parent, geo, vol, j):
 
 
 def _restore_conditions(parent, data):
-    """Fill BC / initial-condition / obstacle parms from new-format json."""
+    """Initial conditions, body force and obstacle motion from new-format
+    json (sideset conditions are restored by _restore_sidesets)."""
     ic = data.get("initial_conditions", {})
     counts, entries = {}, []
     for type_idx, key in enumerate(("solution", "velocity", "acceleration")):
@@ -3449,41 +4251,6 @@ def _restore_conditions(parent, data):
             parent.setParms(
                 {f"obstacle_disp{geo}": _format_vector(entry.get("value"))})
 
-    type_names = ("dirichlet_boundary", "neumann_boundary",
-                  "normal_aligned_neumann_boundary", "pressure_boundary",
-                  "pressure_cavity")
-    sideset_max, bc_max, bc_entries = {}, {}, []
-    for btype, key in enumerate(type_names):
-        for entry in bc.get(key, []):
-            geo, vol, j, k = _decode_boundary_id(entry.get("id", 0))
-            if j < 1 or k < 1:
-                continue
-            sideset_max[(geo, vol)] = max(sideset_max.get((geo, vol), 0), j)
-            bc_max[(geo, vol, j)] = max(bc_max.get((geo, vol, j), 0), k)
-            bc_entries.append((geo, vol, j, k, btype, entry))
-    for (geo, vol), n in sideset_max.items():
-        _ensure_sideset(parent, geo, vol, n)
-    for (geo, vol, j), n in bc_max.items():
-        parm = parent.parm(f"Boundary_Condition__{geo}_{vol}_{j}")
-        if parm is not None:
-            parm.set(n)
-    for geo, vol, j, k, btype, entry in bc_entries:
-        if parent.parm(f"boundary_type{geo}_{vol}_{j}_{k}") is None:
-            continue
-        parms = {f"boundary_type{geo}_{vol}_{j}_{k}": btype}
-        if btype in (0, 1):
-            parms[f"vector_{geo}_{vol}_{j}_{k}"] = \
-                _format_vector(entry.get("value"))
-            if btype == 0:
-                dims = entry.get("dimension", [True, True, True])
-                for ax, flag in zip("xyz", dims):
-                    parms[f"{ax}_dimension{geo}_{vol}_{j}_{k}"] = \
-                        int(bool(flag))
-        else:
-            parms[f"value_{geo}_{vol}_{j}_{k}"] = \
-                _format_vector(entry.get("value"))
-        parent.setParms(parms)
-
 
 def _native_pattern(entry):
     """Inverse of parse_native_selection: json entry -> UI pattern string."""
@@ -3502,100 +4269,318 @@ def _native_pattern(entry):
     return None
 
 
-def _restore_selections(parent, geometry, input_dir):
-    """Rebuild sideset selection patterns from the exported native entries
-    and per-arity sideset files (faces matched back through the surface
-    provenance attributes)."""
-    skipped = []
+def _surface_lookups(parent, geo):
+    """Map PolyFEM vertex numbers back to the displayed surface.
+
+    Returns (face_lookup, point_lookup): {sorted vertex numbers of a face:
+    surface prim} and {vertex number: surface point}, using the same
+    numbering as the export (mesh_vertex_ids).
+    """
+    surf_geo = parent.node(f"null_{geo}").geometry()
+    _, face_keys = _surface_arrays(surf_geo)
+    vid_of_key, _ = mesh_vertex_ids(parent, geo)
+    count = len(vid_of_key)
+    face_lookup = {}
+    for prim, row in enumerate(face_keys):
+        keys = [int(key) for key in row if key >= 0]
+        if keys and all(key < count for key in keys):
+            face_lookup[tuple(sorted(int(vid_of_key[key])
+                                     for key in keys))] = prim
+    point_keys = np.frombuffer(
+        surf_geo.pointIntAttribValuesAsString("msh_pt_id"),
+        dtype=np.int32).astype(np.int64) - 1
+    point_lookup = {int(vid_of_key[key]): point
+                    for point, key in enumerate(point_keys)
+                    if 0 <= key < count}
+    return face_lookup, point_lookup
+
+
+def _restore_sidesets(parent, data, geometry, input_dir, resource_dir):
+    """Sidesets and their boundary conditions from a scene this asset wrote.
+
+    Faces and nodes come back from the selection files, through PolyFEM's
+    vertex numbering and the surface provenance. When the asset's record
+    (hda_sidesets.json) still matches params.json, every sideset is restored
+    as it was entered: "*", typed selections, group type and each condition.
+    Otherwise the conditions are rebuilt from params.json: an older export's
+    per-condition ids keep their slots, and a combined id of overlapping
+    sidesets becomes a sideset of its own with the same faces and the merged
+    conditions, so the solver input is unchanged. Returns notes for the
+    import report.
+    """
+    notes = []
+    record, reason = load_sideset_record(input_dir, data, resource_dir)
+    if reason:
+        notes.append(f"Sidesets: {reason}.")
+    conditions = data.get("boundary_conditions", {})
+    if not isinstance(conditions, dict):
+        conditions = {}
+
     for i, g in enumerate(geometry, 1):
-        if g.get("is_obstacle"):
+        if g.get("is_obstacle") or parent.node(f"null_{i}") is None:
             continue
-        sel = g.get("surface_selection", [])
-        if not isinstance(sel, list):
-            skipped.append(f"geo {i}: non-list surface_selection")
+        try:
+            face_lookup, point_lookup = _surface_lookups(parent, i)
+        except hou.Error as exc:
+            notes.append(f"geo {i}: sidesets were not restored ({exc})")
             continue
-
-        null_node = parent.node(f"null_{i}")
-        face_lookup = {}
-        point_lookup = {}
-        if null_node is not None:
-            try:
-                surf_geo = null_node.geometry()
-                _, face_ids = _surface_arrays(surf_geo)
-                for prim, row in enumerate(face_ids):
-                    key = tuple(sorted(int(v) for v in row if v >= 0))
-                    face_lookup[key] = prim
-                msh = np.frombuffer(
-                    surf_geo.pointIntAttribValuesAsString("msh_pt_id"),
-                    dtype=np.int32)
-                point_lookup = {int(m): p for p, m in enumerate(msh)}
-            except hou.Error:
-                pass
-
-        sideset_prims = {}
-        for entry in sel:
+        faces_by_id, points_by_id, natives = {}, {}, {}
+        selections = g.get("surface_selection", [])
+        if not isinstance(selections, list):
+            notes.append(f"geo {i}: non-list surface_selection")
+            selections = []
+        for entry in selections:
             if not isinstance(entry, dict):
-                skipped.append(f"geo {i}: integer selection {entry} "
-                               "(assign via sidesets instead)")
+                notes.append(f"geo {i}: integer selection {entry} "
+                             "(assign via sidesets instead)")
                 continue
             if "file" in entry:
-                path = os.path.join(input_dir, entry["file"])
                 try:
-                    rows = np.loadtxt(path, dtype=np.int64, ndmin=2)
+                    rows = np.loadtxt(_selection_file(entry, resource_dir),
+                                      dtype=np.int64, ndmin=2)
                 except (OSError, ValueError):
-                    skipped.append(f"geo {i}: unreadable {entry['file']}")
+                    notes.append(f"geo {i}: unreadable {entry['file']}")
                     continue
                 unmatched = 0
                 for row in rows:
-                    _, vol, j, _ = _decode_boundary_id(row[0])
                     prim = face_lookup.get(
                         tuple(sorted(int(v) for v in row[1:])))
                     if prim is None:
                         unmatched += 1
                         continue
-                    sideset_prims.setdefault((vol, j), set()).add(prim)
+                    faces_by_id.setdefault(int(row[0]), set()).add(prim)
                 if unmatched:
-                    skipped.append(
+                    notes.append(
                         f"geo {i}: {unmatched} faces of {entry['file']} not "
                         "on the current mesh")
             else:
                 pattern = _native_pattern(entry)
-                _, vol, j, _ = _decode_boundary_id(entry.get("id", 0))
-                if pattern is None or j < 1:
-                    skipped.append(f"geo {i}: unrecognized selection entry")
+                if pattern is None or "id" not in entry:
+                    notes.append(f"geo {i}: unrecognized selection entry")
                     continue
-                _ensure_sideset(parent, i, vol, j)
-                parent.setParms({f"basegroup{i}_{vol}_{j}": pattern,
-                                 f"grouptype{i}_{vol}_{j}": 0})
-        for (vol, j), prims in sideset_prims.items():
-            _ensure_sideset(parent, i, vol, j)
-            parent.setParms({
-                f"basegroup{i}_{vol}_{j}": list_to_space_str(sorted(prims)),
-                f"grouptype{i}_{vol}_{j}": 0})
-
-        # point sidesets
-        for entry in g.get("point_selection", []) \
-                if isinstance(g.get("point_selection", []), list) else []:
+                natives.setdefault(int(entry["id"]), pattern)
+        points = g.get("point_selection", [])
+        for entry in points if isinstance(points, list) else []:
             if not (isinstance(entry, dict) and "file" in entry):
                 continue
-            path = os.path.join(input_dir, entry["file"])
             try:
-                rows = np.loadtxt(path, dtype=np.int64, ndmin=2)
+                rows = np.loadtxt(_selection_file(entry, resource_dir),
+                                  dtype=np.int64, ndmin=2)
             except (OSError, ValueError):
-                skipped.append(f"geo {i}: unreadable {entry['file']}")
+                notes.append(f"geo {i}: unreadable {entry['file']}")
                 continue
-            sideset_points = {}
             for row in rows:
-                _, vol, j, _ = _decode_boundary_id(row[0])
-                pt = point_lookup.get(int(row[1]) + 1)
-                if pt is not None:
-                    sideset_points.setdefault((vol, j), set()).add(pt)
-            for (vol, j), pts in sideset_points.items():
-                _ensure_sideset(parent, i, vol, j)
-                parent.setParms({
-                    f"basegroup{i}_{vol}_{j}": list_to_space_str(sorted(pts)),
-                    f"grouptype{i}_{vol}_{j}": 1})
-    return skipped
+                point = point_lookup.get(int(row[1]))
+                if point is not None:
+                    points_by_id.setdefault(int(row[0]), set()).add(point)
+
+        geo_record = None
+        if record is not None:
+            geo_record = record.get("geometries", {}).get(str(i))
+        if geo_record is not None:
+            _restore_recorded_sidesets(parent, i, geo_record, faces_by_id,
+                                       points_by_id, notes)
+        else:
+            _restore_sidesets_from_ids(parent, i, conditions, faces_by_id,
+                                       points_by_id, natives, notes)
+    return notes
+
+
+def _set_condition_parms(parent, suffix, kind, vector=None, value=None,
+                         dimension=None):
+    if parent.parm(f"boundary_type{suffix}") is None:
+        return
+    parms = {f"boundary_type{suffix}": int(kind)}
+    if vector is not None:
+        parms[f"vector_{suffix}"] = vector
+    if value is not None:
+        parms[f"value_{suffix}"] = value
+    if dimension is not None:
+        for axis, flag in zip("xyz", dimension):
+            parms[f"{axis}_dimension{suffix}"] = int(bool(flag))
+    parent.setParms(parms)
+
+
+def _restore_recorded_sidesets(parent, geo, geo_record, faces_by_id,
+                               points_by_id, notes):
+    """Sidesets exactly as entered, from a record that matches params.json."""
+    combinations = {}
+    for sid, owners in geo_record.get("combinations", {}).items():
+        try:
+            combinations[int(sid)] = [(int(v), int(s)) for v, s in owners]
+        except (TypeError, ValueError):
+            continue
+    found = {}
+    for kind, by_id in (("faces", faces_by_id), ("nodes", points_by_id)):
+        for sid, items in by_id.items():
+            owners = combinations.get(sid)
+            if owners is None:
+                _, vol, j, _ = _decode_boundary_id(sid)
+                owners = [(vol, j)]
+            for owner in owners:
+                found.setdefault((kind, owner), set()).update(items)
+
+    sidesets = [entry for entry in geo_record.get("sidesets", [])
+                if isinstance(entry, dict)]
+    for entry in sidesets:
+        vol, j = int(entry.get("subdomain", 0)), int(entry.get("sideset", 0))
+        if j < 1 or parent.parm(f"sideset_selection{geo}_{vol}") is None:
+            notes.append(f"geo {geo}: the record names subdomain {vol}, which "
+                         "this mesh does not have")
+            continue
+        _ensure_sideset(parent, geo, vol, j)
+    for entry in sidesets:
+        vol, j = int(entry.get("subdomain", 0)), int(entry.get("sideset", 0))
+        if parent.parm(f"basegroup{geo}_{vol}_{j}") is None:
+            continue
+        grouptype = int(entry.get("group_type", 0))
+        pattern = str(entry.get("pattern", ""))
+        text = pattern.strip()
+        recorded_conditions = [c for c in entry.get("conditions", [])
+                               if isinstance(c, dict)]
+        restored = pattern
+        # Typed selections and "*" are restored as typed (they are evaluated
+        # again on export); picks come back from the faces themselves, which
+        # does not depend on primitive numbering.
+        if text != "*" and not is_native_selection(text) \
+                and recorded_conditions:
+            items = found.get(("nodes" if grouptype == 1 else "faces",
+                               (vol, j)), set())
+            if items:
+                restored = list_to_space_str(sorted(items))
+            else:
+                notes.append(
+                    f"geo {geo} subdomain {vol} sideset {j}: none of its "
+                    "faces were found on the current mesh; the recorded "
+                    "selection was kept")
+        parent.setParms({f"basegroup{geo}_{vol}_{j}": restored,
+                         f"grouptype{geo}_{vol}_{j}": grouptype})
+        count = parent.parm(f"Boundary_Condition__{geo}_{vol}_{j}")
+        if count is not None:
+            count.set(len(recorded_conditions))
+        for k, condition in enumerate(recorded_conditions, 1):
+            _set_condition_parms(
+                parent, f"{geo}_{vol}_{j}_{k}", condition.get("type", 0),
+                vector=condition.get("vector"), value=condition.get("value"),
+                dimension=condition.get("dimension")
+                if int(condition.get("type", 0)) == 0 else None)
+
+
+def _restore_sidesets_from_ids(parent, geo, conditions, faces_by_id,
+                               points_by_id, natives, notes):
+    """Sidesets rebuilt from params.json ids (no usable record)."""
+    entries_by_id = {}
+    for kind, key in enumerate(_BC_LIST_KEYS):
+        values = conditions.get(key, [])
+        for entry in values if isinstance(values, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                sid = int(entry.get("id", 0))
+            except (TypeError, ValueError):
+                continue
+            if _decode_boundary_id(sid)[0] == geo:
+                entries_by_id.setdefault(sid, []).append((kind, entry))
+
+    ids = set(faces_by_id) | set(points_by_id) | set(natives) \
+        | set(entries_by_id)
+    regular, combined = {}, []
+    for sid in sorted(ids):
+        g, vol, j, _ = _decode_boundary_id(sid)
+        if g != geo or vol < 1 \
+                or parent.parm(f"sideset_selection{geo}_{vol}") is None:
+            notes.append(f"geo {geo}: boundary id {sid} names subdomain "
+                         f"{vol}, which this mesh does not have")
+            continue
+        if j >= 1:
+            regular.setdefault(vol, set()).add(j)
+        else:
+            combined.append((vol, sid))
+    # Number each subdomain's sidesets 1, 2, ... in their original order,
+    # then the combined ids of overlapping sidesets (sideset field 0), whose
+    # faces and merged conditions become sidesets of their own. A sideset
+    # whose faces all lay in overlaps has no id of its own any more; compact
+    # numbering keeps it from leaving an empty sideset behind.
+    renumber, count = {}, {}
+    for vol, numbers in regular.items():
+        for new, old in enumerate(sorted(numbers), 1):
+            renumber[(vol, old)] = new
+        count[vol] = len(numbers)
+        if sorted(numbers) != list(range(1, len(numbers) + 1)):
+            notes.append(
+                f"geo {geo} subdomain {vol}: sidesets were renumbered "
+                f"({', '.join(str(old) for old in sorted(numbers))} -> "
+                f"1-{len(numbers)}); any sideset missing from that list "
+                "had all of its faces in overlaps with other sidesets")
+    target = {}
+    for sid in sorted(ids):
+        g, vol, j, _ = _decode_boundary_id(sid)
+        if j >= 1 and (vol, j) in renumber:
+            target[sid] = (vol, renumber[(vol, j)])
+    for vol, sid in combined:
+        count[vol] = count.get(vol, 0) + 1
+        target[sid] = (vol, count[vol])
+        notes.append(
+            f"geo {geo} subdomain {vol}: the faces shared by several "
+            f"sidesets (boundary id {sid}) were restored as sideset "
+            f"{count[vol]}, with the combined conditions they received")
+
+    sidesets = {}
+    for sid, place in target.items():
+        _, _, field_sideset, field_condition = _decode_boundary_id(sid)
+        k = field_condition if field_sideset >= 1 else 1
+        slot = sidesets.setdefault(place, {"faces": set(), "nodes": set(),
+                                           "native": None, "entries": []})
+        slot["faces"] |= faces_by_id.get(sid, set())
+        slot["nodes"] |= points_by_id.get(sid, set())
+        if sid in natives and slot["native"] is None:
+            slot["native"] = natives[sid]
+        for kind, entry in entries_by_id.get(sid, []):
+            slot["entries"].append((k, kind, entry))
+    for vol, j in sorted(sidesets):
+        _ensure_sideset(parent, geo, vol, j)
+    for (vol, j), slot in sorted(sidesets.items()):
+        if parent.parm(f"basegroup{geo}_{vol}_{j}") is None:
+            continue
+        if slot["native"] is not None:
+            parent.setParms({f"basegroup{geo}_{vol}_{j}": slot["native"],
+                             f"grouptype{geo}_{vol}_{j}": 0})
+        elif slot["faces"]:
+            parent.setParms({
+                f"basegroup{geo}_{vol}_{j}":
+                    list_to_space_str(sorted(slot["faces"])),
+                f"grouptype{geo}_{vol}_{j}": 0})
+        elif slot["nodes"]:
+            parent.setParms({
+                f"basegroup{geo}_{vol}_{j}":
+                    list_to_space_str(sorted(slot["nodes"])),
+                f"grouptype{geo}_{vol}_{j}": 1})
+        entries = slot["entries"]
+        if not entries:
+            continue
+        numbers = [k for k, _, _ in entries]
+        if len(set(numbers)) == len(numbers):
+            # one id per condition (exports before 2026-10-01): keep their
+            # order; PolyFEM applied only the first id it found on a face
+            entries = sorted(entries, key=lambda item: item[0])
+            if len(entries) > 1:
+                notes.append(
+                    f"geo {geo} subdomain {vol} sideset {j}: its "
+                    f"{len(entries)} conditions had one boundary id each, so "
+                    "the run that wrote this file applied only the first of "
+                    "them to the faces; exported again, all of them act on "
+                    "the sideset.")
+        count_parm = parent.parm(f"Boundary_Condition__{geo}_{vol}_{j}")
+        if count_parm is not None:
+            count_parm.set(len(entries))
+        for k, (_, kind, entry) in enumerate(entries, 1):
+            value = _format_vector(entry.get("value"))
+            _set_condition_parms(
+                parent, f"{geo}_{vol}_{j}_{k}", kind,
+                vector=value if kind in (0, 1) else None,
+                value=value if kind not in (0, 1) else None,
+                dimension=entry.get("dimension", [True, True, True])
+                if kind == 0 else None)
 
 
 def _restore_legacy_scene(parent, data, geometry, input_dir, material_slots):
@@ -3643,14 +4628,9 @@ def _restore_legacy_scene(parent, data, geometry, input_dir, material_slots):
         if g.get("is_obstacle") or parent.node(f"null_{geo}") is None:
             continue
         surface_geo = parent.node(f"null_{geo}").geometry()
-        entities, face_ids = _surface_arrays(surface_geo)
-        face_lookup = {
-            tuple(sorted(int(value) for value in row if value >= 0)): index
-            for index, row in enumerate(face_ids)}
-        msh_ids = np.frombuffer(
-            surface_geo.pointIntAttribValuesAsString("msh_pt_id"),
-            dtype=np.int32)
-        point_lookup = {int(value): index for index, value in enumerate(msh_ids)}
+        entities, _ = _surface_arrays(surface_geo)
+        # Selection files hold PolyFEM's vertex numbers (mesh_vertex_ids).
+        face_lookup, point_lookup = _surface_lookups(parent, geo)
         volume_count = parent.evalParm(f"num_volumes{geo}")
 
         selections = g.get("surface_selection", [])
@@ -3715,7 +4695,7 @@ def _restore_legacy_scene(parent, data, geometry, input_dir, material_slots):
                 if len(row) < 2:
                     continue
                 sid = int(row[0])
-                point = point_lookup.get(int(row[1]) + 1)
+                point = point_lookup.get(int(row[1]))
                 if point is None:
                     continue
                 direct = legacy_target(sid)
@@ -4775,6 +5755,10 @@ def read_params(kwargs):
     clear_all_geos(kwargs)
     working_dir = os.path.dirname(os.path.normpath(input_dir))
     parent.setParms({"working_dir": working_dir + "/"})
+    # Writing or running into an imported run's folder must be confirmed
+    # again, whatever was approved for this node before.
+    if parent.userData(_OVERWRITE_APPROVED) is not None:
+        parent.destroyUserData(_OVERWRITE_APPROVED)
 
     raw_geometry = data.get("geometry", [])
     if not isinstance(raw_geometry, list):
@@ -4933,10 +5917,10 @@ def read_params(kwargs):
         except Exception as e:
             warnings.append(f"Conditions were only partially restored: {e}")
         try:
-            warnings.extend(_restore_selections(
-                parent, geometry, resource_dir))
+            warnings.extend(_restore_sidesets(
+                parent, data, geometry, input_dir, resource_dir))
         except Exception as e:
-            warnings.append(f"Selections were only partially restored: {e}")
+            warnings.append(f"Sidesets were only partially restored: {e}")
     else:
         try:
             warnings.extend(_restore_legacy_scene(
@@ -4951,7 +5935,9 @@ def read_params(kwargs):
         try:
             for vol in range(1, parent.evalParm(f"num_volumes{i}") + 1):
                 if parent.parm(f"sideset_selection{i}_{vol}") is not None:
-                    _rebuild_group_chain(parent, str(i), str(vol))
+                    # imported sidesets keep exactly the conditions they had
+                    _rebuild_group_chain(parent, str(i), str(vol),
+                                         default_condition=False)
         except Exception as e:
             warnings.append(f"Group nodes for geometry {i}: {e}")
 
@@ -4991,6 +5977,13 @@ def read_params(kwargs):
         summary.extend(f"- {item}" for item in warnings)
     else:
         summary.append("All represented scene and PolyFEM parameters restored.")
+    # The node now writes into the imported run's folder; Write and Run ask
+    # before replacing its results (confirm_output_folder).
+    if previous_run_files(parent.evalParm("working_dir")):
+        summary.append(
+            f"Working Directory is the imported run's folder "
+            f"({parent.evalParm('working_dir')}); Write and Run ask before "
+            "replacing its results.")
     report_text = "\n".join(summary)
     report_parm = parent.parm("import_report")
     if report_parm is not None:

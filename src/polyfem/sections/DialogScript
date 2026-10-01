@@ -747,7 +747,7 @@
             label   "Working Directory"
             type    directory
             default { "" }
-            help    "Folder where this node writes everything: input/ (params.json, copied meshes, selection and fiber files) and output/ (results, log). Use one folder per simulation setup; results in it are overwritten on the next run."
+            help    "Folder where this node writes everything: input/ (params.json, copied meshes, selection and fiber files) and output/ (results, log). Use one folder per simulation setup. If output/ already holds the results of an earlier run (for example a run you imported), Write and Run ask first: overwrite them, or continue in a new folder (<folder>_run2, ...)."
             parmtag { "script_callback" "hou.pwd().hm().working_dir_check(kwargs)" }
             parmtag { "script_callback_language" "python" }
         }
@@ -801,6 +801,16 @@
             type    separator
             default { "" }
         }
+        parm {
+            name    "export_report"
+            label   "Export Report"
+            type    string
+            default { "Nothing has been written yet." }
+            disablewhen "{ working_dir != __polyfem_report_edit_sentinel__ }"
+            help    "What the last Write or Run applied to every sideset: the faces (or nodes) it covers and its conditions, plus the faces that lie in several sidesets (they receive the conditions of all of them). Read-only."
+            parmtag { "editor" "1" }
+            parmtag { "sidefx::look" "block" }
+        }
     }
 
     group {
@@ -840,7 +850,7 @@
                 label   "file_location"
                 type    geometry
                 default { "" }
-                help    "Volume mesh for this body: a Gmsh .msh file (tetrahedra or hexahedra; 2D triangles/quads also work). The file is copied into <working_dir>/input when selected. Physical groups in the file become the subdomains you can assign materials to."
+                help    "Volume mesh for this body: a Gmsh .msh file (tetrahedra or hexahedra; 2D triangles/quads also work). The file is copied into <working_dir>/input when selected; if another geometry already uses a different mesh with the same file name, the copy is renamed (part_geo2.msh) so neither replaces the other. Physical groups in the file become the subdomains you can assign materials to."
                 parmtag { "filechooser_mode" "read" }
                 parmtag { "filechooser_pattern" "*.msh, *.obj, *.stl,*.ply" }
                 parmtag { "script_callback" "hou.pwd().hm().create_geo_nodes(kwargs)" }
@@ -2182,7 +2192,7 @@
                                 "primitive" "Primitives"
                                 "point"     "Points"
                             }
-                            help    "Whether the Base Group selects boundary faces (primitives) or points. Faces are the normal choice; a point selection is converted to the faces it touches."
+                            help    "Whether the Base Group selects boundary faces (Primitives) or mesh nodes (Points). Faces are the normal choice. A Points sideset is exported as a node selection and can carry Dirichlet conditions only: PolyFEM applies tractions and pressures to faces, so a load on points is refused instead of silently doing nothing."
                             parmtag { "autoscope" "0000000000000000" }
                             parmtag { "autoselect" "0000000000000000" }
                             parmtag { "script_callback_language" "python" }
@@ -2192,7 +2202,7 @@
                             label   "Base Group"
                             type    string
                             default { "" }
-                            help    "The boundary faces this sideset covers. Pick them in the viewport, type * for the whole surface of this subdomain, or type a native PolyFEM selection: axis:+z:0.99 (faces above z = 0.99), box:[x0,y0,z0],[x1,y1,z1], sphere:[cx,cy,cz],r or plane:[nx,ny,nz],[px,py,pz]. Native selections are exported directly and take precedence over picked faces."
+                            help    "The boundary faces this sideset covers. Pick them in the viewport, type * for the whole surface of this subdomain, or type a selection that is evaluated on face centres (after the transform): axis:+z:0.99 (centre z >= 0.99; -z means <=), box:[x0,y0,z0],[x1,y1,z1], sphere:[cx,cy,cz],r or plane:[nx,ny,nz],[px,py,pz] (the side the normal points to). A selection that catches no face is an error. A face in several sidesets receives the conditions of all of them; the Export Report on the Main tab lists such faces."
                             parmtag { "script_action" "import soputils\nparent = kwargs['node']\nparent.allowEditingOfContents(True)\nbutton_number = kwargs['script_multiparm_index3']\nvolumn_number = kwargs['script_multiparm_index2']\nsurf_number = kwargs['script_multiparm_index']\ngroup_node = parent.node(\"group_\"+str(button_number)+\"_\"+str(volumn_number)+\"_\"+str(surf_number))\nif group_node:\n    kwargs['node'] = group_node\n    kwargs['geometrytype'] = kwargs['node'].parmTuple('grouptype')\n    kwargs['inputindex'] = 0\n    kwargs['ordered'] = kwargs['node'].parm('ordered').eval()\n    soputils.selectGroupParm(kwargs)\n\n\n" }
                             parmtag { "script_action_help" "Select geometry from an available viewport.\nShift-click to turn on Select Groups." }
                             parmtag { "script_action_icon" "BUTTONS_reselect" }
@@ -2232,7 +2242,7 @@
                                     "Pressure_Boundary"         "Pressure Boundary"
                                     "Pressure_Cavity"           "Pressure Cavity"
                                 }
-                                help    "What is imposed on this sideset. Dirichlet = prescribed displacement (fixes or moves the surface). Neumann = applied traction (force per area) with a fixed direction. Normal Aligned Neumann = traction along the surface normal (positive pushes inward). Pressure Boundary = pressure following the deforming surface. Pressure Cavity = pressure inside a closed cavity."
+                                help    "What is imposed on this sideset. Dirichlet = prescribed displacement (fixes or moves the surface). Neumann = applied traction (force per area) with a fixed direction. Normal Aligned Neumann = traction along the surface normal (positive pushes inward). Pressure Boundary = pressure following the deforming surface. Pressure Cavity = pressure inside a closed cavity. All conditions of a sideset act on all of its faces: Dirichlet components are combined (a component set twice must have the same value), loads of one kind are added, and a Neumann and a Normal Aligned Neumann cannot share faces (PolyFEM would keep only the second)."
                                 parmtag { "script_callback_language" "python" }
                             }
                             parm {

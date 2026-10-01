@@ -119,12 +119,19 @@ def main():
     surface_sel, _ = mod.export_sidesets(node, 1, 2, input_dir)
     assert surface_sel, "valid sideset selection produced no export"
 
-    # "*" keeps meaning "every face of this subdomain".
+    # "*" keeps meaning "every face of this subdomain". The faces it shares
+    # with sideset 1 carry a combined id that includes it (PolyFEM gives
+    # each face one id, and the face receives the conditions of both).
     rows = np.loadtxt(os.path.join(input_dir, "surface_sidesets1_tri.txt"),
                       dtype=np.int64, ndmin=2)
-    wildcard_id = mod.boundary_id(1, 1, 2, 1)
-    assert int((rows[:, 0] == wildcard_id).sum()) == faces[1], \
+    plan = mod.resolve_sidesets(node, 1, 2)
+    wildcard_ids = {mod.sideset_id(1, 1, 2)} | {
+        sid for sid, owners in plan["combinations"].items()
+        if [1, 2] in owners}
+    assert int(np.isin(rows[:, 0], list(wildcard_ids)).sum()) == faces[1], \
         '"*" no longer selects the whole subdomain'
+    assert len(rows[:, 1:]) == len({tuple(sorted(r)) for r in rows[:, 1:]}), \
+        "a face is listed under more than one id"
 
     # Dropping a subdomain's sidesets tears its branch down and leaves the
     # others alone.
