@@ -35,6 +35,9 @@ hython tests/test_subdomains_reload.py   # physical groups, reload, Duplicate
 hython tests/test_display_chain.py       # cost of a transform edit at 384k tets
 hython tests/test_readpvd_first_look.py  # first look, output defaults, HDF5
 hython tests/test_help_cards.py          # help cards parse
+hython tests/test_time_curves.py         # keyed load curves, the timeline
+hython tests/test_animated_obstacles.py  # keyframed obstacle motion
+hython tests/test_force_curves.py        # reaction/contact force curves
 hython tests/test_readpvd_hda.py         # result loading incl. Contact block
 hython tests/test_legacy_import.py       # old params.json migration
 hython tests/test_polyfem_materials.py   # fiber models, composites, per-element data
@@ -124,6 +127,19 @@ Targets the current build's strict-validated schema — the old fork keys
   `plane:[0,0,1],[0,0,0.5]` — evaluated on face centres with PolyFEM's own
   rules and exported as the faces they select (see *Sideset conditions*
   below).
+* **Loads that change over time** (2026-10-02): every sideset condition has
+  a *Time Curve* -- the value as entered, a ramp from 0 to the value, or an
+  *Animated multiplier* keyframed on Houdini's timeline -- exported as
+  PolyFEM interpolation tables sampled at every time step. Houdini time is
+  simulation time (Time tab: *Start Frame*, *Time Scale*). See *Time curves,
+  moving obstacles and force curves* below.
+* **Moving obstacles**: keyframe an obstacle's transform like any Houdini
+  object; a translation is exported as displacement tables, a rotation or
+  scaling as a mesh sequence of the posed obstacle.
+* **Nodal forces for force curves**: *Output > Nodal Forces* (on for new
+  nodes) writes the per-term nodal forces Read PVD sums over sidesets and
+  obstacles; `input/hda_scene.json` records the timeline, the obstacles'
+  keyframes and the sets.
 * **Run buttons** (Main tab): *Check Setup*, *Write params.json Only*, *Run
   in Terminal* (PolyFEM in a terminal window, through a quoted script), *Run
   in Background* (headless, `output/log.txt`). *Run Status* follows either
@@ -166,6 +182,11 @@ Targets the current build's strict-validated schema — the old fork keys
   installed in Houdini's Python is preferred when present. Multi-GB inline-binary VTUs remain supported: XML is fed
   to expat in chunks and inline payloads are decoded on demand, so a 2 GB file
   does not build a 2 GB ElementTree.
+* **Timeline and force curves** (2026-10-02): a run written by the PolyFEM
+  node plays on that node's timeline (*Time Mapping: Automatic*; one frame
+  per step otherwise), with the step and its simulation time shown under
+  it. *Analysis > Force Curves* gives each sideset's and obstacle's reaction
+  and contact force per step (CSV, readout, chart window).
 * **Topology caching**: topology is parsed once (configurable frame) and
   only P + fields upload per frame. ~1M tets: first cook 1.75 s, then
   **0.25 s per frame change**. A *Remeshing Mode* toggle rebuilds topology
@@ -347,6 +368,112 @@ Targets the current build's strict-validated schema — the old fork keys
    viewport overlay legend, and scene gnomon; try both Auto Range buttons;
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
+
+### Time curves, moving obstacles and force curves (2026-10-02)
+
+Review items F3 and F4 of the 2026-10-01 review, and animated obstacles. The
+user chose the design in `hda-review-work/F3-F4-obstacles-design-2026-10-02.md`
+(workspace): Houdini time is simulation time, obstacles move by keyframed
+transforms, force curves live in Read PVD, and PolyFEM takes time tables on
+pressures (`sdast9/polyfem@ddb4579a3`).
+
+* **The timeline.** Houdini time is simulation time: *simulation time =
+  Start Time + (frame's time - Start Frame's time) x Time Scale* (Time tab:
+  *Start Frame*, default 1, and *Time Scale*, default 1). A read-only
+  *Timeline* line shows the frames the run spans. Keys are read at the
+  run's step times as PolyFEM computes them (`t0 + k dt`, with `ceil((tend -
+  t0) / dt)` steps), so changing dt or the number of steps never moves a
+  curve or a motion in time; halving dt gives the same values at the shared
+  steps. PolyFEM writes the initial, unloaded state at Start Time and
+  applies the conditions from the first step on.
+* **Time curves on conditions.** Each sideset condition has a *Time Curve*
+  (appended after x/y/z, so saved scenes load unchanged): *Value as entered*
+  (the default; exactly the export of before), *Ramp from 0 to the value*
+  (over the whole run, or *Custom Ramp Times*), or
+  *Animated multiplier (keyframes)* (*Multiplier [x, y, z]*, or one
+  *Multiplier* for normal tractions and pressures). The curve multiplies the
+  value, as PolyFEM's `interpolation` does; it is sampled at every step and
+  written as `piecewise_linear` tables (constant ends; collinear samples
+  dropped), one per component (`{"type": "none"}` where a component has no
+  curve). Any channel works -- bezier, ease or linear keys, expressions,
+  CHOP exports -- because the channel is evaluated, not its keys copied.
+* **Merges** (P0's rules, with curves): each Dirichlet component keeps the
+  curve of the condition that prescribes it, and two conditions prescribing
+  one component with different curves are refused by name. Loads of one
+  kind on the same faces with different curves are added into one table per
+  component (value 1 x table, exact), which needs their values to be
+  numbers; an expression value is refused by name.
+* **Pressures**: *Pressure Boundary* and *Pressure Cavity* take a curve too;
+  that needs PolyFEM `ddb4579a3` or later, which accepts `interpolation` on
+  them and no longer stops with "File name too long" on long value strings
+  (Check Setup notes the requirement).
+* **Moving obstacles.** Keyframe an obstacle's Translate / Rotate / Scale /
+  Pivot like any Houdini object (the viewport already follows them); its
+  pose at the Start Frame is its rest pose. A translation is exported as
+  `obstacle_displacements` tables (value `[1, 1, 1]` x the displacement of
+  each component); a rotation or scaling as a PolyFEM `mesh_sequence`: the
+  obstacle surface posed at every frame of the smallest whole-number frame
+  rate on which every time step falls (dt 0.125 -> 8 frames per simulated
+  second, 0.03 -> 100), written from the file's own float64 coordinates for
+  `.obj` and `.msh` (the surface of a tet mesh, as PolyFEM extracts it).
+  Refused by name: a dt needing more than 10 frames per step, keys plus a
+  non-zero *Obstacle Displacement*, and an animated *simulated* body (its
+  transform only places the rest shape). Check Setup says how each moving
+  obstacle will be written.
+* **Nodal forces.** *Output > Nodal Forces (force curves)* (the old
+  *Forces* toggle, renamed) is on for new nodes; saved scenes keep their
+  setting. It writes one field per term the scene has (elastic, body loads,
+  pressure, contact, friction, inertia, damping); before, the Minimal Fields
+  whitelist dropped every `*_forces` field even with the toggle on.
+  `input/hda_scene.json` (next to `params.json`, ignored by PolyFEM) records
+  the timeline, each moving obstacle's keyframes, and every sideset's faces
+  and every obstacle's surface in simulation coordinates.
+* **Read PVD plays the run on the timeline.** *Time Mapping*: *Automatic*
+  (default: the PolyFEM node's timeline when the run has the record, one
+  frame per step otherwise, so older runs and scenes behave as before),
+  *Simulation Time* (own Start Frame / Time Scale) or *One Frame per Output
+  Step*. A frame shows the last step at or before its simulation time;
+  *Refresh* sets the playbar to the run's frames; *Simulation Time* shows
+  the step on screen and its time (part of P2-9). *Cache Frames* keeps what
+  each frame shows, so a step shown on several frames is held once per
+  frame (*Cache Memory Limit* still bounds the total); one frame per step
+  is the leaner choice for very large runs.
+* **Force curves** (Read PVD *Analysis > Force Curves*). Per step and per
+  set (every sideset, with or without a condition, and every obstacle):
+  the *reaction* (minus the sum of every nodal force PolyFEM writes there:
+  the force the prescribed displacement or obstacle motion applies), the
+  *contact force* (contact + friction) and the mean displacement. Each node
+  counts once (coincident output points merged per body; P2+ edge and face
+  nodes included). *Compute Force Curves* writes `force_curves.csv` next to
+  the PVD; *At This Frame* shows the values on screen; *Show Chart* opens a
+  small Qt chart (force against displacement or time) whose marker follows
+  the playbar. Not included: adhesion and Rayleigh-damping forces (PolyFEM
+  does not write them; Check Setup notes it). Nodes on an edge between two
+  sidesets count in both.
+* **Import** restores every curve: exactly (keyframes) from the sideset
+  record, and from `params.json` alone as linear keys reproducing the table
+  at every step -- including PolyFEM's `piecewise_cubic`,
+  `piecewise_constant`, `linear_ramp` and repeating tables, evaluated as
+  PolyFEM does (before, Import dropped `interpolation` silently). Moving
+  obstacles come back from the scene record (their keyframes); without it a
+  displacement table becomes keys on Translate, and a mesh sequence its
+  first frame, with a note.
+* Tests (real solver runs): `test_time_curves.py` (keyed Dirichlet with ease
+  keys reproduced at every step to roundoff; halving dt; ramp, Neumann, two
+  added loads, normal traction and pressure each equal to the same load
+  written as an expression of t; refusals; import round trips),
+  `test_animated_obstacles.py` (a keyed translation equals the expression
+  scene to 1e-15; a keyed rotation + push puts the obstacle where the
+  expression scene does at every step; the frame rate follows dt; refusals;
+  import), `test_force_curves.py` (uniaxial bar on symmetry planes: reaction
+  = E A strain exactly, bottom equal and opposite; NeoHookean = mu (lambda -
+  1/lambda) A; the reactions balance a traction and gravity; obstacle push:
+  force on the obstacle = support reaction; dynamics include inertia; P2
+  edge nodes and Q1 hex faces; Read PVD's mappings, CSV and chart). Also
+  checked in a live Houdini 22 session: the controls each Time Curve mode
+  shows, Run in Background -> Run Status -> Open Results on the timeline
+  (playbar 1-25 for a 1 s run at 24 fps), the readout and the chart window
+  following the playbar.
 
 ### First-time use: speed, run feedback, Check Setup, reload, help (2026-10-01)
 
