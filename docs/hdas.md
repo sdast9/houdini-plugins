@@ -29,6 +29,12 @@ Tests (headless, also exercise the real PolyFEM binary):
 ```bash
 hython tests/test_polyfem_hda.py         # end-to-end: scene -> json -> sim -> pvd
 hython tests/test_sideset_conditions.py  # every sideset condition reaches PolyFEM
+hython tests/test_check_setup.py         # Check Setup, confirmed against the solver
+hython tests/test_run_feedback.py        # Run Status, Stop, Open Results, paths
+hython tests/test_subdomains_reload.py   # physical groups, reload, Duplicate
+hython tests/test_display_chain.py       # cost of a transform edit at 384k tets
+hython tests/test_readpvd_first_look.py  # first look, output defaults, HDF5
+hython tests/test_help_cards.py          # help cards parse
 hython tests/test_readpvd_hda.py         # result loading incl. Contact block
 hython tests/test_legacy_import.py       # old params.json migration
 hython tests/test_polyfem_materials.py   # fiber models, composites, per-element data
@@ -45,6 +51,10 @@ hython tests/test_readpvd_materials.py   # material fields + fiber visualization
   tri/quad, or line.
 * Same attribute contract as 2.2 (`msh_pt_id`, `Entity` with the +1 shift,
   `ElementNum`, `centroid` — hex centroids now use all 8 corners; 2.2 used 7).
+  Since 2026-10-01 it also writes each element's physical tag as in the file
+  (`msh_physical_tag`, 0 = no group) and the file's `$PhysicalNames`
+  (`msh_physical_names`, JSON), which the PolyFEM node numbers its
+  subdomains from.
 * New: optional import of **2D physical groups** as polygons with a
   `surface_entity` attribute (gmsh-authored sidesets visible in Houdini;
   automatic mapping into PolyFEM sidesets is a planned follow-up).
@@ -114,13 +124,19 @@ Targets the current build's strict-validated schema — the old fork keys
   `plane:[0,0,1],[0,0,0.5]` — evaluated on face centres with PolyFEM's own
   rules and exported as the faces they select (see *Sideset conditions*
   below).
-* **Run buttons**: *Run PolyFEM* (terminal, as before), *Run in Background*
-  (headless with `output/log.txt` + *Show Log*), *Write params.json Only*.
+* **Run buttons** (Main tab): *Check Setup*, *Write params.json Only*, *Run
+  in Terminal* (PolyFEM in a terminal window, through a quoted script), *Run
+  in Background* (headless, `output/log.txt`). *Run Status* follows either
+  run (time step, simulated time, and at the end what the exit status
+  means); *Stop*, *Open Log*, *Show Log* and *Open Results* (a Read PVD node
+  on the run) sit below it. See *First-time use* below.
 * **Compressed HDF5 output is the default.** PolyFEM writes each result frame
   as VTK-HDF while keeping the same `.pvd` collection workflow. On the
   611,914-tet uniaxial case this reduced one frame from 2.227 GB to 238 MB
   (89.3% less). Turn *Use HDF5* off only for an older downstream tool that
-  requires XML `.vtu` files.
+  requires XML `.vtu` files. Where the Read PVD node could not read HDF5 (no
+  h5py and no bundled reader for the platform) the node writes XML instead
+  and Check Setup says so.
 * Adaptive remeshing settings write the current `/space/remesh` schema and
   round-trip when importing a previous `params.json`.
 * Display chain rebuilt for scale: one Entity-colored boundary surface per
@@ -143,10 +159,11 @@ Targets the current build's strict-validated schema — the old fork keys
 * **VTK XML and VTK-HDF input**: the native numpy XML parser handles ascii,
   inline base64 and appended arrays, with or without zlib compression. It also
   reads PolyFEM's compressed `.hdf` frames, including nested material-field
-  names and mixed cell types. The asset embeds the pinned h5py 3.16 wheel for
-  Houdini 22's Python 3.13 on Apple-silicon macOS and extracts it to a versioned
-  Houdini user cache on first HDF load; a normal h5py installation is preferred
-  on other platforms. Multi-GB inline-binary VTUs remain supported: XML is fed
+  names and mixed cell types. The asset embeds the official h5py 3.16 wheels
+  for Houdini 22's Python 3.13 on macOS (Apple silicon and Intel), Linux
+  x86_64 (glibc 2.28+) and Windows x64, and extracts the one for the running
+  platform to a versioned Houdini user cache on first HDF load; an h5py
+  installed in Houdini's Python is preferred when present. Multi-GB inline-binary VTUs remain supported: XML is fed
   to expat in chunks and inline payloads are decoded on demand, so a 2 GB file
   does not build a 2 GB ElementTree.
 * **Topology caching**: topology is parsed once (configurable frame) and
@@ -245,8 +262,8 @@ Targets the current build's strict-validated schema — the old fork keys
   Options that were not exported are not shown; stale selections are replaced
   safely. Controls such as deformation and glyphs are disabled when their
   required data is unavailable. Operations that must scan the whole sequence
-  (Auto Range: All Frames, Compute Field Over Time, the all-frames scopes) and
-  Remeshing Mode are labelled to set expectations, as their cost is inherent.
+  (Auto Range: All Frames, the all-frames scopes) and Remeshing Mode are
+  labelled to set expectations, as their cost is inherent.
 * Optional **multi-block display** merges supplementary Volume, Surface,
   Contact, and Points blocks with the primary result. Each supplementary block
   has independent visibility, field, reduction, range, ramp, and geometry
@@ -313,18 +330,148 @@ Targets the current build's strict-validated schema — the old fork keys
 | MSH parse only, 1M tets | — | 0.45 s |
 | readPVD frame change, 1M tets | ~30–60 s (meshio + python loops) | **0.25 s** |
 | sideset export | per-prim Python loops | numpy bulk |
+| transform edit, 1.3M tets (display chain) | 7.2 s | **0.5 s** |
+| show cylindrical fibers / edit with them shown, 384k tets | 12 s | **0.25 s** |
+| export with per-element fibers, 384k tets | 11.1 s | **0.6 s** |
 
 ## GUI checklist (needs human eyes)
 
 1. Drop a `PolyFEM (Dev) 2.0` node; set binary + working dir; import a .msh —
    Entity-colored boundary surface appears; transform handle state works.
 2. Add a sideset; pick faces with the group selector; also try a native
-   `axis:+z:...` pattern. Add a Dirichlet BC. Run both launch buttons.
+   `axis:+z:...` pattern. Add a Dirichlet BC. Press Check Setup, then run
+   both launch buttons; watch Run Status, try Stop, Open Log and Open
+   Results; toggle Show Expert Controls and open the help card (?).
 3. Drop a `Read PVD 1.0` node on the output; scrub the playbar; toggle
    deformation, the four glyph tensor choices, Contact block, scene legend,
    viewport overlay legend, and scene gnomon; try both Auto Range buttons;
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
+
+### First-time use: speed, run feedback, Check Setup, reload, help (2026-10-01)
+
+The P1 items of the 2026-10-01 review: what stopped or misled a first-time
+user, or cost seconds per edit. Each was reproduced first (scripts in the
+review's `hda-review-work/scripts/`).
+
+* **Transform edits are fast again (P1-1).** The display chain recomputed
+  every element's centroid in a Python loop on each cook, and resolved fiber
+  and dispersion sources even when nothing showed them: a translate or rotate
+  edit cost 7.2 s at 1.3M tets, 12 s with a cylindrical fiber shown at 384k
+  tets, and the export 11 s. Centroids now come from one compiled VEX pass
+  (bitwise the old values), the sources are resolved only while a fiber or
+  dispersion display is on, and the mixed tet/hex check counts primitive
+  types. Measured: edit 0.5 s (1.3M tets; the rest is the surface
+  extraction), 0.25 s with fibers shown, export 0.6 s, import 8.6 s -> 1.9 s.
+  The exported files are byte-identical to before. The spurious NumPy
+  "divide by zero in matmul" warnings of the cylindrical frame (P2-12) are
+  gone with them.
+* **Read PVD's first look (P1-2).** A loaded result kept the 0..1 range of a
+  new node (one flat color for a 4 mm displacement) and opened on
+  displacement, because the PolyFEM node's default Minimal Fields output has
+  no exported von Mises. Now it opens on von Mises (exported, or
+  `von_mises_derived`), ranges the colors over the frame on screen and the
+  last frame (frame 0 is usually all zero), and frames the viewport; a new
+  Color Field or Field Value To Display re-ranges the same way. Lock Displayed
+  Range keeps a range. The range computation derives only the field it needs.
+* **Run feedback (P1-3).** *Run Status* (Main tab) follows a run started by
+  either button, about once a second: "Running: 12 of 40 time steps done
+  (t = 0.3), 2 min 05 s", then "Completed in ...", or the meaning of the exit
+  status -- 1 a named failure, not a crash (with PolyFEM's `PolyFEM
+  stopped:` reason), 3 a resource limit (a safety stop; the written steps are
+  intact), a signal a crash. It reads the solver process, its log and
+  PolyFEM's run manifest; a reopened scene picks a run up again (OnLoaded).
+  *Stop* ends the run (after asking), *Open Log* opens the log in the text
+  editor, *Open Results* creates or reuses a Read PVD node on
+  `output/<name>.pvd`, sets the playbar and frames it. A second run into a
+  folder whose run is still going is refused, whichever node or session
+  started it.
+* **Check Setup (P1-4)**, a button on the Main tab that Write and Run also
+  run first, lists every problem at once. Errors (PolyFEM could not run the
+  scene): a 2D mesh, a mirrored (negative-scale) transform ("element 0 is
+  flipped"), the Hooke/Saint Venant placeholder tensor (a JSON type error),
+  impossible material values, hexahedra of order 4 or next to a lower-order
+  element, a missing binary or mesh, conflicting sideset conditions, empty
+  selections, inconsistent time settings. Warnings (legal, usually wrong): a
+  body no Dirichlet condition holds in a quasistatic run ("Reached iteration
+  limit"), a contact distance above 1% of the model size (1e-3 x diagonal is
+  suggested), a solver other than Newton with contact. Notes: a sideset with
+  faces but no condition, dhat above the shortest boundary edge, HDF5 output
+  that falls back to XML, expert settings changed while hidden. Errors
+  refuse Write and Run; warnings are confirmed once before a run (Run Anyway)
+  and only reported by Write. Every error case is confirmed in the test by
+  running the same setup through the real solver.
+* **Paths (P1-5, CI-09).** *Run in Terminal* writes a script with every
+  path quoted for its shell (`output/run_polyfem.command`, `.sh` on Linux,
+  `.bat` on Windows) and opens it in a terminal; a space in the binary path
+  or an apostrophe in the folder broke the AppleScript command before. Linux
+  tries x-terminal-emulator, gnome-terminal, konsole, xfce4-terminal, then
+  xterm. A Working Directory typed as `$HIP/sim` stays that way, and staged
+  meshes and material files are stored as `$HIP/sim/input/...`, so a moved
+  or shared project keeps its inputs. (Only the macOS script is run by the
+  tests; the Windows and Linux scripts are checked for their quoting.)
+* **Reload and Duplicate keep the setup (P1-6).** Picking a geometry's mesh
+  again reset subdomain 2 onwards and every sideset. It now keeps every
+  subdomain's settings, matched by physical group: the same file keeps
+  everything, including element reassignments made with Apply Subdomain
+  Change; a changed file keeps the groups it still has, moves picked faces
+  to the same faces of the new file (by mesh node tags), and lists what it
+  could not keep. *Duplicate Geometry* copies every parameter of the
+  geometry (materials and fiber families, sidesets and their conditions,
+  initial conditions, transform, display) and its element reassignments; it
+  copied the material type and a few values before.
+* **Body ids and contact forces on by default (P1-7).** *Body IDs* is on (one
+  number per node), so Read PVD's Visible Bodies works; *Contact Forces* is on
+  and written whenever contact is enabled. Scenes saved with the old
+  defaults (both off) load with them on, since Houdini saves only values that
+  differ from the default; this changes only what is written to output/.
+  Read PVD's smoothing averages within one body where bodies touch.
+* **Subdomains follow Gmsh physical groups (P1-8).** Subdomain numbers were
+  the physical tags: tags {1, 100} made 100 subdomains and exported 98 empty
+  materials, a tag of 1000 or more collided with the next geometry's ids, and
+  one untagged element renumbered every subdomain. Subdomains are now the
+  sorted physical groups, elements without a group last (tags 1 and 2 stay
+  subdomains 1 and 2), and each subdomain's header shows its tag, name and
+  element count. A scene saved with the old numbering is renumbered when its
+  mesh is picked again (settings move with their group), and imported runs
+  numbered the old way are compacted the same way.
+* **Material fields named with `/` (P1-9)**, e.g. `HGODispersion/kappa`, work
+  with Auto Range: All Frames and the reference comparison (raw names were
+  compared with sanitized ones). Dispersion keeps its fixed 0..1/3 color scale
+  on every range button.
+* **HDF5 everywhere (P1-10).** Read PVD embeds the official h5py wheels for
+  macOS (Apple silicon, Intel), Linux x86_64 and Windows x64 (checked
+  against PyPI's SHA-256); where it still could not read HDF5, the PolyFEM
+  node writes XML `.vtu` instead of HDF5 and Check Setup says so (*Use HDF5*
+  itself is not changed).
+* **Interface pass (P1-11).** Tabs are Main, Geometry, Time, Contact, Solver,
+  Output, Global, Remeshing. Plain labels replace raw names and placeholders
+  (Mesh File, Move to Subdomain, Subdomain/Obstacle Color, Young's Modulus E,
+  Contact Distance (dhat), Friction Coefficient (mu), Body Load (rhs = minus
+  acceleration), Material Axes (3x3), ...), buttons lost their question marks,
+  the Material menus read "Neo-Hookean (recommended)" etc. (tokens and order
+  unchanged, so saved scenes load the same), each material has a units line
+  (SI, and mm-g-s), Import moved to the Main tab, and Refresh Per-Element
+  Data shows only for fiber and composite materials. *Show Expert Controls*
+  (Main tab, off) hides the Augmented Lagrangian, Rayleigh damping,
+  Semi-Implicit options, AMGCL and Hypre settings, the Wolfe line search,
+  the finite-difference gradient check and Output > Advanced. It only hides:
+  values are kept and exported either way, and Check Setup lists expert
+  settings that differ from their defaults while hidden. The test that
+  forbids hidden controls in the Solver folder still holds -- nothing is
+  hidden by flag -- and now also checks that every Expert condition is the
+  separate group `{ expert_mode == 0 }` and that the toggle changes no
+  exported value.
+* **Help cards (P1-12)** for all three assets (press ? on the node): a
+  quick start (mesh, material, sideset, condition, run, view), the gravity
+  sign (`rhs` is minus the acceleration: gravity along -y is `[0, 9.81, 0]`),
+  units, a troubleshooting table by exit status, and links to these docs.
+* Tests: `test_display_chain.py`, `test_readpvd_first_look.py`,
+  `test_run_feedback.py`, `test_check_setup.py`,
+  `test_subdomains_reload.py` and `test_help_cards.py` (new; real solver
+  runs where physics is involved); `test_polyfem_hda.py` checks the
+  interface pass; `test_polyfem_materials.py` turns a display on before it
+  inspects the stamped per-element data.
 
 ### Sideset conditions: every condition acts (2026-10-01)
 
