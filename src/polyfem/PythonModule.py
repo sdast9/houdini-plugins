@@ -6138,7 +6138,8 @@ def check_setup(parent, purpose="check"):
                 notes.append(
                     f"Geometry {geo} subdomain {record['subdomain']} sideset "
                     f"{record['sideset']} has a selection but no boundary "
-                    "condition; it does nothing.")
+                    "condition: PolyFEM applies nothing there (Read PVD's "
+                    "Force Curves can still measure the force on it).")
         fixed = [False, False, False]
         for entries in plan["conditions"].values():
             for key, entry in entries:
