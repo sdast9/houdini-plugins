@@ -466,6 +466,13 @@ review's `hda-review-work/scripts/`).
   quick start (mesh, material, sideset, condition, run, view), the gravity
   sign (`rhs` is minus the acceleration: gravity along -y is `[0, 9.81, 0]`),
   units, a troubleshooting table by exit status, and links to these docs.
+* **Read PVD's internal parameters are hidden.** `cache_epoch`,
+  `fiber_attribs` and eight `has_...` flags showed in the parameter list, and
+  Cache Status and Memory could be typed over: their conditions read
+  `{ 1 == 1 }`, which names no parameter, so Houdini ignored them. Internal
+  parameters now carry the hidden flag, the status fields are read-only, and
+  `test_readpvd_hda.py` / `test_polyfem_hda.py` check that every hide or
+  disable condition on Read PVD and PolyFEM names a real parameter.
 * Tests: `test_display_chain.py`, `test_readpvd_first_look.py`,
   `test_run_feedback.py`, `test_check_setup.py`,
   `test_subdomains_reload.py` and `test_help_cards.py` (new; real solver

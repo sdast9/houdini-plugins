@@ -11,6 +11,12 @@ import hda_build  # noqa: E402
 
 TYPE_NAME = "readPVD::1.0"
 LABEL = "Read PVD 1.0 (PolyFEM results)"
+# A conditional must compare a parameter: "{ 1 == 1 }" names none, so Houdini
+# ignores it -- until 2026-10-01 the internal parameters below were visible
+# and the status fields editable. Internal parameters now carry the
+# template's hidden flag; read-only fields compare the file path with a value
+# no path takes.
+READ_ONLY = "{ PVD_file != __readpvd_read_only__ }"
 # Official h5py wheels from PyPI (SHA-256 in vendor/README.md), embedded as
 # base64 sections; the section names match EMBEDDED_H5PY_SECTIONS in the
 # PythonModule.
@@ -784,7 +790,7 @@ def _parms():
         help="Read-only: how many frames the cache holds and the memory "
              "they use, and how many fit within Cache Memory Limit at the "
              "measured size of one frame. Clear Cache resets it to zero.")
-    cache_status.setConditional(hou.parmCondType.DisableWhen, "{ 1 == 1 }")
+    cache_status.setConditional(hou.parmCondType.DisableWhen, READ_ONLY)
     main.addParmTemplate(cache_status)
     memory_status = hou.StringParmTemplate(
         "memory_status", "Memory", 1,
@@ -794,13 +800,13 @@ def _parms():
         help="Read-only: memory used by Houdini, and the computer's used, "
              "total and available memory (available = what can still be "
              "handed out without swapping).")
-    memory_status.setConditional(hou.parmCondType.DisableWhen, "{ 1 == 1 }")
+    memory_status.setConditional(hou.parmCondType.DisableWhen, READ_ONLY)
     main.addParmTemplate(memory_status)
     cache_epoch = hou.IntParmTemplate(
         "cache_epoch", "cache_epoch", 1, default_value=(0,),
         help="Internal, hidden: counts Clear Cache presses so Cache Status "
              "refreshes immediately.")
-    cache_epoch.setConditional(hou.parmCondType.HideWhen, "{ 1 == 1 }")
+    cache_epoch.hide(True)
     main.addParmTemplate(cache_epoch)
     main.addParmTemplate(hou.ButtonParmTemplate(
         "clear_cache", "Clear Cache",
@@ -1168,10 +1174,13 @@ def _parms():
         script_callback="hou.phm().autofiber(kwargs)",
         script_callback_language=hou.scriptLanguage.Python,
         help="Size the fiber lines to the mesh (about half an average edge)."))
-    fiber_folder.addParmTemplate(hou.StringParmTemplate(
+    fiber_attribs = hou.StringParmTemplate(
         "fiber_attribs", "fiber_attribs", 1,
         default_value=("",),
-        help="Internal: the fiber vector attributes assembled on load."))
+        help="Internal, hidden: the fiber vector attributes assembled on "
+             "load.")
+    fiber_attribs.hide(True)
+    fiber_folder.addParmTemplate(fiber_attribs)
     ana.addParmTemplate(fiber_folder)
     ptg.append(ana)
 
@@ -1473,7 +1482,7 @@ def _parms():
             help="Internal, hidden: set on load to record whether this kind "
                  "of data exists, so the controls that need it can be "
                  "enabled or disabled.")
-        flag.setConditional(hou.parmCondType.HideWhen, "{ 1 == 1 }")
+        flag.hide(True)
         ptg.append(flag)
     return ptg
 

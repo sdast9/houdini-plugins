@@ -117,6 +117,54 @@ def check_interface(node, mod):
           "no exported value")
 
 
+def conditional_names(text):
+    """The parameter names a Houdini conditional compares, or None when a
+    {...} group is not a series of "name op value" terms."""
+    import re
+    import shlex
+    names = []
+    for group in re.findall(r"\{([^}]*)\}", text):
+        tokens = shlex.split(group)
+        if len(tokens) % 3 or not all(
+                op in ("==", "!=", "<", ">", "<=", ">=", "=~")
+                for op in tokens[1::3]):
+            return None
+        names += tokens[0::3]
+    return names
+
+
+def check_conditionals(group, skip=()):
+    """Every hide/disable condition compares a parameter the node has:
+    Houdini silently ignores a condition on any other name, such as the
+    "{ 1 == 1 }" Read PVD used until 2026-10-01 (its internal parameters
+    showed and its status fields could be typed over). Folders in `skip`
+    (Houdini's own object folders) are not ours to check."""
+    items = []
+
+    def walk(templates, top):
+        for template in templates:
+            items.append((top, template))
+            if isinstance(template, hou.FolderParmTemplate):
+                walk(template.parmTemplates(), top or template.label())
+
+    walk(group.entries(), None)
+    known = {template.name() for _, template in items}
+    count = 0
+    for top, template in items:
+        if top in skip or template.label() in skip:
+            continue
+        found = dict(template.conditionals())
+        if isinstance(template, hou.FolderParmTemplate):
+            found.update(template.tabConditionals())
+        for text in found.values():
+            count += 1
+            names = conditional_names(text)
+            assert names is not None, (template.name(), text)
+            unknown = [name for name in names if name not in known]
+            assert not unknown, (template.name(), text, unknown)
+    return count
+
+
 def main():
     assert os.path.isfile(POLYFEM_BIN), f"missing {POLYFEM_BIN}"
     hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"))
@@ -455,6 +503,9 @@ def main():
     walk(solver_folder.parmTemplates(), "Solver")
     print("PASS: no hidden control or tab in the Solver folder")
     check_interface(node, mod)
+    count = check_conditionals(node.parmTemplateGroup(),
+                               skip=("Transform", "Render", "Misc"))
+    print(f"PASS: all {count} hide/disable conditions name a real parameter")
 
     # --- Hypre + the new convergence controls: export, validate, run ------
     node.setParms({"tend": 0.25})

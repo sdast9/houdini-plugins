@@ -202,6 +202,54 @@ def assert_close(actual, expected, label, rtol=2e-4, atol=2e-5):
         f"{np.nanmax(np.abs(actual - expected)):.6g}")
 
 
+def conditional_names(text):
+    """The parameter names a Houdini conditional compares, or None when a
+    {...} group is not a series of "name op value" terms."""
+    import re
+    import shlex
+    names = []
+    for group in re.findall(r"\{([^}]*)\}", text):
+        tokens = shlex.split(group)
+        if len(tokens) % 3 or not all(
+                op in ("==", "!=", "<", ">", "<=", ">=", "=~")
+                for op in tokens[1::3]):
+            return None
+        names += tokens[0::3]
+    return names
+
+
+def check_conditionals(group, skip=()):
+    """Every hide/disable condition compares a parameter the node has:
+    Houdini silently ignores a condition on any other name, such as the
+    "{ 1 == 1 }" Read PVD used until 2026-10-01 (its internal parameters
+    showed and its status fields could be typed over). Folders in `skip`
+    (Houdini's own object folders) are not ours to check."""
+    items = []
+
+    def walk(templates, top):
+        for template in templates:
+            items.append((top, template))
+            if isinstance(template, hou.FolderParmTemplate):
+                walk(template.parmTemplates(), top or template.label())
+
+    walk(group.entries(), None)
+    known = {template.name() for _, template in items}
+    count = 0
+    for top, template in items:
+        if top in skip or template.label() in skip:
+            continue
+        found = dict(template.conditionals())
+        if isinstance(template, hou.FolderParmTemplate):
+            found.update(template.tabConditionals())
+        for text in found.values():
+            count += 1
+            names = conditional_names(text)
+            assert names is not None, (template.name(), text)
+            unknown = [name for name in names if name not in known]
+            assert not unknown, (template.name(), text, unknown)
+    return count
+
+
 def main():
     hou.hda.installFile(os.path.join(BASE, "object_readPVD.1.0.hdanc"))
     node = hou.node("/obj").createNode("readPVD::1.0", "viewer")
@@ -232,6 +280,22 @@ def main():
         and folders.get("Misc"), "object folders should be hidden"
     assert not folders["Read PVD 1.0 (PolyFEM results)"]
     assert node.evalParm("tx") == 0  # transform parms still exist and work
+
+    # Internal parameters stay out of sight and the status fields cannot be
+    # typed over (both relied on "{ 1 == 1 }" until 2026-10-01).
+    node.updateParmStates()
+    internal = ["cache_epoch", "fiber_attribs", "has_solution_data",
+                "has_glyph_data", "has_multibody", "has_fiber_data"] + [
+        f"has_block_{slug}"
+        for slug in ("volume", "surface", "contact", "points")]
+    shown = [name for name in internal if node.parm(name).isVisible()]
+    assert not shown, f"internal parameters visible: {shown}"
+    for name in ("cache_status", "memory_status"):
+        assert node.parm(name).isDisabled(), f"{name} is editable"
+    count = check_conditionals(node.parmTemplateGroup(),
+                               skip=("Transform", "Render", "Misc"))
+    print(f"PASS: {len(internal)} internal parameters hidden, status fields "
+          f"read-only; all {count} conditions name a real parameter")
 
     pvd = os.path.join(SMOKE, "quasistatic-semi.pvd")
     node.setParms({"PVD_file": pvd})
