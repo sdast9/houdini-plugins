@@ -137,9 +137,13 @@ def check_first_look(root):
     viewer.setParms({"PVD_file": pvd})
     module.start({"node": viewer})
     last = len(module.read_pvd(pvd)) - 1
+    # the frame showing the last step: the PolyFEM node's run plays on its
+    # timeline (Time Mapping: Automatic), not one frame per step
+    last_frame = module.entry_frame(viewer, last)
+    assert module.entry_index(viewer, last_frame) == last
     assert viewer.evalParm("color_attrib") == "von_mises_derived", \
         viewer.evalParm("color_attrib")
-    hou.setFrame(last)
+    hou.setFrame(last_frame)
     final = for_color(viewer)
     hou.setFrame(0)
     initial = for_color(viewer)
@@ -153,7 +157,7 @@ def check_first_look(root):
     # A new field (or value to display) gets its own range ...
     viewer.parm("color_attrib").set("solution_mag")
     module.color_selection_changed({"node": viewer})
-    hou.setFrame(last)
+    hou.setFrame(last_frame)
     final = for_color(viewer)
     assert np.isclose(viewer.evalParm("color_max"), final.max(), rtol=1e-5)
     assert viewer.evalParm("color_min") == 0.0
@@ -211,7 +215,7 @@ def check_slash_fields(root):
     mesh = phm.load_frame(pvd, 1)["Volume"]
     assert phm._mesh_point_field(mesh, k1) is not None
     viewer.setParms({"reference_enable": 1, "reference_frame": 0})
-    hou.setFrame(1)
+    hou.setFrame(phm.entry_frame(viewer, 1))
     viewer.node("OUT_result").cook(force=True)
     status = viewer.evalParm("reference_status")
     assert status.startswith(f"Comparing {k1} with frame 0"), status

@@ -26,7 +26,7 @@ ASSETS = (
       "Nodal Forces")),
     ("object_readPVD.1.0.hdanc", hou.objNodeTypeCategory, "readPVD::1.0",
      ("== Quick start ==", "Auto Range: All Frames", "h5py",
-      "docs/hdas.md")),
+      "docs/hdas.md", "Time Mapping", "Force Curves", "force_curves.csv")),
 )
 
 

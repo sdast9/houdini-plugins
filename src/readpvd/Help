@@ -10,9 +10,10 @@
 == Overview ==
 
 Point __PVD File__ at the `.pvd` file PolyFEM wrote in its output folder
-(`output/sim.pvd` by default). Each saved time step becomes a Houdini frame.
-The PolyFEM node's __Open Results__ button creates and sets up this node for
-you.
+(`output/sim.pvd` by default). A run written by the PolyFEM node plays on
+that node's timeline (Houdini time is simulation time, see Timeline below);
+any other run shows one saved time step per frame. The PolyFEM node's
+__Open Results__ button creates and sets up this node for you.
 
 On loading a file the node picks the field to color by (von Mises stress,
 exported or derived from the deformation gradient and stress; otherwise the
@@ -37,6 +38,41 @@ Every parameter has a tooltip: hover over its label for details.
 # __Visible Bodies__ shows or hides bodies, __Clip / Slice__ cuts into the
   model, __Probe__ reads values at a clicked point, __Legend__ adds a color
   bar.
+
+== Timeline ==
+
+__Time Mapping__ says which time step a frame shows:
+
+* __Automatic__ (the default): the PolyFEM node's own timeline when the run
+  was written by it (its __Start Frame__ and __Time Scale__, recorded in
+  `input/hda_scene.json`), so a keyed load or a moving obstacle and its
+  result are on the same frame; one frame per step otherwise.
+* __Simulation Time__: your own __Start Frame__ and __Time Scale__.
+* __One Frame per Output Step__: frame k shows step k.
+
+On a timeline a frame shows the last step at or before its simulation time.
+__Simulation Time__ (the read-only line under it) shows the step on screen
+and its time.
+
+== Force curves ==
+
+__Analysis > Force Curves__ measures forces on the sidesets and obstacles
+of a run written by the PolyFEM node with __Nodal Forces__ on (new nodes
+start with it on). For each set, per time step:
+
+* __Reaction__: the force a fixed or moved sideset (or an obstacle's
+  prescribed motion) applies to the body -- minus the sum of every nodal
+  force PolyFEM writes there. Zero where nothing is prescribed.
+* __Contact Force__: contact plus friction forces on those nodes; on an
+  obstacle, the force the body applies to it.
+* The mean displacement of the set.
+
+__Compute Force Curves__ reads every step and writes `force_curves.csv`
+next to the PVD file; __At This Frame__ shows the values on screen; __Show
+Chart__ draws one curve (force against displacement or time) with a marker
+that follows the playbar. Nodes on an edge between two sidesets count in
+both. Adhesion and Rayleigh-damping forces are not written by PolyFEM and
+are not included.
 
 == HDF5 results ==
 
