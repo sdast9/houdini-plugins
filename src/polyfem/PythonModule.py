@@ -2288,8 +2288,8 @@ MATERIAL_TOKENS = (
     "ActiveFiber", "MaterialSum",
 )
 FIBER_MODELS = ("HGOFiber", "HGODispersion", "ActiveFiber")
-# Readable names of the PolyFEM types, for messages (the tokens above are
-# what params.json receives).
+# What the Material menus show for each PolyFEM type (the DialogScript menus
+# carry the same labels; the tokens above are what params.json receives).
 MATERIAL_LABELS = {
     "LinearElasticity": "Linear Elastic (small strains only)",
     "HookeLinearElasticity": "Anisotropic Linear Elastic (Hooke)",
@@ -5154,8 +5154,70 @@ def check_setup(parent, purpose="check"):
     return {"errors": errors, "warnings": warnings, "notes": notes}
 
 
+# What Show Expert Controls hides: (folder label path or parm names, label,
+# whether the export reads it in this setup). Hiding never changes a value.
+_EXPERT_FOLDERS = (
+    (("Contact", "Barrier (ICP)", "Semi-Implicit Options"),
+     lambda p: p.evalParm("enable")
+     and _menu_token(p, "barrier_mode") == "semi_implicit"),
+    (("Solver", "Augmented Lagrangian"), lambda p: True),
+    (("Solver", "Rayleigh Damping"), lambda p: True),
+    (("Solver", "Linear", "AMGCL Precond Settings"),
+     lambda p: _menu_token(p, "solver") == "AMGCL"),
+    (("Output", "Advanced"), lambda p: True),
+)
+_EXPERT_PARMS = (
+    (("solver_type",), "Solver > Linear > AMGCL",
+     lambda p: _menu_token(p, "solver") == "AMGCL"),
+    (("max_iter_hypre", "pre_max_iter_hypre", "theta_hypre",
+      "nodal_coarsening_hypre", "tolerance_hypre_AMGCL"),
+     "Solver > Linear > Hypre",
+     lambda p: _menu_token(p, "solver") in ("Hypre", "AMGCL")),
+    (("wolfe_c2", "wolfe_growth_factor", "wolfe_growth_limit",
+      "wolfe_max_evaluations", "wolfe_max_objective_restarts",
+      "wolfe_approximate_epsilon"), "Solver > Line Search > Wolfe",
+     lambda p: _menu_token(p, "method") == "Wolfe"),
+    (("apply_gradient_fd", "gradient_fd_eps"), "Solver > Advanced > Debugging",
+     lambda p: True),
+)
+
+
 def _expert_notes(parent):
-    return []
+    """Expert settings that differ from their defaults while Show Expert
+    Controls hides them (they still apply)."""
+    if parent.parm("expert_mode") is None or parent.evalParm("expert_mode"):
+        return []
+    group = parent.parmTemplateGroup()
+    changed = []
+
+    def visit(templates, where):
+        for template in templates:
+            if template.type() == hou.parmTemplateType.Folder:
+                visit(template.parmTemplates(),
+                      where + (template.label(),))
+                continue
+            tuple_parm = parent.parmTuple(template.name())
+            if tuple_parm is not None and not tuple_parm.isAtDefault():
+                changed.append(" > ".join(where + (template.label(),)))
+
+    for path, applies in _EXPERT_FOLDERS:
+        folder = group.findFolder(path)
+        if folder is not None and applies(parent):
+            visit(folder.parmTemplates(), tuple(path))
+    for names, where, applies in _EXPERT_PARMS:
+        if not applies(parent):
+            continue
+        for name in names:
+            tuple_parm = parent.parmTuple(name)
+            if tuple_parm is not None and not tuple_parm.isAtDefault():
+                changed.append(f"{where} > {tuple_parm.parmTemplate().label()}")
+    if not changed:
+        return []
+    shown = "; ".join(changed[:12]) + ("; ..." if len(changed) > 12 else "")
+    return [f"Show Expert Controls is off, but {len(changed)} expert "
+            f"setting{'s' if len(changed) != 1 else ''} differ from the "
+            f"default and still apply: {shown} (Main tab: Show Expert "
+            "Controls shows them)."]
 
 
 def setup_report_text(report, when=None):

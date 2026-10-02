@@ -1,0 +1,169 @@
+= PolyFEM (Dev) 2.0 =
+
+#type: node
+#context: obj
+#internal: stevenabramowitch::dev::PolyFEM::2.0
+#tags: fem, simulation, soft body, contact, polyfem
+
+"""Sets up a PolyFEM simulation of deformable solids -- meshes, materials, boundary conditions, contact and solver -- runs it, and opens the results."""
+
+== Overview ==
+
+This node writes a PolyFEM input (`params.json` and the mesh, selection and
+material files it refers to) into a __Working Directory__, runs the PolyFEM
+solver on it, and follows the run. The results are read back with the
+__Read PVD 1.0__ node (__Open Results__ creates one).
+
+Every parameter has a tooltip: hover over its label for what it does, its
+units and typical values.
+
+== Quick start ==
+
+# __Main tab__: set __PolyFEM Binary__ to your `PolyFEM_bin` and
+  __Working Directory__ to a folder for this simulation. Type it as
+  `$HIP/sim/` to keep it next to the scene: moving the scene folder then
+  keeps every input.
+# __Geometry tab__: pick a Gmsh `.msh` volume mesh (tetrahedra or
+  hexahedra) in __Mesh File__. Each physical group of the file becomes a
+  __subdomain__, numbered by sorted tag (elements without a group come
+  last); each subdomain's header shows the group's tag, name and element
+  count.
+# __Material__: choose a model per subdomain -- __Neo-Hookean
+  (recommended)__ suits rubber-like and soft biological materials -- and
+  set Young's modulus, Poisson's ratio and density.
+# __Sidesets__: add a sideset to a subdomain, pick its faces in the
+  viewport (or type `*` for every face, or a selection such as
+  `axis:-z:0.01`), and give it a boundary condition. A __Dirichlet__
+  `[0, 0, 0]` fixes the faces; `[0, 0, "-0.1*t"]` pushes them down by 0.1
+  over one unit of time. A sideset can carry several conditions, and faces
+  in several sidesets receive all of their conditions.
+# __Time tab__: __Quasistatic__ for slow loading (no inertia), otherwise a
+  dynamic run; set the end time and the time step.
+# __Main tab__: press __Check Setup__. It lists, at once, everything PolyFEM
+  could not run (errors) and setups that are legal but usually wrong
+  (warnings). Then press __Run in Background__ (or __Run in Terminal__ to
+  watch the solver's output). __Run Status__ shows the time step and, at
+  the end, what the exit status means; __Stop__ ends a run.
+# Press __Open Results__: a Read PVD node loads the run, sets the playbar to
+  its time steps and frames the view.
+
+TIP:
+    Picking a geometry's mesh file again reloads it and keeps every
+    subdomain's settings; __Duplicate Geometry__ adds a copy with every
+    setting.
+
+== Gravity and other body loads ==
+
+__Body Load (rhs = minus acceleration)__ on the Global tab is PolyFEM's
+right-hand side, which is the __negative__ of the body acceleration. Gravity
+pulling along -y is therefore
+`[0, 9.81, 0]` (in m/s^2), __not__ `[0, -9.81, 0]`.
+
+== Units ==
+
+PolyFEM uses the units of your mesh; keep every value in one consistent
+system:
+
+table>>
+    tr>>
+        th>> System
+        th>> Moduli, pressure
+        th>> Density
+        th>> Gravity
+    tr>>
+        td>> SI: m, kg, s
+        td>> Pa
+        td>> kg/m^3 (water 1000)
+        td>> 9.81
+    tr>>
+        td>> Millimetres: mm, g, s
+        td>> Pa
+        td>> g/mm^3 (water 0.001)
+        td>> 9810
+
+The contact distance __dhat__ is a length in mesh units: about 1/1000 of the
+model's size is a good start (Check Setup warns when it is much larger).
+
+== When a run stops: exit statuses ==
+
+table>>
+    tr>>
+        th>> Run Status
+        th>> Meaning
+        th>> What to do
+    tr>>
+        td>> Completed (exit status 0)
+        td>> The run finished.
+        td>> __Open Results__.
+    tr>>
+        td>> Failed: exit status 1
+        td>> A named failure, not a crash: PolyFEM stopped and said why (the
+             `PolyFEM stopped:` line, shown in Run Status).
+        td>> _Reached iteration limit_: often a body nothing holds in a
+             quasistatic run (fix part of it), or too large a time step or
+             load increment. _element N is flipped_: inverted elements (a
+             mirrored transform, a bad mesh, too large a step). A JSON error:
+             a value the input cannot hold -- run Check Setup.
+    tr>>
+        td>> Stopped: exit status 3
+        td>> A resource limit: a safety stop before memory ran out, usually
+             in contact detection. The time steps already written are
+             intact.
+        td>> Reduce the time step or load increment, use the BVH broad phase
+             (Contact > CCD Parameters), or raise the resource limits.
+    tr>>
+        td>> Crashed: killed by a signal
+        td>> The solver crashed or was killed from outside.
+        td>> Keep the log (__Open Log__) and the working directory, and
+             report it.
+    tr>>
+        td>> Stopped by you
+        td>> __Stop__ ended the run.
+        td>> The steps already written can be opened.
+
+== More ==
+
+* [Feature guide and history (docs/hdas.md)|https://github.com/sdast9/houdini-plugins/blob/main/docs/hdas.md]
+* [Fiber models and per-element materials (docs/per-element-materials.md)|https://github.com/sdast9/houdini-plugins/blob/main/docs/per-element-materials.md]
+* [Source and issues: sdast9/houdini-plugins|https://github.com/sdast9/houdini-plugins]
+
+@parameters
+
+== Main ==
+
+Run controls, Check Setup and the reports of the last export and run.
+__Show Expert Controls__ shows the advanced solver settings (they keep
+their values, and are exported, while hidden).
+
+== Geometry ==
+
+Meshes (simulated bodies and rigid obstacles), their transforms,
+subdomains, materials, sidesets with boundary conditions, and initial
+conditions.
+
+== Time ==
+
+Quasistatic or dynamic, the time range and step, and the time integrator.
+
+== Contact ==
+
+Contact on/off, the contact distance __dhat__, friction, adhesion and
+collision detection.
+
+== Solver ==
+
+Linear and nonlinear solvers, line search and stopping criteria. Newton is
+the method that converges on contact scenes.
+
+== Output ==
+
+What PolyFEM writes: the log, result fields (VTK-HDF by default; body ids
+and contact forces are on by default), and optional files.
+
+== Global ==
+
+The body load (gravity: see above) and optional units.
+
+== Remeshing ==
+
+Adaptive remeshing during the run (rarely needed).

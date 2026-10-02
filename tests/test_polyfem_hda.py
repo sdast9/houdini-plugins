@@ -34,6 +34,89 @@ def make_cube_msh(path):
     gmsh.finalize()
 
 
+def check_interface(node, mod):
+    """The 2026-10-01 interface pass: tab order, plain labels, menus whose
+    saved values cannot move, and Show Expert Controls hiding by condition
+    only (the Solver-folder check above still rules out hidden-by-flag)."""
+    import json
+    import re
+    group = node.parmTemplateGroup()
+    own = [t for t in group.entries()
+           if isinstance(t, hou.FolderParmTemplate) and not t.isHidden()]
+    assert [t.label() for t in own] == [
+        "Main", "Geometry", "Time", "Contact", "Solver", "Output", "Global",
+        "Remeshing"], [t.label() for t in own]
+
+    labels, expert = [], []
+
+    def hide_conditions(template):
+        found = list(template.conditionals().items())
+        if isinstance(template, hou.FolderParmTemplate):
+            found += list(template.tabConditionals().items())
+        return [text for kind, text in found
+                if kind == hou.parmCondType.HideWhen]
+
+    def visit(templates, path):
+        for template in templates:
+            label = template.label()
+            if not isinstance(template, (hou.SeparatorParmTemplate,
+                                         hou.LabelParmTemplate)):
+                labels.append((path, template.name(), label))
+            for text in hide_conditions(template):
+                if "expert_mode" not in text:
+                    continue
+                groups = re.findall(r"\{[^}]*\}", text)
+                assert "{ expert_mode == 0 }" in groups, (template.name(), text)
+                assert all("expert_mode" not in g for g in groups
+                           if g != "{ expert_mode == 0 }"), (template.name(),
+                                                              text)
+                expert.append(f"{path}/{label}")
+            if isinstance(template, hou.FolderParmTemplate):
+                visit(template.parmTemplates(), f"{path}/{label}")
+
+    visit(own, "")
+    for path, name, label in labels:
+        assert label.strip(), (path, name)
+        assert not label.endswith("?"), (path, name, label)
+        assert label not in ("Label", "Message", "file_location", "vector",
+                             "COF", "dhat", "epsv", "E", "Right-Hand-Side",
+                             "Obstacle Disp", "Material Coord"), (path, name,
+                                                                  label)
+    for wanted in ("Solver/Augmented Lagrangian", "Solver/Rayleigh Damping",
+                   "Semi-Implicit Options", "AMGCL Precond Settings",
+                   "Strength Threshold", "Wolfe Curvature c2",
+                   "Gradient Finite-Difference Check", "Output/Advanced"):
+        assert any(wanted in item for item in expert), (wanted, expert)
+
+    # Ordinal menus keep their tokens (scenes store the index); only the
+    # labels changed.
+    materials = node.parm("materials1_1").parmTemplate()
+    assert list(materials.menuItems()) == list(mod.MATERIAL_TOKENS)
+    assert dict(zip(materials.menuItems(), materials.menuLabels()))[
+        "NeoHookean"] == "Neo-Hookean (recommended)"
+    assert list(node.parm("matrix_model1_1").parmTemplate().menuItems()) == \
+        list(mod.MATERIAL_TOKENS[:12]) + ["None"]
+
+    # Hiding never changes what is exported.
+    node.setParms({"expert_mode": 0})
+    hidden = json.load(open(mod.write_params_only({"node": node})))
+    node.setParms({"expert_mode": 1})
+    shown = json.load(open(mod.write_params_only({"node": node})))
+    node.setParms({"expert_mode": 0})
+    hidden.pop("provenance")
+    shown.pop("provenance")
+    assert hidden == shown
+    # ... and Check Setup names expert settings changed while hidden.
+    node.setParms({"al_scaling": node.evalParm("al_scaling") * 2})
+    notes = mod.check_setup(node, "write")["notes"]
+    assert any("Augmented Lagrangian > Scaling" in note for note in notes), \
+        notes
+    node.parm("al_scaling").revertToDefaults()
+    print(f"PASS: tab order, labels and menus; Show Expert Controls hides "
+          f"{len(expert)} advanced controls by condition only and changes "
+          "no exported value")
+
+
 def main():
     assert os.path.isfile(POLYFEM_BIN), f"missing {POLYFEM_BIN}"
     hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"))
@@ -371,6 +454,7 @@ def main():
     assert solver_folder is not None
     walk(solver_folder.parmTemplates(), "Solver")
     print("PASS: no hidden control or tab in the Solver folder")
+    check_interface(node, mod)
 
     # --- Hypre + the new convergence controls: export, validate, run ------
     node.setParms({"tend": 0.25})

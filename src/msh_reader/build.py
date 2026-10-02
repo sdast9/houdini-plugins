@@ -100,7 +100,8 @@ def reload(kwargs):
     path = hda_build.finalize(
         asset,
         parm_template_group=ptg,
-        sections={"PythonModule": module_src},
+        sections={"PythonModule": module_src,
+                  "Help": hda_build.read_source("msh_reader", "Help")},
     )
     return path
 

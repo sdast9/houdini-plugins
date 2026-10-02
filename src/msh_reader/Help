@@ -1,0 +1,54 @@
+= MSH Reader 3.0 =
+
+#type: node
+#context: sop
+#internal: MSH_Reader::3.0
+#tags: gmsh, msh, tetrahedra, hexahedra, mesh, import
+
+"""Reads a Gmsh .msh mesh (versions 2.2 and 4.1, text or binary) into Houdini, with its physical groups."""
+
+== Overview ==
+
+The file is parsed directly; nothing needs to be installed. The mesh's
+highest dimension becomes the primary elements: tetrahedra and hexahedra for
+a volume mesh, triangles and quadrilaterals for a 2D mesh, lines for a 1D
+mesh. The PolyFEM node uses this node to load its meshes.
+
+== Attributes ==
+
+:: `msh_pt_id` (point):
+    The node's tag in the file.
+:: `msh_physical_tag` (primitive):
+    The element's physical group tag as written in the file (0 = the element
+    is in no physical group).
+:: `Entity` (primitive):
+    The physical tag, plus 1 for every element when any element has no
+    group (the convention of MSH Reader 2.2, kept for compatibility). The
+    PolyFEM node numbers its subdomains from `msh_physical_tag` instead:
+    sorted tags, elements without a group last.
+:: `msh_physical_names` (detail):
+    The file's `$PhysicalNames` for the primary dimension, as JSON
+    (`{"tag": "name"}`).
+:: `is_volume`, `ElementNum`, `centroid` (primitive):
+    Whether the primitive is a primary element, its sequential number, and
+    its centroid.
+:: `surface_entity` (primitive):
+    With __Import Physical Surfaces__, the physical tag of 2D groups in a 3D
+    mesh (loaded as polygons, e.g. to see Gmsh-authored sidesets).
+
+== More ==
+
+* [Feature guide (docs/hdas.md)|https://github.com/sdast9/houdini-plugins/blob/main/docs/hdas.md]
+* [Gmsh MSH file format|https://gmsh.info/doc/texinfo/gmsh.html#MSH-file-format]
+
+@parameters
+
+MSH File:
+    The `.msh` file to load.
+
+Reload:
+    Read the file again (after re-meshing with the same name).
+
+Import Physical Surfaces:
+    For a 3D mesh, also load 2D physical groups as polygons with a
+    `surface_entity` attribute.

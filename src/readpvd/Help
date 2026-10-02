@@ -1,0 +1,79 @@
+= Read PVD 1.0 =
+
+#type: node
+#context: obj
+#internal: readPVD::1.0
+#tags: fem, results, polyfem, vtk, paraview
+
+"""Loads PolyFEM results (a .pvd collection of VTU or VTK-HDF frames) and shows them: deformation, colored fields, glyphs, fibers, clipping, probing and legends."""
+
+== Overview ==
+
+Point __PVD File__ at the `.pvd` file PolyFEM wrote in its output folder
+(`output/sim.pvd` by default). Each saved time step becomes a Houdini frame.
+The PolyFEM node's __Open Results__ button creates and sets up this node for
+you.
+
+On loading a file the node picks the field to color by (von Mises stress,
+exported or derived from the deformation gradient and stress; otherwise the
+displacement), sets the color range from the frame on screen and the last
+frame, and frames the viewport on the result. Choosing another field or
+value re-ranges the colors the same way, unless __Lock Displayed Range__ is
+on.
+
+Every parameter has a tooltip: hover over its label for details.
+
+== Quick start ==
+
+# Set __PVD File__ (or press __Open Results__ on the PolyFEM node).
+# Scrub the playbar. __Refresh / Set Playbar__ picks up the steps of a run
+  that is still going.
+# __Display tab__: choose the __Color Field__ and __Field Value To Display__
+  (a component, magnitude, principal value ...). __Auto Range: All Frames__
+  finds the range over the whole run.
+# __Smooth Field Across Elements__ averages element values onto the nodes;
+  where bodies touch (with body ids exported) each body keeps its own
+  values.
+# __Visible Bodies__ shows or hides bodies, __Clip / Slice__ cuts into the
+  model, __Probe__ reads values at a clicked point, __Legend__ adds a color
+  bar.
+
+== HDF5 results ==
+
+PolyFEM's default output is compressed VTK-HDF. This node bundles the h5py
+reader for Houdini 22 on macOS (Apple silicon and Intel), Linux x86_64
+(glibc 2.28 or newer) and Windows x64, and extracts it on the first HDF5
+load. On any other system, install h5py into Houdini's Python; the PolyFEM
+node writes XML `.vtu` files instead when it sees that this node could not
+read HDF5.
+
+== Troubleshooting ==
+
+table>>
+    tr>>
+        th>> What you see
+        th>> What to do
+    tr>>
+        td>> One flat color
+        td>> All values are equal in the frames used for the range (often
+             frame 0, before anything moved): press __Auto Range: All
+             Frames__.
+    tr>>
+        td>> The neutral Unavailable Field Color
+        td>> The chosen field is not in this frame: pick another, or set
+             __Field Availability Scope__ to list fields of every frame.
+    tr>>
+        td>> "Mesh topology changes over time"
+        td>> The run remeshed: turn on __Remeshing Mode__.
+    tr>>
+        td>> "This VTK-HDF result needs h5py"
+        td>> See HDF5 results above.
+    tr>>
+        td>> Memory grows while scrubbing
+        td>> Lower __Cache Memory Limit__, or turn off __Cache Frames__.
+
+== More ==
+
+* [Feature guide and history (docs/hdas.md)|https://github.com/sdast9/houdini-plugins/blob/main/docs/hdas.md]
+* [Fiber models and material fields (docs/per-element-materials.md)|https://github.com/sdast9/houdini-plugins/blob/main/docs/per-element-materials.md]
+* [Source and issues: sdast9/houdini-plugins|https://github.com/sdast9/houdini-plugins]

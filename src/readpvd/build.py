@@ -1748,6 +1748,7 @@ def build(out_dir):
                 section_name,
                 base64.b64encode(wheel_file.read()).decode("ascii"))
     definition.addSection("OnCreated", ON_CREATED_CODE)
+    definition.addSection("Help", hda_build.read_source("readpvd", "Help"))
     definition.addSection(
         "ViewerStateModule",
         hda_build.read_source("readpvd", "ViewerStateModule.py"))
