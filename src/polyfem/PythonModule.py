@@ -570,7 +570,13 @@ def polyfem_bin_check(kwargs):
 
 
 def create_geo_nodes(kwargs):
-    """File parm callback: (re)build the import chain for one geometry."""
+    """File parm callback: (re)build the import chain for one geometry.
+
+    Picking a mesh for a geometry that already has one is a reload: the
+    subdomains keep their materials, sidesets and initial conditions, matched
+    by Gmsh physical group (subdomain numbers follow the sorted groups, see
+    physical_groups), and anything that could not be kept is reported.
+    """
     parent = kwargs["node"]
     parent.allowEditingOfContents()
     geo_number = kwargs["script_multiparm_index"]
@@ -593,18 +599,12 @@ def create_geo_nodes(kwargs):
         parent.setParms({"is_obstacle" + geo_number: 1})
 
     existing_geo = parent.node("geo_" + geo_number) is not None
-    old_num_vols = parent.evalParm(f"num_volumes{geo_number}")
-    saved_volume_colors = {
-        vol: _color_tuple(parent, f"color_{geo_number}_{vol}")
-        for vol in range(1, old_num_vols + 1)
-    } if existing_geo else {}
     saved_obstacle_color = _color_tuple(
         parent, f"color_{geo_number}") if existing_geo else None
-
-    parent.setParms({f"num_volumes{geo_number}": 1,
-                     f"sideset_selection{geo_number}_1": 0,
-                     f"initial_conditions{geo_number}_1": 0})
     obstacle_check = parent.parm("is_obstacle" + geo_number).eval()
+    # What a reload must keep, captured before the old chain goes away.
+    previous = _capture_previous_mesh(parent, geo_number) \
+        if existing_geo else None
     destroy_geo_nodes(parent, geo_number)
 
     # stage a copy in <working_dir>/input/, under a name no other geometry
@@ -618,6 +618,7 @@ def create_geo_nodes(kwargs):
     except (OSError, hou.Error) as e:
         _message(f"Could not copy mesh into working dir: {e}")
         return
+    digest = _file_digest(dst) if previous else None
     dst = portable_path(parent, dst)
     parent.setParms({f"file_location{geo_number}": dst})
 
@@ -633,6 +634,26 @@ def create_geo_nodes(kwargs):
         _message("Failed to read the mesh; check the file.")
         parent.parm("file_location" + geo_number).revertToDefaults()
         return
+
+    upstream = file_node
+    groups = None
+    if obstacle_check == 0:
+        if file_node.geometry().findPrimAttrib("Entity") is None:
+            _message("Mesh has no Entity attribute.")
+            return
+        groups = physical_groups(file_node.geometry())
+        if len(groups["tags"]) > 999:
+            _message(f"The mesh has {len(groups['tags'])} physical groups; "
+                     "this node supports up to 999 subdomains per geometry.")
+            destroy_geo_nodes(parent, geo_number)
+            parent.parm("file_location" + geo_number).revertToDefaults()
+            return
+        upstream = parent.createNode("attribwrangle",
+                                     "subdomains_" + geo_number)
+        upstream.setParms({"class": 1, "group": "@is_volume==1",
+                           "grouptype": 4,
+                           "snippet": _subdomain_vex(groups)})
+        upstream.setInput(0, file_node)
 
     attrib_node = parent.createNode("attribcreate::2.0", "attrib_" + geo_number)
     attrib_node.setParms({"name1": "geometry_num", "class1": 1, "type1": 1,
@@ -651,37 +672,514 @@ def create_geo_nodes(kwargs):
 
     element_select = parent.createNode("groupcreate", "elements_" + geo_number)
     branch = parent.createNode("null", "branch_" + geo_number)
-    attrib_node.setNextInput(file_node)
+    attrib_node.setNextInput(upstream)
     transform_node.setNextInput(attrib_node)
     element_select.setNextInput(transform_node)
     branch.setNextInput(element_select)
 
     if obstacle_check == 0:
-        if file_node.geometry().findPrimAttrib("Entity") is None:
-            _message("Mesh has no Entity attribute.")
-            return
-        ent = np.frombuffer(
-            file_node.geometry().primIntAttribValuesAsString("Entity"),
-            dtype=np.int32)
-        num_vols = int(ent.max())
-        parent.setParms({f"num_volumes{geo_number}": num_vols})
-        for vol in range(1, num_vols + 1):
-            _set_color_tuple(
-                parent, f"color_{geo_number}_{vol}",
-                saved_volume_colors.get(vol) or default_color(geo_number, vol))
+        notes = _apply_subdomains(parent, geo_number, groups, previous, digest)
         create_geo_tree(kwargs)
+        if previous is not None and digest != previous["digest"]:
+            # picks name faces of the surface just rebuilt
+            notes.extend(_remap_picks(parent, geo_number, previous))
         fetch_elements(kwargs)
+        _update_subdomain_info(parent, geo_number)
+        if notes:
+            _message(f"Geometry {geo_number} was loaded again:\n"
+                     + "\n".join("- " + note for note in notes))
+        elif previous is not None:
+            _status(f"Geometry {geo_number} was loaded again; every subdomain "
+                    "kept its settings.")
+        source = file_node.geometry()
+        if source.countPrimType(hou.primType.Tetrahedron) \
+                + source.countPrimType(hou.primType.Hexahedron) == 0:
+            _message(f"Geometry {geo_number} has no tetrahedra or hexahedra "
+                     "(a 2D or surface mesh). This node writes 3D "
+                     "simulations: load a volume mesh, or turn on Obstacle "
+                     "to use this surface as a rigid obstacle.")
     else:
         _set_color_tuple(
             parent, f"color_{geo_number}",
             saved_obstacle_color or default_color(geo_number))
         create_obstacle_tree(parent, geo_number)
 
-    bbox = pivot_to_centroid(kwargs)
+    # A reload keeps the pivot the user may have placed; a new mesh gets its
+    # centroid.
+    bbox = pivot_to_centroid(kwargs) if previous is None else \
+        parent.node(f"attrib_{geo_number}").geometry().boundingBox()
     sv = hou.ui.curDesktop().paneTabOfType(hou.paneTabType.SceneViewer) \
         if hou.isUIAvailable() else None
     if sv and bbox:
         sv.curViewport().frameBoundingBox(bbox)
+
+
+# =============================================================================
+# Subdomains from Gmsh physical groups, and keeping settings on reload
+#
+# Subdomain n of a geometry holds the elements of the n-th physical group in
+# sorted tag order, elements without a group last: tags {1, 100} give
+# subdomains 1 and 2 (they gave 100, 98 of them empty), and untagged elements
+# no longer renumber the tagged ones (the MSH Reader's +1 shift). The
+# subdomains_<geo> wrangle applies the order recorded when the mesh was
+# loaded; each subdomain's header shows its tag and name.
+# =============================================================================
+
+
+def physical_groups(geo_data):
+    """{"tags", "names", "counts", "source"} of the primary elements' Gmsh
+    physical groups, in subdomain order."""
+    source = "msh_physical_tag" \
+        if geo_data.findPrimAttrib("msh_physical_tag") is not None \
+        else "Entity"      # an MSH Reader older than 2026-10-01
+    values = np.frombuffer(geo_data.primIntAttribValuesAsString(source),
+                           dtype=np.int32).astype(np.int64)
+    mask = _volume_mask(geo_data)
+    if mask is not None:
+        values = values[mask]
+    unique, counts = np.unique(values, return_counts=True)
+    order = sorted(range(len(unique)),
+                   key=lambda i: (int(unique[i]) <= 0, int(unique[i])))
+    names = {}
+    if geo_data.findGlobalAttrib("msh_physical_names") is not None:
+        try:
+            names = json.loads(geo_data.attribValue("msh_physical_names")
+                               or "{}")
+        except ValueError:
+            names = {}
+    tags = [int(unique[i]) for i in order]
+    return {"tags": tags, "names": [names.get(str(t), "") for t in tags],
+            "counts": [int(counts[i]) for i in order], "source": source}
+
+
+def _subdomain_vex(groups):
+    listing = ", ".join(str(tag) for tag in groups["tags"])
+    return f"""\
+// Subdomain = position of the element's Gmsh physical group in the sorted
+// list read when the mesh was loaded (elements without a group last).
+int tags[] = array({listing});
+int index = find(tags, i@{groups['source']});
+if (index < 0)
+    error("Element %d is in physical group %d, which this mesh did not have "
+          + "when it was loaded; pick the mesh file again", @primnum,
+          i@{groups['source']});
+i@Entity = index + 1;
+"""
+
+
+def subdomain_description(tag, name):
+    if tag <= 0:
+        return "elements without a Gmsh physical group"
+    return f"Gmsh physical group {tag}" + (f" \"{name}\"" if name else "")
+
+
+def _update_subdomain_info(parent, geo):
+    """Fill each subdomain's header line: its physical group (tag, name) and
+    element count, or what Apply Subdomain Change made of it."""
+    branch = parent.node(f"branch_{geo}")
+    source_node = parent.node(f"geo_{geo}")
+    if branch is None or source_node is None:
+        return
+    geo_data = branch.geometry()
+    if geo_data.findPrimAttrib("Entity") is None:
+        return
+    mask = _volume_mask(geo_data)
+    entity = np.frombuffer(geo_data.primIntAttribValuesAsString("Entity"),
+                           dtype=np.int32)
+    tag_name = "msh_physical_tag" \
+        if geo_data.findPrimAttrib("msh_physical_tag") is not None else None
+    tags = np.frombuffer(geo_data.primIntAttribValuesAsString(tag_name),
+                         dtype=np.int32) if tag_name else None
+    if mask is not None:
+        entity = entity[mask]
+        tags = tags[mask] if tags is not None else None
+    names = {}
+    source = source_node.geometry()
+    if source.findGlobalAttrib("msh_physical_names") is not None:
+        try:
+            names = json.loads(source.attribValue("msh_physical_names") or "{}")
+        except ValueError:
+            names = {}
+    for vol in range(1, parent.evalParm(f"num_volumes{geo}") + 1):
+        parm = parent.parm(f"subdomain_info{geo}_{vol}")
+        if parm is None:
+            continue
+        mine = entity == vol
+        count = int(mine.sum())
+        if not count:
+            text = "No elements (an empty subdomain)."
+        elif tags is None:
+            text = f"{count:,} elements."
+        else:
+            present = np.unique(tags[mine])
+            if len(present) == 1:
+                tag = int(present[0])
+                whole = int((tags == tag).sum()) == count
+                text = (("" if whole else "Part of ")
+                        + subdomain_description(tag, names.get(str(tag), ""))
+                        + f", {count:,} elements"
+                        + ("" if whole else
+                           " (the rest moved by Apply Subdomain Change)")
+                        + ".")
+            else:
+                listed = ", ".join(str(int(t)) for t in present[:6])
+                text = (f"{count:,} elements from Gmsh physical groups "
+                        f"{listed}{', ...' if len(present) > 6 else ''}, "
+                        "combined by Apply Subdomain Change.")
+        text = text[:1].upper() + text[1:]
+        if parm.eval() != text:
+            parm.set(text)
+
+
+# ---- one generic copy of a geometry's or subdomain's parameters ------------
+
+_MULTIPARM_FOLDERS = (hou.folderType.MultiparmBlock,
+                      hou.folderType.TabbedMultiparmBlock,
+                      hou.folderType.ScrollingMultiparmBlock)
+_NO_VALUE = (hou.parmTemplateType.Button, hou.parmTemplateType.Label,
+             hou.parmTemplateType.Separator, hou.parmTemplateType.FolderSet)
+
+
+def _geometry_patterns(parent):
+    """[(regex, name, depth, is_count)] of every parameter inside the
+    Geometry multiparm ("#" names), outer levels first."""
+    folder = parent.parmTemplateGroup().find("num_geos")
+    found = []
+
+    def walk(templates):
+        for template in templates:
+            if template.type() == hou.parmTemplateType.Folder:
+                if template.folderType() in _MULTIPARM_FOLDERS:
+                    found.append((template.name(), True))
+                walk(template.parmTemplates())
+            elif template.type() not in _NO_VALUE:
+                found.append((template.name(), False))
+
+    walk(folder.parmTemplates())
+    patterns = []
+    for name, is_count in found:
+        regex = re.compile("^" + re.escape(name).replace(r"\#", r"(\d+)")
+                           + "$")
+        patterns.append((regex, name, name.count("#"), is_count))
+    patterns.sort(key=lambda item: (item[2], not item[3]))
+    return patterns
+
+
+def _capture_parm(parm):
+    try:
+        keys = parm.keyframes()
+    except hou.Error:
+        keys = ()
+    if keys:
+        return ("keys", keys)
+    if parm.parmTemplate().type() == hou.parmTemplateType.String:
+        return ("string", parm.unexpandedString())
+    return ("value", parm.eval())
+
+
+def _apply_parm(parm, captured):
+    kind, value = captured
+    if parm.keyframes():
+        parm.deleteAllKeyframes()
+    if kind == "keys":
+        parm.setKeyframes(value)
+    else:
+        parm.set(value)
+
+
+def snapshot_instances(parent, prefix, level=None):
+    """Values of every parameter of Geometry-multiparm instances, in one pass.
+
+    prefix: (geo,) for a whole geometry, (geo, vol) for one subdomain. With
+    level=2 and prefix (geo,), returns {vol: snapshot} for every subdomain of
+    the geometry. A snapshot is [(pattern, depth, is_count, tail indices,
+    [captured values])] with counts before the parameters they hold and
+    outer levels first.
+    """
+    prefix = tuple(int(i) for i in prefix)
+    level = level or len(prefix)
+    patterns = {}
+    for regex, name, depth, is_count in _geometry_patterns(parent):
+        if depth >= level:
+            patterns.setdefault(depth, []).append(
+                (name.split("#", 1)[0], regex, name, is_count))
+    found = {}
+    for tuple_parm in parent.parmTuples():
+        if not len(tuple_parm):
+            continue
+        first = tuple_parm[0]
+        if not first.isMultiParmInstance():
+            continue
+        indices = tuple(first.multiParmInstanceIndices())
+        if len(indices) < level or indices[:len(prefix)] != prefix:
+            continue
+        tuple_name = tuple_parm.name()
+        for literal, regex, name, is_count in patterns.get(len(indices), ()):
+            if not tuple_name.startswith(literal):
+                continue
+            match = regex.match(tuple_name)
+            if match and tuple(int(g) for g in match.groups()) == indices:
+                key = indices[:level]
+                found.setdefault(key, []).append(
+                    (name, len(indices), is_count, indices[level:],
+                     [_capture_parm(p) for p in tuple_parm]))
+                break
+    for snapshot in found.values():
+        snapshot.sort(key=lambda item: (item[1], not item[2]))
+    if level == len(prefix):
+        return found.get(prefix, [])
+    return {key[-1]: snapshot for key, snapshot in found.items()}
+
+
+def snapshot_instance(parent, prefix):
+    return snapshot_instances(parent, prefix)
+
+
+def revert_instance(parent, prefix):
+    """Put one instance (prefix (geo,) or (geo, vol)) back to the asset's
+    defaults (multiparm counts first)."""
+    prefix = tuple(int(i) for i in prefix)
+    for name, depth, is_count, tail, values in snapshot_instance(parent,
+                                                                 prefix):
+        target = name
+        for index in prefix + tuple(tail):
+            target = target.replace("#", str(index), 1)
+        tuple_parm = parent.parmTuple(target)
+        if tuple_parm is not None:
+            tuple_parm.revertToDefaults()
+
+
+def restore_instance(parent, prefix, snapshot, skip=()):
+    """Write a snapshot into another instance (prefix (geo,) or (geo, vol)):
+    multiparm counts first, so the instances they hold exist."""
+    prefix = tuple(int(i) for i in prefix)
+    for name, depth, is_count, tail, values in snapshot:
+        if name in skip:
+            continue
+        target = name
+        for index in prefix + tuple(tail):
+            target = target.replace("#", str(index), 1)
+        tuple_parm = parent.parmTuple(target)
+        if tuple_parm is None or len(tuple_parm) != len(values):
+            continue
+        for parm, captured in zip(tuple_parm, values):
+            try:
+                _apply_parm(parm, captured)
+            except (hou.Error, TypeError):
+                pass
+
+
+# ---- reload --------------------------------------------------------------
+
+
+def _surface_keys(parent, geo):
+    """Mesh node tags of every displayed surface face and point, so picks can
+    follow faces into a changed mesh file."""
+    null_node = parent.node(f"null_{geo}")
+    if null_node is None:
+        return None, None
+    surf = null_node.geometry()
+    try:
+        _, face_keys = _surface_arrays(surf)
+        point_keys = np.frombuffer(
+            surf.pointIntAttribValuesAsString("msh_pt_id"), dtype=np.int32)
+    except hou.Error:
+        return None, None
+    return face_keys, point_keys.astype(np.int64)
+
+
+def _retag_chain(parent, geo):
+    """[(subdomain, element pattern)] of the Apply Subdomain Change wrangles,
+    upstream first."""
+    chain = []
+    node = parent.node(f"branch_{geo}")
+    node = node.input(0) if node is not None else None
+    while node is not None and node.name().startswith(f"vex_{geo}_"):
+        try:
+            number = int(node.name().rsplit("_", 1)[1])
+        except ValueError:
+            break
+        chain.append((number, node.parm("group").eval()))
+        node = node.input(0)
+    return list(reversed(chain))
+
+
+def _capture_previous_mesh(parent, geo):
+    """Everything a reload of geometry `geo` needs from the chain it
+    replaces: the mesh file's digest, the subdomain number of every physical
+    group, the subdomains' parameters, the retag wrangles and the surface's
+    face identities."""
+    geo = str(geo)
+    num_vols = parent.evalParm(f"num_volumes{geo}")
+    # file_location already holds the newly picked file when this runs; the
+    # previous one is still on the reader node about to be replaced.
+    reader = parent.node(f"geo_{geo}")
+    path_parm = reader.parm("File") or reader.parm("file") \
+        if reader is not None else None
+    staged = path_parm.eval() if path_parm is not None else ""
+    volumes = snapshot_instances(parent, (int(geo),), level=2)
+    previous = {
+        "digest": _file_digest(staged) if os.path.isfile(staged) else None,
+        "num_vols": num_vols,
+        "volumes": {vol: volumes.get(vol, [])
+                    for vol in range(1, num_vols + 1)},
+        "retags": _retag_chain(parent, geo), "number_of_tag": {},
+        "names": {}}
+    previous["face_keys"], previous["point_keys"] = _surface_keys(parent, geo)
+    # The stage right after the physical groups were turned into subdomains:
+    # subdomains_<geo> since 2026-10-01, the MSH Reader itself before.
+    stage = parent.node(f"subdomains_{geo}") or parent.node(f"geo_{geo}")
+    try:
+        geo_data = stage.geometry() if stage is not None else None
+    except hou.Error:
+        geo_data = None
+    if geo_data is not None and geo_data.findPrimAttrib("Entity") \
+            is not None and geo_data.findPrimAttrib("msh_physical_tag") \
+            is not None:
+        entity = np.frombuffer(geo_data.primIntAttribValuesAsString("Entity"),
+                               dtype=np.int32)
+        tags = np.frombuffer(geo_data.primIntAttribValuesAsString(
+            "msh_physical_tag"), dtype=np.int32)
+        mask = _volume_mask(geo_data)
+        if mask is not None:
+            entity, tags = entity[mask], tags[mask]
+        pairs = np.unique(np.stack((tags, entity), axis=1), axis=0)
+        previous["number_of_tag"] = {int(t): int(v) for t, v in pairs}
+    return previous
+
+
+def _apply_subdomains(parent, geo, groups, previous, digest):
+    """Set this geometry's subdomains for a freshly built chain; on a reload
+    carry every subdomain's parameters over (matched by physical group) and
+    say what could not be kept. Returns notes for the user."""
+    geo = str(geo)
+    count = len(groups["tags"])
+    if previous is None:
+        parent.setParms({f"num_volumes{geo}": count,
+                         f"sideset_selection{geo}_1": 0,
+                         f"initial_conditions{geo}_1": 0})
+        for vol in range(1, count + 1):
+            _set_color_tuple(parent, f"color_{geo}_{vol}",
+                             default_color(geo, vol))
+        return []
+
+    notes = []
+    same_file = digest is not None and digest == previous["digest"]
+    old_number = previous["number_of_tag"]
+    # new subdomain -> old subdomain whose settings it takes
+    source = {}
+    for new, tag in enumerate(groups["tags"], 1):
+        old = old_number.get(tag)
+        if old is not None and old in previous["volumes"]:
+            source[new] = old
+        else:
+            notes.append(f"subdomain {new} ({subdomain_description(tag, groups['names'][new - 1])}) is new and starts with default settings")
+    mesh_old = set(old_number.values())
+    # subdomains made by Apply Subdomain Change: kept with the same elements
+    # when the file is unchanged, numbered after the mesh's own
+    retags = previous["retags"]
+    made = sorted({number for number, _ in retags if number not in mesh_old})
+    renumber = {old: new for new, old in source.items()}
+    if retags and same_file:
+        for offset, old in enumerate(made, 1):
+            renumber[old] = count + offset
+            if old in previous["volumes"]:
+                source[count + offset] = old
+    elif retags:
+        notes.append("the element reassignments made with Apply Subdomain "
+                     "Change were removed, because the mesh file changed")
+    total = max([count] + list(source))
+    taken = set(source.values())
+    dropped = [old for old in previous["volumes"]
+               if old not in taken and (old in mesh_old or old in made)]
+    empty = [old for old in previous["volumes"]
+             if old not in taken and old not in mesh_old and old not in made]
+    if empty:
+        notes.append(f"{len(empty)} empty subdomain"
+                     f"{'s' if len(empty) != 1 else ''} of the previous "
+                     "numbering (physical tag numbers no element used) "
+                     f"{'were' if len(empty) != 1 else 'was'} removed")
+    for old in sorted(dropped):
+        tag = next((t for t, v in old_number.items() if v == old), None)
+        what = f" ({subdomain_description(tag, '')})" if tag is not None \
+            else ""
+        notes.append(f"subdomain {old}{what} of the previous mesh is not in "
+                     "this one; its settings were removed")
+    # Write the settings: keep the parameters of subdomains that stay where
+    # they are, move the others from their snapshot (taken before anything
+    # changed), and give new subdomains defaults.
+    parent.setParms({f"num_volumes{geo}": total})
+    for new in range(1, total + 1):
+        old = source.get(new)
+        if old == new:
+            continue
+        if old is None:
+            revert_instance(parent, (int(geo), new))
+            _set_color_tuple(parent, f"color_{geo}_{new}",
+                             default_color(geo, new))
+            continue
+        restore_instance(parent, (int(geo), new), previous["volumes"][old])
+    if any(old != new for new, old in source.items()):
+        moves = ", ".join(f"{old} -> {new}" for new, old in sorted(
+            source.items()) if old != new)
+        notes.append(f"subdomains were renumbered to follow the sorted "
+                     f"physical groups ({moves}); their settings moved with "
+                     "them")
+    # Element reassignments of an unchanged file are rebuilt as they were.
+    if retags and same_file:
+        upstream = parent.node(f"elements_{geo}")
+        branch = parent.node(f"branch_{geo}")
+        for number, pattern in retags:
+            target = renumber.get(number, number)
+            vex = parent.node(f"vex_{geo}_{target}") or parent.createNode(
+                "attribwrangle", f"vex_{geo}_{target}")
+            vex.setParms({"group": pattern, "grouptype": 4, "class": 1,
+                          "snippet": f"i@Entity = {int(target)};"})
+            vex.setInput(0, upstream)
+            upstream = vex
+        branch.setInput(0, upstream)
+    return notes
+
+
+def _remap_picks(parent, geo, previous):
+    """Picked faces and points refer to the surface's numbering; after the
+    mesh file changed, follow them by their mesh node tags."""
+    notes = []
+    old_faces, old_points = previous.get("face_keys"), \
+        previous.get("point_keys")
+    new_faces, new_points = _surface_keys(parent, geo)
+    if old_faces is None or new_faces is None:
+        return notes
+    face_index = {tuple(sorted(int(k) for k in row if k >= 0)): prim
+                  for prim, row in enumerate(new_faces)}
+    point_index = {int(key): point for point, key in enumerate(new_points)}
+    for vol in range(1, parent.evalParm(f"num_volumes{geo}") + 1):
+        for j in range(1, parent.evalParm(f"sideset_selection{geo}_{vol}") + 1):
+            parm = parent.parm(f"basegroup{geo}_{vol}_{j}")
+            pattern = parm.unexpandedString().strip()
+            if not pattern or pattern == "*" or is_native_selection(pattern):
+                continue
+            points = parent.evalParm(f"grouptype{geo}_{vol}_{j}") == 1
+            members = expand_group_str(pattern)
+            kept = []
+            for member in members:
+                if points:
+                    if 0 <= member < len(old_points) and \
+                            int(old_points[member]) in point_index:
+                        kept.append(point_index[int(old_points[member])])
+                elif 0 <= member < len(old_faces):
+                    key = tuple(sorted(int(k) for k in old_faces[member]
+                                       if k >= 0))
+                    if key in face_index:
+                        kept.append(face_index[key])
+            parm.set(list_to_space_str(kept))
+            if len(kept) != len(members):
+                notes.append(
+                    f"subdomain {vol} sideset {j}: {len(members) - len(kept)} "
+                    f"of {len(members)} picked "
+                    f"{'points' if points else 'faces'} are not on the new "
+                    "mesh and were removed")
+    return notes
 
 
 def _merge_all(parent):
@@ -776,8 +1274,10 @@ def create_obstacle_tree(parent, geo_number):
 
 
 def clear_geo_tree(parent, geo_number):
-    """Remove the display chain (keeps geo/attrib/transform/elements/branch/vex)."""
-    keep = {"geo", "attrib", "transform", "elements", "vex", "branch"}
+    """Remove the display chain (keeps the import chain: geo, subdomains,
+    attrib, transform, elements, vex retags and branch)."""
+    keep = {"geo", "subdomains", "attrib", "transform", "elements", "vex",
+            "branch"}
     for item in parent.children():
         name = item.name()
         if name in _PROTECTED_NODES:
@@ -885,6 +1385,7 @@ def update_entities(kwargs, call=None):
         branch.setInput(0, vex_node)
     clear_geo_tree(parent, geo_number)
     create_geo_tree(kwargs)
+    _update_subdomain_info(parent, geo_number)
 
 
 def revert_entities(kwargs):
@@ -902,6 +1403,7 @@ def revert_entities(kwargs):
     fetch_elements(kwargs)
     clear_geo_tree(parent, geo_number)
     create_geo_tree(kwargs)
+    _update_subdomain_info(parent, geo_number)
 
 
 def BC_check(kwargs):
@@ -1001,12 +1503,18 @@ def _rebuild_group_chain(parent, geo_number, vol_num, default_condition=True):
 
 
 def geo_duplicate(kwargs):
+    """Duplicate Geometry: a new geometry with the same mesh file and every
+    setting of this one -- transform, subdomain assignments, materials (fiber
+    sources and families included), sidesets with their conditions, initial
+    conditions, obstacle motion and display options."""
     parent = kwargs["node"]
     geo_number = kwargs["script_multiparm_index"]
     if parent.node("geo_" + geo_number) is None:
         _message("Import geometry, then duplicate.")
         return
     src = int(geo_number)
+    snapshot = snapshot_instance(parent, (src,))
+    retags = _retag_chain(parent, src)
     dst = parent.evalParm("num_geos") + 1
     parent.setParms({"num_geos": dst, "geo_int": dst})
     if hou.isUIAvailable():
@@ -1014,35 +1522,35 @@ def geo_duplicate(kwargs):
         if pane_tab:
             pane_tab.setMultiParmTab("num_geos", dst)
 
-    parent.setParms({f"file_location{dst}": parent.evalParm(f"file_location{src}"),
-                     f"is_obstacle{dst}": parent.evalParm(f"is_obstacle{src}"),
+    # The mesh first: building its chain sets this geometry's subdomains
+    # from the file; everything else is then copied over that.
+    parent.parm(f"file_location{dst}").set(
+        parent.parm(f"file_location{src}").unexpandedString())
+    parent.setParms({f"is_obstacle{dst}": parent.evalParm(f"is_obstacle{src}"),
                      f"is_enabled{dst}": parent.evalParm(f"is_enabled{src}")})
     parent.parm(f"file_location{dst}").pressButton()
-
-    copies = {}
-    for base in ("xform_t__{}x", "xform_t__{}y", "xform_t__{}z",
-                 "xform_r__{}x", "xform_r__{}y", "xform_r__{}z",
-                 "xform_s__{}x", "xform_s__{}y", "xform_s__{}z",
-                 "tpivot_{}x", "tpivot_{}y", "tpivot_{}z",
-                 "rpivot_{}x", "rpivot_{}y", "rpivot_{}z"):
-        copies[base.format(dst)] = parent.evalParm(base.format(src))
-    for suffix in "rgb":
-        copies[f"color_{dst}{suffix}"] = parent.evalParm(f"color_{src}{suffix}")
-    parent.setParms(copies)
-
-    if not parent.evalParm(f"is_obstacle{src}"):
-        num_vols = parent.evalParm(f"num_volumes{src}")
-        mat_parms = {}
-        for v in range(1, num_vols + 1):
-            for base in ("mainOrder{}_{}", "materials{}_{}", "rho{}_{}",
-                         "E{}_{}", "nu{}_{}", "damping{}_{}", "phi{}_{}",
-                         "psi{}_{}", "bulk{}_{}", "c1{}_{}", "c2{}_{}",
-                         "c3{}_{}", "d1{}_{}", "color_{}_{}r",
-                         "color_{}_{}g", "color_{}_{}b"):
-                parm = parent.parm(base.format(src, v))
-                if parm is not None and parent.parm(base.format(dst, v)) is not None:
-                    mat_parms[base.format(dst, v)] = parm.eval()
-        parent.setParms(mat_parms)
+    if parent.node(f"geo_{dst}") is None:
+        return
+    restore_instance(parent, (dst,), snapshot,
+                     skip=("file_location#", "is_obstacle#", "is_enabled#"))
+    if parent.evalParm(f"is_obstacle{dst}"):
+        return
+    if retags:
+        upstream = parent.node(f"elements_{dst}")
+        for number, pattern in retags:
+            vex = parent.createNode("attribwrangle", f"vex_{dst}_{number}")
+            vex.setParms({"group": pattern, "grouptype": 4, "class": 1,
+                          "snippet": f"i@Entity = {int(number)};"})
+            vex.setInput(0, upstream)
+            upstream = vex
+        parent.node(f"branch_{dst}").setInput(0, upstream)
+    clear_geo_tree(parent, dst)
+    create_geo_tree({"node": parent, "script_multiparm_index": str(dst)})
+    update_fiber_data(parent, str(dst))
+    _update_subdomain_info(parent, dst)
+    _status(f"Geometry {src} duplicated as geometry {dst} (same mesh and "
+            "settings, same transform: move it before running).")
+    return dst
 
 
 def deter_min_edge(kwargs):
@@ -5514,7 +6022,7 @@ def _ensure_sideset(parent, geo, vol, j):
         parm.set(int(j))
 
 
-def _restore_conditions(parent, data):
+def _restore_conditions(parent, data, volume_remap=None):
     """Initial conditions, body force and obstacle motion from new-format
     json (sideset conditions are restored by _restore_sidesets)."""
     ic = data.get("initial_conditions", {})
@@ -5523,6 +6031,7 @@ def _restore_conditions(parent, data):
         for entry in ic.get(key, []):
             mid = int(entry.get("id", 0))
             geo, vol = mid // 1000, mid % 1000
+            vol = (volume_remap or {}).get(geo, {}).get(vol, vol)
             l = counts.get((geo, vol), 0) + 1
             counts[(geo, vol)] = l
             entries.append((geo, vol, l, type_idx, entry.get("value")))
@@ -5590,7 +6099,8 @@ def _surface_lookups(parent, geo):
     return face_lookup, point_lookup
 
 
-def _restore_sidesets(parent, data, geometry, input_dir, resource_dir):
+def _restore_sidesets(parent, data, geometry, input_dir, resource_dir,
+                      volume_remap=None):
     """Sidesets and their boundary conditions from a scene this asset wrote.
 
     Faces and nodes come back from the selection files, through PolyFEM's
@@ -5672,12 +6182,13 @@ def _restore_sidesets(parent, data, geometry, input_dir, resource_dir):
         geo_record = None
         if record is not None:
             geo_record = record.get("geometries", {}).get(str(i))
+        remap = (volume_remap or {}).get(i, {})
         if geo_record is not None:
             _restore_recorded_sidesets(parent, i, geo_record, faces_by_id,
-                                       points_by_id, notes)
+                                       points_by_id, notes, remap)
         else:
             _restore_sidesets_from_ids(parent, i, conditions, faces_by_id,
-                                       points_by_id, natives, notes)
+                                       points_by_id, natives, notes, remap)
     return notes
 
 
@@ -5697,12 +6208,15 @@ def _set_condition_parms(parent, suffix, kind, vector=None, value=None,
 
 
 def _restore_recorded_sidesets(parent, geo, geo_record, faces_by_id,
-                               points_by_id, notes):
-    """Sidesets exactly as entered, from a record that matches params.json."""
+                               points_by_id, notes, remap=None):
+    """Sidesets exactly as entered, from a record that matches params.json.
+    remap: {subdomain number in the files: subdomain here}."""
+    remap = remap or {}
     combinations = {}
     for sid, owners in geo_record.get("combinations", {}).items():
         try:
-            combinations[int(sid)] = [(int(v), int(s)) for v, s in owners]
+            combinations[int(sid)] = [(remap.get(int(v), int(v)), int(s))
+                                      for v, s in owners]
         except (TypeError, ValueError):
             continue
     found = {}
@@ -5711,12 +6225,15 @@ def _restore_recorded_sidesets(parent, geo, geo_record, faces_by_id,
             owners = combinations.get(sid)
             if owners is None:
                 _, vol, j, _ = _decode_boundary_id(sid)
-                owners = [(vol, j)]
+                owners = [(remap.get(vol, vol), j)]
             for owner in owners:
                 found.setdefault((kind, owner), set()).update(items)
 
     sidesets = [entry for entry in geo_record.get("sidesets", [])
                 if isinstance(entry, dict)]
+    for entry in sidesets:
+        entry["subdomain"] = remap.get(int(entry.get("subdomain", 0)),
+                                       int(entry.get("subdomain", 0)))
     for entry in sidesets:
         vol, j = int(entry.get("subdomain", 0)), int(entry.get("sideset", 0))
         if j < 1 or parent.parm(f"sideset_selection{geo}_{vol}") is None:
@@ -5762,8 +6279,15 @@ def _restore_recorded_sidesets(parent, geo, geo_record, faces_by_id,
 
 
 def _restore_sidesets_from_ids(parent, geo, conditions, faces_by_id,
-                               points_by_id, natives, notes):
-    """Sidesets rebuilt from params.json ids (no usable record)."""
+                               points_by_id, natives, notes, remap=None):
+    """Sidesets rebuilt from params.json ids (no usable record).
+    remap: {subdomain number in the ids: subdomain here}."""
+    remap = remap or {}
+
+    def decode(sid):
+        g, vol, j, k = _decode_boundary_id(sid)
+        return g, remap.get(vol, vol), j, k
+
     entries_by_id = {}
     for kind, key in enumerate(_BC_LIST_KEYS):
         values = conditions.get(key, [])
@@ -5781,7 +6305,7 @@ def _restore_sidesets_from_ids(parent, geo, conditions, faces_by_id,
         | set(entries_by_id)
     regular, combined = {}, []
     for sid in sorted(ids):
-        g, vol, j, _ = _decode_boundary_id(sid)
+        g, vol, j, _ = decode(sid)
         if g != geo or vol < 1 \
                 or parent.parm(f"sideset_selection{geo}_{vol}") is None:
             notes.append(f"geo {geo}: boundary id {sid} names subdomain "
@@ -5809,7 +6333,7 @@ def _restore_sidesets_from_ids(parent, geo, conditions, faces_by_id,
                 "had all of its faces in overlaps with other sidesets")
     target = {}
     for sid in sorted(ids):
-        g, vol, j, _ = _decode_boundary_id(sid)
+        g, vol, j, _ = decode(sid)
         if j >= 1 and (vol, j) in renumber:
             target[sid] = (vol, renumber[(vol, j)])
     for vol, sid in combined:
@@ -6316,6 +6840,20 @@ def _restore_volume_assignments(parent, geo, geometry_data, params_dir,
     if all(value is not None for value in decoded) \
             and len(set(decoded)) == len(decoded):
         body_to_volume = dict(zip(ordered_ids, decoded))
+        if sorted(decoded) != list(range(1, len(decoded) + 1)):
+            # Exports from before 2026-10-01 numbered subdomains by physical
+            # tag, gaps included (tags 1 and 100 made 100 subdomains). Keep
+            # the order, drop the gaps; sidesets and initial conditions
+            # follow through the returned lookup.
+            compact = {volume: index for index, volume in
+                       enumerate(sorted(decoded), start=1)}
+            body_to_volume = {body: compact[volume]
+                              for body, volume in body_to_volume.items()}
+            warnings.append(
+                f"Geometry {geo}: subdomains {sorted(decoded)} were "
+                f"renumbered 1-{len(decoded)} (subdomain numbers no longer "
+                "follow physical tags with gaps); materials, sidesets and "
+                "initial conditions moved with them.")
     else:
         # Arbitrary valid PolyFEM material ids cannot be represented verbatim by
         # the HDA's geo*1000+volume convention. Compact them but retain their
@@ -7132,6 +7670,13 @@ def read_params(kwargs):
             material_slots.update(_restore_volume_assignments(
                 parent, i, g, resource_dir, legacy, warnings))
 
+    # Subdomain numbers that changed on the way in (compacted gaps):
+    # {geo: {number in the file's ids: subdomain here}}.
+    volume_remap = {}
+    for body, (geo, vol) in material_slots.items():
+        if body // 1000 == geo and body % 1000 != vol:
+            volume_remap.setdefault(geo, {})[body % 1000] = vol
+
     # Also recognize both HDA id encodings when volume_selection was absent.
     for geo in valid_geometries:
         if parent.evalParm(f"is_obstacle{geo}"):
@@ -7213,12 +7758,13 @@ def read_params(kwargs):
     # generic PolyFEM selection ids are rebuilt through a compatibility mapper.
     if not legacy:
         try:
-            _restore_conditions(parent, data)
+            _restore_conditions(parent, data, volume_remap)
         except Exception as e:
             warnings.append(f"Conditions were only partially restored: {e}")
         try:
             warnings.extend(_restore_sidesets(
-                parent, data, geometry, input_dir, resource_dir))
+                parent, data, geometry, input_dir, resource_dir,
+                volume_remap))
         except Exception as e:
             warnings.append(f"Sidesets were only partially restored: {e}")
     else:

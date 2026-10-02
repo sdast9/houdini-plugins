@@ -41,9 +41,10 @@ def build(out_dir):
 
     cleanup = asset.createNode("attribdelete", "cleanup_arrays")
     cleanup.setParms({
-        "dtldel": "tet_conn tet_entity hex_conn hex_entity "
-                  "tri_conn tri_entity quad_conn quad_entity "
-                  "line_conn line_entity mesh_dim",
+        "dtldel": "tet_conn tet_entity tet_physical hex_conn hex_entity "
+                  "hex_physical tri_conn tri_entity tri_physical quad_conn "
+                  "quad_entity quad_physical line_conn line_entity "
+                  "line_physical mesh_dim",
     })
     cleanup.setNextInput(element_attrs)
 

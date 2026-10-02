@@ -12,9 +12,15 @@
 #   prim   Entity      physical volume tag (3D groups; +1 shift if any 0)
 #   prim   ElementNum  sequential element number
 #   prim   centroid    element centroid (vector)
+#   prim   msh_physical_tag  the element's physical tag as written in the file
+#                      (0 = no physical group), without the Entity shift
+#   detail msh_physical_names  JSON {"<tag>": "<name>"} of the primary
+#                      dimension's $PhysicalNames (empty object if none)
 # New in 3.0: 2D and 1D meshes are emitted as primary elements. Optional
 #   lower-dimensional physical groups in 3D are imported as boundary polys
 #   with prim surface_entity (enables gmsh-authored sidesets downstream).
+
+import json
 
 import numpy as np
 
@@ -83,6 +89,13 @@ def cook(node):
     for family in primary:
         put(f"{family}_conn", cells[family]["corners"], 1)
         put(f"{family}_entity", cells[family]["entity"] + shift, 1)
+        put(f"{family}_physical", cells[family]["entity"], 1)
+
+    names = {str(tag): name for (dim, tag), name in
+             mesh.get("physical_names", {}).items() if dim == mesh_dim}
+    geo.addAttrib(hou.attribType.Global, "msh_physical_names", "",
+                  create_local_variable=False)
+    geo.setGlobalAttribValue("msh_physical_names", json.dumps(names))
 
     if mesh_dim == 3 and asset.evalParm("import_surfaces"):
         for family, conn_name, ent_name in (

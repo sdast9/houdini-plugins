@@ -1305,9 +1305,17 @@
 
                 parm {
                     name    "subdomain#_#"
-                    label   "Geometry Subdomain"
+                    label   "Subdomain"
                     type    label
-                    default { "#_#" }
+                    default { "Geometry #, Subdomain #" }
+                }
+                parm {
+                    name    "subdomain_info#_#"
+                    label   "Elements"
+                    type    string
+                    default { "" }
+                    disablewhen "{ working_dir != __polyfem_report_edit_sentinel__ }"
+                    help    "Which elements form this subdomain: the Gmsh physical group (its tag number and name) they come from, and how many there are. Subdomains are numbered by sorted physical-group tag, elements without a group last, so tags 1 and 100 become subdomains 1 and 2. Read-only."
                 }
                 parm {
                     name    "color_#_#"
