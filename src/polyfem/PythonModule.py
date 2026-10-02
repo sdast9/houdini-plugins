@@ -35,6 +35,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 
 import numpy as np
@@ -4235,8 +4236,56 @@ def build_solver(parent, data):
     data["solver"] = solver
 
 
+def hdf5_readable_here():
+    """(True, how) when the Read PVD node can open VTK-HDF results on this
+    computer, else (False, why not).
+
+    It can with h5py installed in Houdini's Python, or with the h5py wheel
+    the Read PVD asset bundles for this platform (macOS, Linux x86_64 with
+    glibc 2.28+, Windows x64; Python 3.13). The environment variable
+    POLYFEM_HDA_HDF5_READER=none makes it answer no (used by the tests).
+    """
+    if os.environ.get("POLYFEM_HDA_HDF5_READER", "").lower() == "none":
+        return False, "POLYFEM_HDA_HDF5_READER=none is set"
+    try:
+        import importlib.util
+        if importlib.util.find_spec("h5py") is not None:
+            return True, "h5py is installed in Houdini's Python"
+    except (ImportError, ValueError):
+        pass
+    node_type = hou.nodeType(hou.objNodeTypeCategory(), "readPVD::1.0")
+    if node_type is None or node_type.definition() is None:
+        # Results are not read in Houdini here (ParaView reads VTK-HDF).
+        return True, "Read PVD is not installed; other viewers read VTK-HDF"
+    sections = node_type.definition().sections()
+    try:
+        section, reason = node_type.hdaModule().embedded_h5py_section()
+    except AttributeError:
+        # A Read PVD from before 2026-10-01 bundles the Apple-silicon reader
+        # only.
+        section = "h5py-3.16.0-cp313-macos-arm64.whl.b64"
+        reason = ("the installed Read PVD asset bundles an HDF5 reader for "
+                  "Apple-silicon Macs only; install the current one")
+        if not (sys.platform == "darwin" and sys.version_info[:2] == (3, 13)
+                and platform.machine().lower() in ("arm64", "aarch64")):
+            return False, reason
+    if section is None:
+        return False, reason
+    if section not in sections:
+        return False, "the installed Read PVD asset lacks this platform's reader"
+    return True, "Read PVD bundles an HDF5 reader for this platform"
+
+
 def _hdf5_note(parent):
-    return None
+    if not parent.evalParm("use_hdf5"):
+        return None
+    readable, reason = hdf5_readable_here()
+    if readable:
+        return None
+    return ("Use HDF5 is on, but the Read PVD node cannot read HDF5 on this "
+            f"computer ({reason}); the results will be written as XML .vtu "
+            "files (larger, readable everywhere). Install h5py into "
+            "Houdini's Python to get HDF5 output.")
 
 
 def build_output(parent, data):
@@ -4295,8 +4344,10 @@ def build_output(parent, data):
             if enabled:
                 export_fields.append(name)
 
+    # XML when Read PVD could not open HDF5 here (Check Setup says so).
+    use_hdf5 = b("use_hdf5") and hdf5_readable_here()[0]
     options = {
-        "use_hdf5": b("use_hdf5"), "material": b("materials_fields"),
+        "use_hdf5": use_hdf5, "material": b("materials_fields"),
         "body_ids": b("body_ids_fields"), "contact_forces": contact_forces,
         "friction_forces": friction_forces,
         "normal_adhesion_forces": normal_adh,

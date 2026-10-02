@@ -33,7 +33,54 @@ import numpy as np
 import hou
 
 
-_EMBEDDED_H5PY_SECTION = "h5py-3.16.0-cp313-macos-arm64.whl.b64"
+# The official h5py 3.16.0 wheels for Houdini 22's CPython 3.13, embedded in
+# the asset (base64 sections), one per platform Houdini 22 runs on.
+EMBEDDED_H5PY_SECTIONS = {
+    ("darwin", "arm64"): "h5py-3.16.0-cp313-macos-arm64.whl.b64",
+    ("darwin", "x86_64"): "h5py-3.16.0-cp313-macos-x86_64.whl.b64",
+    ("linux", "x86_64"): "h5py-3.16.0-cp313-linux-x86_64.whl.b64",
+    ("win32", "amd64"): "h5py-3.16.0-cp313-windows-amd64.whl.b64",
+}
+# The Linux wheel is manylinux_2_28: it needs glibc 2.28 or newer.
+_LINUX_GLIBC = (2, 28)
+
+
+def h5py_platform_key():
+    """(sys.platform, machine) in the spelling of EMBEDDED_H5PY_SECTIONS."""
+    machine = platform.machine().lower()
+    machine = {"aarch64": "arm64", "x64": "amd64"}.get(machine, machine)
+    if sys.platform == "win32" and machine == "x86_64":
+        machine = "amd64"
+    if sys.platform != "win32" and machine == "amd64":
+        machine = "x86_64"
+    return sys.platform, machine
+
+
+def embedded_h5py_section(key=None, python=None):
+    """(section name, None) of the bundled h5py wheel that runs here, or
+    (None, why not)."""
+    key = key or h5py_platform_key()
+    python = python or sys.version_info[:2]
+    if tuple(python) != (3, 13):
+        return None, (f"the bundled HDF5 reader is built for Houdini 22's "
+                      f"Python 3.13, and this is Python "
+                      f"{python[0]}.{python[1]}")
+    section = EMBEDDED_H5PY_SECTIONS.get(tuple(key))
+    if section is None:
+        return None, ("there is no bundled HDF5 reader for this platform "
+                      f"({key[0]}, {key[1]}); bundled: macOS (Apple silicon "
+                      "and Intel), Linux x86_64, Windows x64")
+    if key[0] == "linux":
+        library, version = platform.libc_ver()
+        try:
+            found = tuple(int(part) for part in version.split(".")[:2])
+        except ValueError:
+            found = ()
+        if library != "glibc" or found < _LINUX_GLIBC:
+            have = f"{library} {version}".strip() or "no glibc"
+            return None, ("the bundled Linux HDF5 reader needs glibc 2.28 or "
+                          f"newer (this system has {have})")
+    return section, None
 
 
 def _load_embedded_h5py():
@@ -43,16 +90,16 @@ def _load_embedded_h5py():
     output works offline and does not modify Houdini's own Python installation.
     A normal h5py installation, when present, is preferred by _import_h5py.
     """
-    if (sys.version_info[:2] != (3, 13) or sys.platform != "darwin"
-            or platform.machine().lower() not in ("arm64", "aarch64")):
+    section_name, reason = embedded_h5py_section()
+    if section_name is None:
         raise ImportError(
-            "The bundled HDF5 reader supports Houdini 22 on an Apple-silicon "
-            "Mac. On this platform, install h5py into Houdini's Python "
-            "environment, then restart Houdini.")
+            f"The bundled HDF5 reader cannot be used: {reason}. Install h5py "
+            "into Houdini's Python environment, then restart Houdini (or "
+            "turn off Use HDF5 on the PolyFEM node).")
 
     node_type = hou.nodeType(hou.objNodeTypeCategory(), "readPVD::1.0")
     definition = node_type.definition() if node_type is not None else None
-    section = (definition.sections().get(_EMBEDDED_H5PY_SECTION)
+    section = (definition.sections().get(section_name)
                if definition is not None else None)
     if section is None:
         raise ImportError(

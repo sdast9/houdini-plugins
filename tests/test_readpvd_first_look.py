@@ -318,6 +318,85 @@ def check_contact_forces_default(root):
           "not without contact")
 
 
+# SHA-256 of the official PyPI h5py 3.16.0 wheels the asset embeds.
+WHEEL_DIGESTS = {
+    "h5py-3.16.0-cp313-macos-arm64.whl.b64": (
+        "macosx_11_0_arm64",
+        "42108e93326c50c2810025aade9eac9d6827524cdccc7d4b75a546e5ab308edb"),
+    "h5py-3.16.0-cp313-macos-x86_64.whl.b64": (
+        "macosx_10_13_x86_64",
+        "370a845f432c2c9619db8eed334d1e610c6015796122b0e57aa46312c22617d9"),
+    "h5py-3.16.0-cp313-linux-x86_64.whl.b64": (
+        "manylinux_2_28_x86_64",
+        "9300ad32dea9dfc5171f94d5f6948e159ed93e4701280b0f508773b3f582f402"),
+    "h5py-3.16.0-cp313-windows-amd64.whl.b64": (
+        "win_amd64",
+        "18f2bbcd545e6991412253b98727374c356d67caa920e68dc79eab36bf5fedad"),
+}
+
+
+def check_hdf5_portability(root):
+    import base64
+    import hashlib
+    import io
+    import zipfile
+    reader_type = hou.nodeType(hou.objNodeTypeCategory(), "readPVD::1.0")
+    phm = reader_type.hdaModule()
+    sections = reader_type.definition().sections()
+    assert set(phm.EMBEDDED_H5PY_SECTIONS.values()) == set(WHEEL_DIGESTS)
+    for name, (tag, digest) in WHEEL_DIGESTS.items():
+        wheel = base64.b64decode(sections[name].contents())
+        assert hashlib.sha256(wheel).hexdigest() == digest, name
+        with zipfile.ZipFile(io.BytesIO(wheel)) as archive:
+            meta = next(n for n in archive.namelist()
+                        if n.endswith(".dist-info/WHEEL"))
+            assert f"Tag: cp313-cp313-{tag}" in archive.read(meta).decode()
+    assert phm.embedded_h5py_section(("darwin", "arm64"))[0] == \
+        "h5py-3.16.0-cp313-macos-arm64.whl.b64"
+    assert phm.embedded_h5py_section(("darwin", "x86_64"))[0] == \
+        "h5py-3.16.0-cp313-macos-x86_64.whl.b64"
+    assert phm.embedded_h5py_section(("win32", "amd64"))[0] == \
+        "h5py-3.16.0-cp313-windows-amd64.whl.b64"
+    section, reason = phm.embedded_h5py_section(("sunos5", "sparc"))
+    assert section is None and "no bundled HDF5 reader" in reason
+    section, reason = phm.embedded_h5py_section(python=(3, 11))
+    assert section is None and "Python 3.13" in reason
+    print("PASS: Read PVD carries the official h5py wheels for macOS (both), "
+          "Linux x86_64 and Windows x64, and picks the platform's one")
+
+    # Where Read PVD could not open HDF5, the PolyFEM node writes XML.
+    work = os.path.join(root, "xml_fallback")
+    os.makedirs(work)
+    node = new_scene(work, "xml_fallback")
+    load(node, 1, write_box(os.path.join(work, "box.msh"), n=2))
+    node.setParms({"quasistatic": 1, "end_time_bool": 1, "tend": 1.0,
+                   "time_inc_bool": 1, "dt": 1.0, "enable": 0})
+    sideset(node, 1, "axis:-z:0.01", 0, "[0, 0, 0]")
+    sideset(node, 1, "axis:+z:0.99", 0, '[0, 0, "-0.05*t"]')
+    module = node.hdaModule()
+    assert module.hdf5_readable_here()[0], module.hdf5_readable_here()
+    os.environ["POLYFEM_HDA_HDF5_READER"] = "none"
+    try:
+        report = module.check_setup(node, "write")
+        assert any("written as XML .vtu files" in note
+                   for note in report["notes"]), report
+        params, pvd = run(node)
+    finally:
+        del os.environ["POLYFEM_HDA_HDF5_READER"]
+    options = json.load(open(params))["output"]["paraview"]["options"]
+    assert options["use_hdf5"] is False, options
+    output = os.path.dirname(pvd)
+    assert any(name.endswith(".vtu") for name in os.listdir(output))
+    assert not any(name.endswith(".hdf") for name in os.listdir(output))
+    viewer = hou.node("/obj").createNode("readPVD::1.0", "xml_viewer")
+    viewer.setParms({"PVD_file": pvd})
+    viewer.hdaModule().start({"node": viewer})
+    assert viewer.evalParm("color_max") > 0.0
+    assert node.evalParm("use_hdf5") == 1, "the toggle itself was changed"
+    print("PASS: without an HDF5 reader the node writes XML (and says so); "
+          "Use HDF5 itself stays on")
+
+
 def main():
     assert os.path.isfile(POLYFEM_BIN), f"missing {POLYFEM_BIN}"
     hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"))
@@ -329,6 +408,7 @@ def main():
     check_slash_fields(root)
     check_smoothing_per_body(root)
     check_contact_forces_default(root)
+    check_hdf5_portability(root)
     print("workdir:", root)
 
 

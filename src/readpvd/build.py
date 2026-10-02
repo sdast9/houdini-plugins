@@ -11,8 +11,19 @@ import hda_build  # noqa: E402
 
 TYPE_NAME = "readPVD::1.0"
 LABEL = "Read PVD 1.0 (PolyFEM results)"
-H5PY_WHEEL = "h5py-3.16.0-cp313-cp313-macosx_11_0_arm64.whl"
-H5PY_SECTION = "h5py-3.16.0-cp313-macos-arm64.whl.b64"
+# Official h5py wheels from PyPI (SHA-256 in vendor/README.md), embedded as
+# base64 sections; the section names match EMBEDDED_H5PY_SECTIONS in the
+# PythonModule.
+H5PY_WHEELS = {
+    "h5py-3.16.0-cp313-macos-arm64.whl.b64":
+        "h5py-3.16.0-cp313-cp313-macosx_11_0_arm64.whl",
+    "h5py-3.16.0-cp313-macos-x86_64.whl.b64":
+        "h5py-3.16.0-cp313-cp313-macosx_10_13_x86_64.whl",
+    "h5py-3.16.0-cp313-linux-x86_64.whl.b64":
+        "h5py-3.16.0-cp313-cp313-manylinux_2_28_x86_64.whl",
+    "h5py-3.16.0-cp313-windows-amd64.whl.b64":
+        "h5py-3.16.0-cp313-cp313-win_amd64.whl",
+}
 
 TOPO_SOP_CODE = """\
 node = hou.pwd()
@@ -1729,12 +1740,13 @@ def build(out_dir):
     definition.updateFromNode(asset)
     definition.setParmTemplateGroup(_parms())
     definition.addSection("PythonModule", module)
-    wheel_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "vendor", H5PY_WHEEL)
-    with open(wheel_path, "rb") as wheel_file:
-        definition.addSection(
-            H5PY_SECTION,
-            base64.b64encode(wheel_file.read()).decode("ascii"))
+    for section_name, wheel in H5PY_WHEELS.items():
+        wheel_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "vendor", wheel)
+        with open(wheel_path, "rb") as wheel_file:
+            definition.addSection(
+                section_name,
+                base64.b64encode(wheel_file.read()).decode("ascii"))
     definition.addSection("OnCreated", ON_CREATED_CODE)
     definition.addSection(
         "ViewerStateModule",
