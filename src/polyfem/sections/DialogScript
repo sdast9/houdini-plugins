@@ -4733,8 +4733,8 @@
                     name    "body_ids_fields"
                     label   "Body IDs"
                     type    toggle
-                    default { "0" }
-                    help    "Export each element's body id, so the Read PVD node can show or hide individual bodies."
+                    default { "1" }
+                    help    "Export each node's body id (one number per node; on by default). The Read PVD node needs it to show or hide individual bodies and to keep its smoothing inside one body where bodies touch. Turn off only to save a little disk space on single-body runs."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -4899,8 +4899,8 @@
                         name    "contact_forces_fields"
                         label   "Contact Forces"
                         type    toggle
-                        default { "0" }
-                        help    "Export the contact (barrier) force on every surface node into the Contact block -- the field to inspect when validating contact behavior."
+                        default { "1" }
+                        help    "Export the contact (barrier) force on every surface node into the Contact block -- the field to inspect when validating contact behavior. On by default; it is written only while Enable Contact (Contact tab) is on, so scenes without contact get no empty Contact block."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {

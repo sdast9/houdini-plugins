@@ -908,9 +908,16 @@ def _menu_tokens(flat_menu):
     return flat_menu[::2]
 
 
+# The field a result opens with: von Mises stress -- exported, or derived from
+# F and the Cauchy stress, which is all the PolyFEM node's default Minimal
+# Fields output writes -- else the displacement.
+_DEFAULT_COLOR_FIELDS = ("von_mises", "von_mises_derived", "solution_mag",
+                         "solution")
+
+
 def _first_color_field(node):
     tokens = _menu_tokens(color_field_menu({"node": node}))
-    for preferred in ("von_mises", "solution_mag", "solution"):
+    for preferred in _DEFAULT_COLOR_FIELDS:
         if preferred in tokens:
             return preferred
     return tokens[0] if tokens and tokens[0] else ""
@@ -1060,7 +1067,10 @@ def analysis_options_changed(kwargs):
 
 
 def color_selection_changed(kwargs):
+    """Color Field / Field Value To Display callback: a new quantity needs its
+    own range, so the displayed range follows it unless it is locked."""
     sync_available_options(kwargs)
+    auto_range_default(kwargs["node"])
     update_color_status(kwargs)
 
 
@@ -1082,13 +1092,18 @@ def multi_block_field_menu(kwargs):
 
 
 def _mesh_point_field(mesh, field):
+    """A field of a parsed mesh by its attribute name (cell data averaged to
+    the points). `field` is the sanitized name the menus and the cooked
+    geometry use ("MaterialSum/HGODispersion/kappa" is
+    MaterialSum_HGODispersion_kappa), so raw vtu names are sanitized the
+    same way before they are compared."""
     for raw_name, data in mesh["point_data"].items():
-        if FIELD_ALIASES.get(raw_name, raw_name) == field:
+        if _field_name(raw_name) == field:
             array = np.asarray(data, dtype=np.float64)
             if len(array) == len(mesh["points"]):
                 return array
     for raw_name, by_family in mesh.get("cell_data", {}).items():
-        if FIELD_ALIASES.get(raw_name, raw_name) != field:
+        if _field_name(raw_name) != field:
             continue
         sample = next(iter(by_family.values()), None)
         if sample is None:
@@ -1141,105 +1156,193 @@ def _reduce_array(values, reduction):
 
 
 def _mesh_field(mesh, field):
+    """One field of a parsed mesh: exported, or derived exactly as the derived
+    VEX stage does it. Only what the requested field needs is computed (the
+    full derived set costs about 1 KB per point), so ranging a large result
+    by von Mises does not also decompose every strain tensor."""
     raw = _mesh_point_field(mesh, field)
     if raw is not None:
         return raw
-    point_data = {
-        FIELD_ALIASES.get(name, name): np.asarray(values, dtype=np.float64)
-        for name, values in mesh["point_data"].items()
-    }
-    solution = point_data.get("solution")
-    if field == "solution_mag" and solution is not None:
-        return np.linalg.norm(solution, axis=1)
-    if not all(name in point_data for name in ("F_1", "F_2", "F_3")):
+    names = {FIELD_ALIASES.get(name, name): name
+             for name in mesh["point_data"]}
+
+    def array(name):
+        return np.asarray(mesh["point_data"][names[name]], dtype=np.float64)
+
+    def have(*wanted):
+        return all(name in names for name in wanted)
+
+    if field == "solution_mag":
+        return np.linalg.norm(array("solution"), axis=1) \
+            if have("solution") else None
+    if not have("F_1", "F_2", "F_3"):
         return None
+
+    memo = {}
+
+    def once(function):
+        def value():
+            if function.__name__ not in memo:
+                memo[function.__name__] = function()
+            return memo[function.__name__]
+        return value
+
+    identity = np.eye(3)
+
     # PolyFEM flattens tensors column-major: the X_i arrays are the COLUMNS
     # of the tensor (stack on axis=2), not the rows.
-    F = np.stack((point_data["F_1"], point_data["F_2"],
-                  point_data["F_3"]), axis=2)
-    identity = np.eye(3)
-    jacobian = np.linalg.det(F)
+    @once
+    def F():
+        return np.stack((array("F_1"), array("F_2"), array("F_3")), axis=2)
+
+    @once
+    def jacobian():
+        return np.linalg.det(F())
+
     # Right/Left Cauchy-Green deformation tensors and their principal
     # (Lagrangian / Eulerian) axes, reused for the stretch and strain measures
     # that share those axes.
-    C = np.einsum("nji,njk->nik", F, F)         # F^T F  (right, Lagrangian)
-    B = np.einsum("nij,nkj->nik", F, F)         # F F^T  (left, Eulerian)
-    c_vals, c_vecs = np.linalg.eigh(C)          # ascending
-    b_vals, b_vecs = np.linalg.eigh(B)
-    lam = np.sqrt(np.clip(c_vals, 0, None))     # principal stretches
-    right_stretch = np.einsum("nij,nj,nkj->nik", c_vecs, lam, c_vecs)
-    left_stretch = np.einsum(
-        "nij,nj,nkj->nik", b_vecs, np.sqrt(np.clip(b_vals, 0, None)), b_vecs)
-    hencky = np.einsum(
-        "nij,nj,nkj->nik", c_vecs, np.log(np.clip(lam, 1e-20, None)), c_vecs)
-    hencky[np.abs(jacobian) <= 1e-12] = 0.0     # ln(U) undefined at J = 0
-    green = 0.5 * (C - identity)
+    @once
+    def C():
+        return np.einsum("nji,njk->nik", F(), F())   # F^T F (Lagrangian)
+
+    @once
+    def B():
+        return np.einsum("nij,nkj->nik", F(), F())   # F F^T (Eulerian)
+
+    @once
+    def c_eigen():
+        return np.linalg.eigh(C())                    # ascending
+
+    @once
+    def b_eigen():
+        return np.linalg.eigh(B())
+
+    @once
+    def lam():
+        return np.sqrt(np.clip(c_eigen()[0], 0, None))   # principal stretches
+
+    @once
+    def green():
+        return 0.5 * (C() - identity)
+
+    @once
+    def hencky():
+        vecs = c_eigen()[1]
+        value = np.einsum("nij,nj,nkj->nik", vecs,
+                          np.log(np.clip(lam(), 1e-20, None)), vecs)
+        value[np.abs(jacobian()) <= 1e-12] = 0.0   # ln(U) undefined at J = 0
+        return value
+
     # Almansi strain needs B^-1, defined only where B is invertible (J != 0);
     # zero it elsewhere so it matches the guarded VEX display path.
-    almansi = 0.5 * (identity - np.linalg.pinv(B))
-    almansi[np.abs(jacobian) <= 1e-12] = 0.0
-    infinitesimal = 0.5 * (F + np.swapaxes(F, 1, 2)) - identity
-    derived = {
-        "F_mat": F, "J": jacobian,
-        "right_cauchy_green": C,
-        "right_cauchy_green_eigenvalues": c_vals[:, ::-1],
-        "left_cauchy_green": B,
-        "left_cauchy_green_eigenvalues": b_vals[:, ::-1],
-        "right_stretch": right_stretch, "left_stretch": left_stretch,
-        "principal_stretches": lam[:, ::-1],
-        "green_lagrange_strain": green,
-        "green_lagrange_eigenvalues": np.linalg.eigvalsh(green)[:, ::-1],
-        "almansi_strain": almansi,
-        "almansi_strain_eigenvalues": np.linalg.eigvalsh(almansi)[:, ::-1],
-        "hencky_strain": hencky,
-        "hencky_strain_eigenvalues": np.linalg.eigvalsh(hencky)[:, ::-1],
-        "infinitesimal_strain": infinitesimal,
-        "infinitesimal_strain_eigenvalues":
-            np.linalg.eigvalsh(infinitesimal)[:, ::-1],
-    }
+    @once
+    def almansi():
+        value = 0.5 * (identity - np.linalg.pinv(B()))
+        value[np.abs(jacobian()) <= 1e-12] = 0.0
+        return value
+
+    @once
+    def infinitesimal():
+        return 0.5 * (F() + np.swapaxes(F(), 1, 2)) - identity
+
     # Cauchy stress from the exported field, or reconstructed from the 1st
     # Piola-Kirchhoff stress (sigma = (1/J) P F^T) when only that was written.
-    cauchy = None
-    if all(name in point_data for name in (
-            "cauchy_stress_1", "cauchy_stress_2", "cauchy_stress_3")):
-        cauchy = np.stack((point_data["cauchy_stress_1"],
-                           point_data["cauchy_stress_2"],
-                           point_data["cauchy_stress_3"]), axis=2)
-    elif all(name in point_data for name in (
-            "pk1_stress_1", "pk1_stress_2", "pk1_stress_3")):
-        pk1_tensor = np.stack((point_data["pk1_stress_1"],
-                               point_data["pk1_stress_2"],
-                               point_data["pk1_stress_3"]), axis=2)
-        scale = np.divide(1.0, jacobian, out=np.zeros_like(jacobian),
-                          where=np.abs(jacobian) > 1e-12)
-        cauchy = scale[:, None, None] * np.matmul(
-            pk1_tensor, np.swapaxes(F, 1, 2))
-    if cauchy is not None:
-        trace = np.trace(cauchy, axis1=1, axis2=2)
-        hydro = trace / 3.0
-        dev = cauchy - hydro[:, None, None] * identity
-        j2 = 0.5 * np.sum(dev * dev, axis=(1, 2))
-        eigen = np.linalg.eigvalsh(cauchy)[:, ::-1]
-        Finv = np.linalg.pinv(F)
-        pk1 = jacobian[:, None, None] * np.einsum(
-            "nij,njk->nik", cauchy, np.swapaxes(Finv, 1, 2))
-        pk2 = jacobian[:, None, None] * np.einsum(
-            "nij,njk,nlk->nil", Finv, cauchy, Finv)
-        derived.update({
-            "cauchy_mat": cauchy, "cauchy_eigenvalues": eigen,
-            "cauchy_trace": trace, "hydrostatic_stress": hydro,
-            "deviatoric_stress": dev, "stress_J2": j2,
-            "stress_J3": np.linalg.det(dev),
-            "von_mises_derived": np.sqrt(np.maximum(0, 3 * j2)),
-            "max_shear_stress": 0.5 * (eigen[:, 0] - eigen[:, 2]),
-            "stress_triaxiality": np.divide(
-                hydro, np.sqrt(np.maximum(0, 3 * j2)),
-                out=np.zeros_like(hydro), where=j2 > 1e-24),
-            "pk1": pk1, "pk2": pk2,
-            "pk2_eigenvalues": np.linalg.eigvalsh(
-                0.5 * (pk2 + np.swapaxes(pk2, 1, 2)))[:, ::-1],
-        })
-    return derived.get(field)
+    @once
+    def cauchy():
+        if have("cauchy_stress_1", "cauchy_stress_2", "cauchy_stress_3"):
+            return np.stack((array("cauchy_stress_1"),
+                             array("cauchy_stress_2"),
+                             array("cauchy_stress_3")), axis=2)
+        if have("pk1_stress_1", "pk1_stress_2", "pk1_stress_3"):
+            pk1_tensor = np.stack((array("pk1_stress_1"),
+                                   array("pk1_stress_2"),
+                                   array("pk1_stress_3")), axis=2)
+            jac = jacobian()
+            scale = np.divide(1.0, jac, out=np.zeros_like(jac),
+                              where=np.abs(jac) > 1e-12)
+            return scale[:, None, None] * np.matmul(
+                pk1_tensor, np.swapaxes(F(), 1, 2))
+        return None
+
+    @once
+    def trace():
+        return np.trace(cauchy(), axis1=1, axis2=2)
+
+    @once
+    def hydro():
+        return trace() / 3.0
+
+    @once
+    def dev():
+        return cauchy() - hydro()[:, None, None] * identity
+
+    @once
+    def j2():
+        return 0.5 * np.sum(dev() * dev(), axis=(1, 2))
+
+    @once
+    def eigen():
+        return np.linalg.eigvalsh(cauchy())[:, ::-1]
+
+    @once
+    def Finv():
+        return np.linalg.pinv(F())
+
+    @once
+    def pk1():
+        return jacobian()[:, None, None] * np.einsum(
+            "nij,njk->nik", cauchy(), np.swapaxes(Finv(), 1, 2))
+
+    @once
+    def pk2():
+        return jacobian()[:, None, None] * np.einsum(
+            "nij,njk,nlk->nil", Finv(), cauchy(), Finv())
+
+    kinematics = {
+        "F_mat": F, "J": jacobian,
+        "right_cauchy_green": C,
+        "right_cauchy_green_eigenvalues": lambda: c_eigen()[0][:, ::-1],
+        "left_cauchy_green": B,
+        "left_cauchy_green_eigenvalues": lambda: b_eigen()[0][:, ::-1],
+        "right_stretch": lambda: np.einsum(
+            "nij,nj,nkj->nik", c_eigen()[1], lam(), c_eigen()[1]),
+        "left_stretch": lambda: np.einsum(
+            "nij,nj,nkj->nik", b_eigen()[1],
+            np.sqrt(np.clip(b_eigen()[0], 0, None)), b_eigen()[1]),
+        "principal_stretches": lambda: lam()[:, ::-1],
+        "green_lagrange_strain": green,
+        "green_lagrange_eigenvalues":
+            lambda: np.linalg.eigvalsh(green())[:, ::-1],
+        "almansi_strain": almansi,
+        "almansi_strain_eigenvalues":
+            lambda: np.linalg.eigvalsh(almansi())[:, ::-1],
+        "hencky_strain": hencky,
+        "hencky_strain_eigenvalues":
+            lambda: np.linalg.eigvalsh(hencky())[:, ::-1],
+        "infinitesimal_strain": infinitesimal,
+        "infinitesimal_strain_eigenvalues":
+            lambda: np.linalg.eigvalsh(infinitesimal())[:, ::-1],
+    }
+    stresses = {
+        "cauchy_mat": cauchy, "cauchy_eigenvalues": eigen,
+        "cauchy_trace": trace, "hydrostatic_stress": hydro,
+        "deviatoric_stress": dev, "stress_J2": j2,
+        "stress_J3": lambda: np.linalg.det(dev()),
+        "von_mises_derived": lambda: np.sqrt(np.maximum(0, 3 * j2())),
+        "max_shear_stress": lambda: 0.5 * (eigen()[:, 0] - eigen()[:, 2]),
+        "stress_triaxiality": lambda: np.divide(
+            hydro(), np.sqrt(np.maximum(0, 3 * j2())),
+            out=np.zeros_like(hydro()), where=j2() > 1e-24),
+        "pk1": pk1, "pk2": pk2,
+        "pk2_eigenvalues": lambda: np.linalg.eigvalsh(
+            0.5 * (pk2() + np.swapaxes(pk2(), 1, 2)))[:, ::-1],
+    }
+    if field in kinematics:
+        return kinematics[field]()
+    if field in stresses:
+        return stresses[field]() if cauchy() is not None else None
+    return None
 
 
 def cook_reference_comparison(node):
@@ -1412,15 +1515,22 @@ def _apply_reference(values, reference_reduced, mode):
     return delta
 
 
-def _coincidence_groups(points):
+def _coincidence_groups(points, body=None):
     """Return (group id per point, representative flag) for coincident nodes.
 
     PolyFEM writes per-element duplicated vertices; `inverse` labels which
     physical vertex each point is, and `representative` is 1 for exactly one
-    point per physical vertex (used to draw a single glyph per node).
+    point per physical vertex (used to draw a single glyph per node). With
+    PolyFEM body ids, points of different bodies are never one vertex: two
+    bodies touching (or sharing an interface) keep their own values when the
+    display averages over a vertex.
     """
+    keys = np.round(np.asarray(points, dtype=np.float64), 9)
+    if body is not None and len(body) == len(keys):
+        keys = np.column_stack((keys, np.rint(np.asarray(
+            body, dtype=np.float64).reshape(len(keys), -1)[:, 0])))
     _, index, inverse = np.unique(
-        np.round(points, 9), axis=0, return_index=True, return_inverse=True)
+        keys, axis=0, return_index=True, return_inverse=True)
     inverse = np.asarray(inverse).ravel()
     representative = np.zeros(len(points), dtype=np.float64)
     representative[index] = 1.0
@@ -1469,9 +1579,9 @@ def _interior_face_bits(conn, family, inverse, body=None):
     return (interior.reshape(cells, n_faces) * weights).sum(axis=1)
 
 
-def _coincidence_inverse(points):
+def _coincidence_inverse(points, body=None):
     """Group id per point for coincident (duplicated) mesh vertices."""
-    return _coincidence_groups(points)[0]
+    return _coincidence_groups(points, body)[0]
 
 
 def _nodal_average(values, inverse):
@@ -1529,11 +1639,12 @@ def _scan_displayed_values(node, path):
         _SCAN_CACHE.clear()
 
 
-def _scan_frames(node, path):
+def _scan_frames(node, path, frames=None):
     """Compute (frame, timestep, values) per frame -- pure numpy, an exact
     mirror of the color stage (reduction, reference comparison, smoothing
     `_avg` preference, nodal averaging, body visibility). No network cook and
-    no frame change, so the range agrees with the viewport.
+    no frame change, so the range agrees with the viewport. `frames` limits
+    the scan to some frame numbers (default: every frame).
     """
     entries = read_pvd(path)
     field = node.evalParm("color_attrib")
@@ -1544,7 +1655,7 @@ def _scan_frames(node, path):
     smooth = bool(node.evalParm("smooth_field"))
     visible = _visible_body_set(node)
     inverse = None
-    for frame in range(len(entries)):
+    for frame in (range(len(entries)) if frames is None else frames):
         timestep = entries[frame][0]
         try:
             blocks = load_frame(path, frame)
@@ -1565,14 +1676,14 @@ def _scan_frames(node, path):
             effective = field
             if smooth:
                 candidate = field + "_avg"
-                names = {FIELD_ALIASES.get(name, name)
-                         for name in mesh["point_data"]}
+                names = {_field_name(name) for name in mesh["point_data"]}
                 if candidate in names:
                     effective = candidate
             values = _scan_reduced(node, mesh, effective, reduction)
         if values is not None and smooth:
             if inverse is None or len(inverse) != len(values):
-                inverse = _coincidence_inverse(mesh["points"])
+                inverse = _coincidence_inverse(
+                    mesh["points"], mesh["point_data"].get("body_ids"))
             values = _nodal_average(values, inverse)
         # Restrict the range to the bodies that are displayed.
         if values is not None and visible is not None:
@@ -1983,7 +2094,10 @@ def cook_topology(node):
     # vertices (nodal recovery); the representative flag marks one point per
     # vertex so glyphs draw once per node. Computed once with the cached
     # topology; stored as float (exact for < 16M groups) for fast binary reads.
-    inverse, representative = _coincidence_groups(points)
+    # With body ids the groups stay inside one body, so smoothing never mixes
+    # two bodies' values where they touch.
+    body = mesh["point_data"].get("body_ids")
+    inverse, representative = _coincidence_groups(points, body)
     geo.addAttrib(hou.attribType.Point, "coincident_id", 0.0,
                   create_local_variable=False)
     _set_floats(geo.setPointFloatAttribValuesFromString, "coincident_id",
@@ -2002,7 +2116,6 @@ def cook_topology(node):
         if family in mesh["cells"]:
             put(f"{family}_conn", mesh["cells"][family])
 
-    body = mesh["point_data"].get("body_ids")
     for family in ("tet", "hex"):
         if family in mesh["cells"]:
             put(f"{family}_face_bits", _interior_face_bits(
@@ -2210,6 +2323,31 @@ def start(kwargs=None):
     _autocenter_clip(node)
     if hou.isUIAvailable():
         hou.setFrame(0)
+    # First look: colors spread over the result's values instead of the
+    # 0..1 a new node starts with, and the model centered in the viewport.
+    auto_range_default(node)
+    update_color_status({"node": node})
+    _frame_result(node)
+
+
+def _frame_result(node):
+    """Frame the Scene Viewer on the loaded result (interactive sessions)."""
+    viewer = _scene_viewer()
+    if viewer is None:
+        return
+    try:
+        output = node.node("output")
+        output.cook()
+        bbox = output.geometry().boundingBox()
+        if not bbox.isValid():
+            return
+        try:
+            bbox = bbox * node.worldTransform()
+        except (TypeError, AttributeError, hou.Error):
+            pass
+        viewer.curViewport().frameBoundingBox(bbox)
+    except (hou.Error, AttributeError):
+        pass
 
 
 def clear_cache(kwargs=None):
@@ -2406,17 +2544,68 @@ def autoscale(kwargs):
     if geo.findPointAttrib("for_color") is None:
         _message("Cook the node first (no color attribute yet).")
         return
-    # Fiber dispersion is bounded by 1/d, and the preprocessing HDA colours it
-    # over that fixed range -- match it so the same kappa reads as the same
-    # colour before and after the solve.
-    if _display_name(node.evalParm("color_attrib")).endswith("kappa"):
-        node.setParms({"color_min": 0.0, "color_max": 1.0 / 3.0})
+    fixed = _fixed_color_range(node)
+    if fixed is not None:
+        node.setParms({"color_min": fixed[0], "color_max": fixed[1]})
         update_color_status(kwargs)
         return
     values = np.frombuffer(
         geo.pointFloatAttribValuesAsString("for_color"), dtype=np.float32)
     _apply_color_range(node, values)
     update_color_status(kwargs)
+
+
+def _fixed_color_range(node):
+    """(min, max) of a field whose color scale is fixed by its definition.
+
+    Fiber dispersion is bounded by 1/d, and the preprocessing HDA colours it
+    over that fixed range -- match it so the same kappa reads as the same
+    colour before and after the solve. Not for a comparison with a reference
+    frame, which shows changes.
+    """
+    if node.evalParm("reference_enable"):
+        return None
+    if _display_name(node.evalParm("color_attrib")).endswith("kappa"):
+        return 0.0, 1.0 / 3.0
+    return None
+
+
+def auto_range_default(node):
+    """Range the colors for a newly loaded result or a newly chosen field.
+
+    Uses the frame on screen and the last frame: frame 0 of a loaded run is
+    often all zero (no displacement or stress yet), while the end of the run
+    usually holds its largest values, so a range from frame 0 alone would
+    draw the whole run in one flat color. Mirrors the color stage in numpy
+    (no cook), and does nothing while Lock Displayed Range is on. Returns
+    True when it set the range.
+    """
+    if node.evalParm("range_lock"):
+        return False
+    fixed = _fixed_color_range(node)
+    if fixed is not None:
+        node.setParms({"color_min": fixed[0], "color_max": fixed[1]})
+        return True
+    path = node.evalParm("PVD_file")
+    if not path or not node.evalParm("color_attrib"):
+        return False
+    try:
+        count = len(read_pvd(path))
+    except Exception:
+        return False
+    if not count:
+        return False
+    current = max(0, min(int(hou.frame()), count - 1))
+    try:
+        collected = [values[np.isfinite(values)] for _, _, values in
+                     _scan_frames(node, path, sorted({current, count - 1}))
+                     if values is not None]
+    except Exception:
+        return False
+    collected = [chunk for chunk in collected if len(chunk)]
+    if not collected:
+        return False
+    return _apply_color_range(node, np.concatenate(collected), quiet=True)
 
 
 def autoscale_all(kwargs):
@@ -2433,6 +2622,11 @@ def autoscale_all(kwargs):
     path = node.evalParm("PVD_file")
     if not path:
         return
+    fixed = _fixed_color_range(node)
+    if fixed is not None:
+        node.setParms({"color_min": fixed[0], "color_max": fixed[1]})
+        update_color_status(kwargs)
+        return
     try:
         collected = [values[np.isfinite(values)]
                      for _, _, values in _scan_displayed_values(node, path)
@@ -2448,14 +2642,16 @@ def autoscale_all(kwargs):
     update_color_status(kwargs)
 
 
-def _apply_color_range(node, values):
+def _apply_color_range(node, values, quiet=False):
     values = np.asarray(values, dtype=np.float64)
     values = values[np.isfinite(values)]
     if node.evalParm("color_scale") == 1:
         values = values[values > 0]
     if not len(values):
-        _message("No valid values were found for the selected color scale.")
-        return
+        if not quiet:
+            _message("No valid values were found for the selected color "
+                     "scale.")
+        return False
     if node.evalParm("range_percentile"):
         low_percentile, high_percentile = node.evalParmTuple(
             "range_percentiles")
@@ -2468,6 +2664,7 @@ def _apply_color_range(node, values):
         extent = max(abs(float(low)), abs(float(high)))
         low, high = -extent, extent
     node.setParms({"color_min": float(low), "color_max": float(high)})
+    return True
 
 
 def set_diverging_ramp(kwargs):

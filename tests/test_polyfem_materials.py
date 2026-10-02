@@ -528,6 +528,9 @@ def main():
                    "fib_attrib1_1": "fiber1",
                    "kappa_source1_1": "attribute",
                    "kappa_sop1_1": source.path(), "kappa_attrib1_1": "kappa"})
+    # The stamp resolves the sources only while something displays them
+    # (2026-10-01: a transform edit used to resolve them on every cook).
+    node.setParms({"show_fibers1": 1})
     phm.update_fiber_data(node, 1)
 
     stamped = node.node("fiberdata_1").geometry()

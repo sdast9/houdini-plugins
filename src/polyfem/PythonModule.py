@@ -1910,19 +1910,48 @@ def global_element_table(parent):
     return table, offset
 
 
+# Mean of each primitive's vertex positions. Run by the Attribute VOP verb at
+# 64-bit precision, which sums in the same order as numpy's mean of the
+# float32 positions, so the result is bitwise the per-primitive Python loop it
+# replaces -- in milliseconds instead of seconds per million elements.
+_CENTROID_VEX = """
+vector c = {0, 0, 0};
+int n = primvertexcount(0, @primnum);
+for (int j = 0; j < n; j++)
+    c += point(0, "P", vertexpoint(0, vertexindex(0, @primnum, j)));
+v@__pf_centroid = n > 0 ? c / n : c;
+"""
+
+
 def _prim_centroids(geo_data, mask):
     """Volume-element centroids in element order (recomputed, not cached).
 
     MSH_Reader stamps a centroid attribute, but it predates the geometry
     transform; recomputing keeps the match in the space the user is looking at.
     """
-    positions = np.frombuffer(
-        geo_data.pointFloatAttribValuesAsString("P"),
-        dtype=np.float32).astype(np.float64).reshape(-1, 3)
-    centroids = np.empty((geo_data.intrinsicValue("primitivecount"), 3))
-    for prim in geo_data.prims():
-        pts = [v.point().number() for v in prim.vertices()]
-        centroids[prim.number()] = positions[pts].mean(axis=0)
+    count = geo_data.intrinsicValue("primitivecount")
+    centroids = None
+    verb = hou.sopNodeTypeCategory().nodeVerb("attribvop")
+    if verb is not None and count:
+        verb.setParms({"bindclass": 1, "vexsrc": 3,
+                       "vexsnippet": _CENTROID_VEX, "vex_precision": "64"})
+        result = hou.Geometry()
+        try:
+            verb.execute(result, [geo_data])
+            centroids = np.frombuffer(
+                result.primFloatAttribValuesAsString(
+                    "__pf_centroid", float_type=hou.numericData.Float64),
+                dtype=np.float64).reshape(-1, 3)
+        except (hou.Error, ValueError):
+            centroids = None
+    if centroids is None or len(centroids) != count:
+        positions = np.frombuffer(
+            geo_data.pointFloatAttribValuesAsString("P"),
+            dtype=np.float32).astype(np.float64).reshape(-1, 3)
+        centroids = np.empty((count, 3))
+        for prim in geo_data.prims():
+            pts = [v.point().number() for v in prim.vertices()]
+            centroids[prim.number()] = positions[pts].mean(axis=0)
     return centroids[mask] if mask is not None else centroids
 
 
@@ -2047,7 +2076,9 @@ def cylindrical_frame(centroids, origin, axis, label):
 
     relative = np.asarray(centroids, dtype=np.float64) - np.asarray(
         origin, dtype=np.float64)
-    along = relative @ axis
+    # einsum, not "@": the BLAS matrix-vector product macOS links (Accelerate)
+    # raises spurious divide-by-zero/overflow warnings on finite input.
+    along = np.einsum("ij,j->i", relative, axis)
     radial = relative - along[:, None] * axis
     distance = np.linalg.norm(radial, axis=1)
 
@@ -2384,10 +2415,19 @@ def _check_single_element_family(parent, geo):
     """
     geo_data = parent.node(f"branch_{geo}").geometry()
     mask = _volume_mask(geo_data)
-    sizes = set()
-    for prim in geo_data.prims():
-        if mask is None or mask[prim.number()]:
-            sizes.add(len(prim.vertices()))
+    tets = geo_data.countPrimType(hou.primType.Tetrahedron)
+    hexes = geo_data.countPrimType(hou.primType.Hexahedron)
+    volumes = int(mask.sum()) if mask is not None \
+        else geo_data.intrinsicValue("primitivecount")
+    if tets + hexes == volumes:
+        # The MSH Reader's volume elements are tets and hexes only; counting
+        # primitive types replaces a Python pass over every element.
+        sizes = {size for size, n in ((4, tets), (8, hexes)) if n}
+    else:
+        sizes = set()
+        for prim in geo_data.prims():
+            if mask is None or mask[prim.number()]:
+                sizes.add(len(prim.vertices()))
     if len(sizes) > 1:
         raise hou.NodeError(
             f"Geometry {geo} mixes element types ({sorted(sizes)} vertices), "
@@ -2586,6 +2626,11 @@ def cook_fiber_data(node):
         "centroid", np.ascontiguousarray(centroids, dtype=np.float64).tobytes(),
         float_type=hou.numericData.Float64)
 
+    # Every transform edit recooks this node. Resolving fiber and dispersion
+    # sources (files, SOP attributes, cylindrical frames) is only worth it
+    # while something shows them; the export resolves them on its own.
+    if not material_display_active(parent, geo):
+        return
     try:
         fields, _count = display_material_data(parent, geo)
     except hou.Error as error:
@@ -2605,9 +2650,9 @@ def cook_fiber_data(node):
     total = geo_data.intrinsicValue("primitivecount")
     index = np.flatnonzero(mask) if mask is not None else np.arange(total)
     entity_attrib = geo_data.findPrimAttrib("Entity")
-    entity_values = np.asarray(
-        geo_data.primIntAttribValues("Entity")) if entity_attrib is not None \
-        else None
+    entity_values = np.frombuffer(
+        geo_data.primIntAttribValuesAsString("Entity"), dtype=np.int32) \
+        if entity_attrib is not None else None
     for name, values in fields.items():
         values = np.asarray(values, dtype=np.float64)
         target = index
@@ -2631,6 +2676,15 @@ def cook_fiber_data(node):
         geo_data.setPrimFloatAttribValuesFromString(
             name, np.ascontiguousarray(full, dtype=np.float64).tobytes(),
             float_type=hou.numericData.Float64)
+
+
+def material_display_active(parent, geo):
+    """Whether the viewport shows per-element material data for a geometry:
+    fiber lines, or a surface colored by dispersion or fiber direction."""
+    show = parent.parm(f"show_fibers{geo}")
+    mode = parent.parm(f"color_by{geo}")
+    return bool(show is not None and show.eval()) or (
+        mode is not None and mode.evalAsString() != "subdomains")
 
 
 def update_fiber_data(parent, geo):
@@ -2693,10 +2747,7 @@ def material_display_changed(kwargs):
             break
     if geo is None or parent.node(f"branch_{geo}") is None:
         return
-    color_mode = parent.parm(f"color_by{geo}")
-    if parent.evalParm(f"show_fibers{geo}") or (
-            color_mode is not None
-            and color_mode.evalAsString() != "subdomains"):
+    if material_display_active(parent, geo):
         parent.allowEditingOfContents()
         update_fiber_data(parent, geo)
 
@@ -3628,7 +3679,8 @@ def build_output(parent, data):
     def b(name):
         return bool(parent.evalParm(name))
 
-    contact_forces = b("contact_forces_fields")
+    # On by default, but only meaningful (and only written) with contact.
+    contact_forces = b("contact_forces_fields") and b("enable")
     friction_forces = b("friction_forces_fields")
     normal_adh = b("normal_adhesion_forces_fields")
     tang_adh = b("tangential_adhesion_forces_fields")
@@ -5649,6 +5701,11 @@ def _restore_output(parent, data):
                     ("jacobian_validity", "validity_fields")):
                 if key in options:
                     parms[parm] = options[key]
+            # Contact forces are written only with contact on: a file without
+            # contact says nothing about the toggle, so keep its default.
+            contact = data.get("contact")
+            if not (isinstance(contact, dict) and contact.get("enabled")):
+                parms.pop("contact_forces_fields", None)
         parms["minimal_fields"] = int(
             isinstance(paraview.get("fields"), list)
             and not bool(options.get("material", False)))
