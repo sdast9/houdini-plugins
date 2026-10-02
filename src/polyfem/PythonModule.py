@@ -1720,8 +1720,494 @@ def native_selection_mask(pattern, positions, label):
             "sphere:[0,0,0],0.5 | plane:[0,0,1],[0,0,0.5]")
 
 
-def _sideset_conditions(parent, geo, vol, sideset):
-    """The conditions entered on one sideset, parsed, in interface order."""
+# =============================================================================
+# Timeline and time curves (review F3, 2026-10-02)
+#
+# Houdini time is simulation time: t = Start Time + (T - T_start) * Time
+# Scale, with T Houdini's time ($T, seconds at the scene's frame rate) and
+# T_start the time of the Time tab's Start Frame. Keyframed condition
+# multipliers and obstacle transforms are read on that timeline at the step
+# times PolyFEM evaluates conditions at (t_k = t0 + k*dt, State.cpp) and
+# exported as piecewise-linear interpolation tables, which are exact there.
+# PolyFEM's interpolation multiplies a condition's value; vector conditions
+# (Dirichlet, Neumann, obstacle motion) take a list of one function for all
+# components or one per component, scalar ones (normal traction, pressure,
+# cavity) a single function.
+# =============================================================================
+
+TIME_CURVE_TOKENS = ("entered", "ramp", "animated")
+
+
+def simulation_steps(parent):
+    """(t0, dt, steps): the run's time steps as PolyFEM derives them from
+    the keys build_time writes (State.cpp). Raises hou.NodeError when the
+    Time tab does not define a run."""
+    t0 = float(parent.evalParm("t0"))
+    tend = float(parent.evalParm("tend"))
+    dt = float(parent.evalParm("dt"))
+    steps = int(parent.evalParm("num_timesteps"))
+    tend_on = bool(parent.evalParm("end_time_bool"))
+    dt_on = bool(parent.evalParm("time_inc_bool"))
+    has_steps = bool(parent.evalParm("num_timesteps_bool")) \
+        and not (tend_on and dt_on)
+    has_tend = tend_on or not has_steps
+    has_dt = dt_on or not has_steps
+    if has_tend and has_dt:
+        if not (dt > 0 and tend > t0):
+            raise hou.NodeError(
+                f"The Time tab does not define a run: End Time ({tend:g}) "
+                f"must be after Start Time ({t0:g}) and dt ({dt:g}) above 0.")
+        steps = int(math.ceil((tend - t0) / dt))
+    elif has_tend and has_steps:
+        if not (steps >= 1 and tend > t0):
+            raise hou.NodeError(
+                f"The Time tab does not define a run: End Time ({tend:g}) "
+                f"must be after Start Time ({t0:g}) and the number of time "
+                "steps at least 1.")
+        dt = (tend - t0) / steps
+    elif has_dt and has_steps:
+        if not (dt > 0 and steps >= 1):
+            raise hou.NodeError(
+                f"The Time tab does not define a run: dt ({dt:g}) must be "
+                "above 0 and the number of time steps at least 1.")
+    else:
+        raise hou.NodeError(
+            "The Time tab does not define a run: turn on two of End Time, "
+            "Time Increment and # of Timesteps.")
+    return t0, dt, steps
+
+
+class Timeline:
+    """The run's step times and the Houdini times they fall on."""
+
+    def __init__(self, t0, dt, steps, start_frame, scale):
+        self.t0, self.dt, self.steps = float(t0), float(dt), int(steps)
+        self.start_frame, self.scale = float(start_frame), float(scale)
+        k = np.arange(self.steps + 1, dtype=np.float64)
+        self.times = self.t0 + k * self.dt  # PolyFEM: t0 + dt * k
+        self.start_time = hou.frameToTime(self.start_frame)
+        self.houdini_times = self.start_time + (k * self.dt) / self.scale
+
+    def houdini_time(self, t):
+        """Houdini time (seconds) at which the simulation is at time t."""
+        return self.start_time + (float(t) - self.t0) / self.scale
+
+    def frame(self, t):
+        return hou.timeToFrame(self.houdini_time(t))
+
+    def record(self):
+        """The mapping as written to the scene record (Read PVD, Import)."""
+        return {"start_frame": self.start_frame, "time_scale": self.scale,
+                "fps": hou.fps(), "t0": self.t0, "dt": self.dt,
+                "time_steps": self.steps,
+                "end_time": float(self.times[-1])}
+
+
+def timeline(parent):
+    scale = float(parent.evalParm("time_scale"))
+    if not scale > 0:
+        raise hou.NodeError(
+            f"Time Scale ({scale:g}, Time tab) must be greater than 0.")
+    t0, dt, steps = simulation_steps(parent)
+    return Timeline(t0, dt, steps, parent.evalParm("houdini_start_frame"),
+                    scale)
+
+
+class _LazyTimeline:
+    """The node's timeline, computed on first use (only animated curves and
+    obstacles need it, and only they report a Time tab that defines no run)."""
+
+    def __init__(self, parent):
+        self.parent, self.value = parent, None
+
+    def get(self):
+        if self.value is None:
+            self.value = timeline(self.parent)
+        return self.value
+
+
+def timeline_text(parent):
+    """Time tab readout: which frames the run spans."""
+    try:
+        line = timeline(parent)
+    except hou.Error as exc:
+        return _error_text(exc)
+    last = hou.timeToFrame(float(line.houdini_times[-1]))
+    per_step = line.dt / line.scale * hou.fps()
+    return (f"Frame {line.start_frame:g} = t {line.t0:g}; frame {last:.6g} = "
+            f"t {line.times[-1]:.6g} (end); {line.steps} time steps, "
+            f"{per_step:.4g} frames per step at {hou.fps():g} fps")
+
+
+class TimeCurve:
+    """A time function multiplying a condition's value, as PolyFEM's
+    interpolation does: piecewise linear through (points, values), constant
+    before the first point and after the last ("extend": "constant")."""
+
+    def __init__(self, points, values):
+        self.points = np.asarray(points, dtype=np.float64)
+        self.values = np.asarray(values, dtype=np.float64)
+
+    def at(self, times):
+        return np.interp(np.asarray(times, dtype=np.float64), self.points,
+                         self.values)
+
+    def as_json(self):
+        return {"type": "piecewise_linear",
+                "points": [float(p) for p in self.points],
+                "values": [float(v) for v in self.values],
+                "extend": "constant"}
+
+
+def _compressed_table(points, values):
+    """Drop samples that lie on the line through their neighbours, keeping
+    the first and last; the linear table through the rest reproduces every
+    sample (checked, else the full table is kept)."""
+    p = np.asarray(points, dtype=np.float64)
+    v = np.asarray(values, dtype=np.float64)
+    if len(p) <= 2:
+        return p, v
+    slopes = np.diff(v) / np.diff(p)
+    size = max(1.0, float(np.abs(v).max()))
+    floor = size / max(float(p[-1] - p[0]), 1e-300)
+    bend = np.abs(np.diff(slopes)) > 1e-9 * np.maximum(
+        np.maximum(np.abs(slopes[1:]), np.abs(slopes[:-1])), floor)
+    keep = np.concatenate(([True], bend, [True]))
+    kept_p, kept_v = p[keep], v[keep]
+    if np.allclose(np.interp(p, kept_p, kept_v), v, rtol=1e-12,
+                   atol=1e-12 * size):
+        return kept_p, kept_v
+    return p, v
+
+
+def _same_curve(first, second):
+    """Whether two time functions (None = constant 1) are equal everywhere:
+    piecewise-linear functions with constant ends are equal iff they agree
+    at the union of their breakpoints."""
+    if first is None and second is None:
+        return True
+    points = np.union1d(first.points if first is not None else [],
+                        second.points if second is not None else [])
+    a = np.ones(len(points)) if first is None else first.at(points)
+    b = np.ones(len(points)) if second is None else second.at(points)
+    return bool(np.allclose(a, b, rtol=1e-12, atol=1e-15))
+
+
+def _vector_interpolation(curves, dims=None):
+    """The interpolation list of a vector condition (None if no curve):
+    [f] when every relevant component has the same function, else
+    [fx, fy, fz] with {"type": "none"} for components without one."""
+    relevant = [curve for axis, curve in enumerate(curves)
+                if dims is None or dims[axis]]
+    if all(curve is None for curve in relevant):
+        return None
+    first = relevant[0]
+    if all(_same_curve(first, curve) for curve in relevant):
+        return [first.as_json() if first is not None else {"type": "none"}]
+    return [curve.as_json() if curve is not None else {"type": "none"}
+            for curve in curves]
+
+
+def _condition_curves(parent, suffix, kind, lazy_timeline, label):
+    """The time function of every component of one condition (None =
+    constant 1): three for Dirichlet/Neumann, one for the scalar kinds."""
+    width = 3 if kind in (0, 1) else 1
+    parm = parent.parm(f"time_curve{suffix}")
+    mode = parm.evalAsString() if parm is not None else "entered"
+    if mode == "ramp":
+        if parent.evalParm(f"ramp_custom{suffix}"):
+            start = float(parent.evalParm(f"ramp_start{suffix}"))
+            end = float(parent.evalParm(f"ramp_end{suffix}"))
+        else:  # the whole run: 0 at the start, the value at the last step
+            line = lazy_timeline.get()
+            start, end = line.t0, float(line.times[-1])
+        if not end > start:
+            raise hou.NodeError(
+                f"{label}: Ramp End ({end:g}) must be later than Ramp Start "
+                f"({start:g}).")
+        return [TimeCurve([start, end], [0.0, 1.0])] * width
+    if mode != "animated":
+        return [None] * width
+    line = lazy_timeline.get()
+    parms = list(parent.parmTuple(f"curve_multiplier{suffix}")) \
+        if width == 3 else [parent.parm(f"curve_scale{suffix}")]
+    curves = []
+    for component in parms:
+        values = np.array([component.evalAtTime(float(T))
+                           for T in line.houdini_times], dtype=np.float64)
+        if not np.all(np.isfinite(values)):
+            raise hou.NodeError(
+                f"{label}: the Multiplier ({component.name()}) is not a finite "
+                "number at every time step.")
+        if np.all(values == 1.0):
+            curves.append(None)  # constant 1: no function needed
+            continue
+        curves.append(TimeCurve(*_compressed_table(line.times, values)))
+    return curves
+
+
+def _keyframes_record(parm):
+    """A parameter's animation for the sideset/scene records: its keyframes
+    (exact, through Houdini's own JSON form) and its current value."""
+    record = {"value": parm.eval()}
+    keys = parm.keyframes()
+    if keys:
+        record["keys"] = [key.asJSON() for key in keys]
+    return record
+
+
+def _restore_keyframes(parm, record):
+    """Inverse of _keyframes_record."""
+    if parm is None or not isinstance(record, dict):
+        return
+    parm.deleteAllKeyframes()
+    keys = record.get("keys")
+    if keys:
+        restored = []
+        for data in keys:
+            key = hou.Keyframe()
+            key.fromJSON(data)
+            restored.append(key)
+        parm.setKeyframes(restored)
+    elif "value" in record:
+        parm.set(record["value"])
+
+
+def _curve_record(parent, suffix, kind):
+    """What the sideset record keeps of a condition's time curve, so Import
+    restores it exactly (keyframes, ramp times or their defaults)."""
+    parm = parent.parm(f"time_curve{suffix}")
+    mode = parm.evalAsString() if parm is not None else "entered"
+    record = {"time_curve": mode}
+    if mode == "ramp":
+        record["ramp"] = {
+            name: parent.evalParm(f"{name}{suffix}")
+            for name in ("ramp_custom", "ramp_start", "ramp_end")}
+    elif mode == "animated":
+        parms = list(parent.parmTuple(f"curve_multiplier{suffix}")) \
+            if kind in (0, 1) else [parent.parm(f"curve_scale{suffix}")]
+        record["multiplier"] = [_keyframes_record(p) for p in parms]
+    return record
+
+
+def _restore_curve_record(parent, suffix, kind, record):
+    """Inverse of _curve_record (missing fields: Value as entered)."""
+    parm = parent.parm(f"time_curve{suffix}")
+    if parm is None:
+        return
+    mode = record.get("time_curve", "entered") \
+        if isinstance(record, dict) else "entered"
+    if mode not in TIME_CURVE_TOKENS:
+        mode = "entered"
+    parm.set(TIME_CURVE_TOKENS.index(mode))
+    if mode == "ramp":
+        for name, value in (record.get("ramp") or {}).items():
+            ramp = parent.parm(f"{name}{suffix}")
+            if ramp is not None and value is not None:
+                ramp.deleteAllKeyframes()
+                ramp.set(value)
+    elif mode == "animated":
+        parms = list(parent.parmTuple(f"curve_multiplier{suffix}")) \
+            if kind in (0, 1) else [parent.parm(f"curve_scale{suffix}")]
+        for component, data in zip(parms, record.get("multiplier") or []):
+            _restore_keyframes(component, data)
+
+
+def _interpolation_functions(interpolation, width, line=None):
+    """PolyFEM interpolation json -> per-component functions (None = 1), or
+    (functions, note) where the note says what was approximated. A table
+    other than piecewise_linear with constant ends is sampled at the step
+    times of `line` (exact where PolyFEM evaluates conditions)."""
+    if interpolation is None:
+        return [None] * width, None
+    items = interpolation if isinstance(interpolation, list) \
+        else [interpolation]
+    if not items:
+        return [None] * width, None
+    if len(items) == 1:
+        items = items * width
+    functions, notes = [], []
+    for item in items[:width]:
+        kind = item.get("type", "none") if isinstance(item, dict) else "none"
+        if kind == "none":
+            functions.append(None)
+            continue
+        if kind == "piecewise_linear" \
+                and item.get("extend", "constant") == "constant":
+            functions.append(TimeCurve(item.get("points", []),
+                                       item.get("values", [])))
+            continue
+        if line is None:
+            raise hou.NodeError(f"time function '{kind}' needs the run's "
+                                "time steps")
+        functions.append(TimeCurve(line.times,
+                                   _evaluate_interpolation(item, line.times)))
+        notes.append(kind)
+    note = None
+    if notes:
+        note = ("its time function ({}) was turned into keyframes at the "
+                "time steps, exact where PolyFEM evaluates it".format(
+                    ", ".join(sorted(set(notes)))))
+    return functions, note
+
+
+def _cubic_coefficients(points, values, extend):
+    """PolyFEM's PiecewiseCubicInterpolation::init: one cubic per segment
+    (rows = segments, columns a, b, c, d of a t^3 + b t^2 + c t + d)."""
+    n = len(points) - 1
+    a = np.zeros((4 * n, 4 * n))
+    b = np.zeros(4 * n)
+    for i in range(n):
+        for j in range(2):
+            t = points[i + j]
+            a[2 * i + j, 4 * i:4 * i + 4] = (t ** 3, t ** 2, t, 1.0)
+            b[2 * i + j] = values[i + j]
+    row = 2 * n
+    for i in range(n - 1):
+        t = points[i + 1]
+        a[row + i, 4 * i:4 * i + 3] = (3 * t ** 2, 2 * t, 1.0)
+        a[row + i, 4 * (i + 1):4 * (i + 1) + 3] = (-3 * t ** 2, -2 * t, -1.0)
+    row += n - 1
+    for i in range(n - 1):
+        t = points[i + 1]
+        a[row + i, 4 * i:4 * i + 2] = (6 * t, 2.0)
+        a[row + i, 4 * (i + 1):4 * (i + 1) + 2] = (-6 * t, -2.0)
+    row += n - 1
+    t0, tn, last = points[0], points[n], 4 * (n - 1)
+    if extend == "constant":
+        a[row, 0:3] = (3 * t0 ** 2, 2 * t0, 1.0)
+        a[row + 1, last:last + 3] = (3 * tn ** 2, 2 * tn, 1.0)
+    elif extend == "extrapolate":
+        a[row, 0:2] = (6 * t0, 2.0)
+        a[row + 1, last:last + 2] = (6 * tn, 2.0)
+    else:
+        a[row, 0:3] = (3 * t0 ** 2, 2 * t0, 1.0)
+        a[row, last:last + 3] = (-3 * tn ** 2, -2 * tn, -1.0)
+        a[row + 1, 0:2] = (6 * t0, 2.0)
+        a[row + 1, last:last + 2] = (-6 * tn, -2.0)
+    return np.linalg.solve(a, b).reshape(n, 4)
+
+
+def _evaluate_interpolation(item, times):
+    """PolyFEM's Interpolation::eval (utils/Interpolation.cpp), for the time
+    functions an imported params.json may hold."""
+    times = np.asarray(times, dtype=np.float64)
+    kind = item.get("type", "none")
+    if kind == "none":
+        return np.ones_like(times)
+    if kind == "linear":
+        return times.copy()
+    if kind == "linear_ramp":
+        start, end = float(item.get("from", 0.0)), float(item["to"])
+        return np.array([end - start if t >= end else 0.0 if t <= start
+                         else t - start for t in times])
+    points = [float(p) for p in item.get("points", [])]
+    values = [float(v) for v in item.get("values", [])]
+    extend = item.get("extend", "constant")
+    if not points:
+        return np.ones_like(times)
+    n = len(points) - 1
+    coefficients = _cubic_coefficients(points, values, extend) \
+        if kind == "piecewise_cubic" and n >= 1 else None
+
+    def piece(t, i):
+        if kind == "piecewise_constant":
+            return values[i]
+        if kind == "piecewise_cubic":
+            c = coefficients[i]
+            return ((c[0] * t + c[1]) * t + c[2]) * t + c[3]
+        alpha = (t - points[i]) / (points[i + 1] - points[i])
+        return (values[i + 1] - values[i]) * alpha + values[i]
+
+    def slope(t, i):
+        if kind == "piecewise_constant":
+            return 0.0
+        if kind == "piecewise_cubic":
+            c = coefficients[i]
+            return (3 * c[0] * t + 2 * c[1]) * t + c[2]
+        return (values[i + 1] - values[i]) / (points[i + 1] - points[i])
+
+    def dy_dt(t):
+        for i in range(n):
+            if points[i] <= t <= points[i + 1]:
+                return slope(t, i)
+        return 0.0
+
+    def evaluate(t):
+        if t < points[0] or t >= points[-1]:
+            return extended(t)
+        for i in range(n):
+            if points[i] <= t < points[i + 1]:
+                return piece(t, i)
+        return values[0]
+
+    def extended(t):
+        t0, tn, y0, yn = points[0], points[-1], values[0], values[-1]
+        if extend == "extrapolate":
+            return dy_dt(t0) * (t - t0) + y0 if t < t0 \
+                else dy_dt(tn) * (t - tn) + yn
+        if extend in ("repeat", "repeat_offset") and tn > t0:
+            offset = math.floor((t - t0) / (tn - t0)) * (yn - y0) \
+                if extend == "repeat_offset" else 0.0
+            mod = math.fmod(t - t0, tn - t0)
+            mod += tn if mod < 0 else t0
+            return evaluate(mod) + offset
+        return y0 if t < t0 else yn
+
+    return np.array([evaluate(float(t)) for t in times])
+
+
+def _set_curve_from_functions(parent, suffix, kind, functions, line):
+    """Show imported time functions on a condition: no function -> Value as
+    entered; the 0 -> 1 ramp the asset writes -> Ramp; anything else ->
+    Animated multiplier with linear keys at the table's points."""
+    parm = parent.parm(f"time_curve{suffix}")
+    if parm is None:
+        return
+    width = 3 if kind in (0, 1) else 1
+    functions = (list(functions) + [None] * width)[:width]
+    if all(function is None for function in functions):
+        parm.set(TIME_CURVE_TOKENS.index("entered"))
+        return
+    first = functions[0]
+    if first is not None and all(_same_curve(first, f) for f in functions) \
+            and len(first.points) == 2 and first.values[0] == 0.0 \
+            and first.values[1] == 1.0:
+        parm.set(TIME_CURVE_TOKENS.index("ramp"))
+        whole_run = np.allclose(first.points, [line.t0, line.times[-1]],
+                                rtol=1e-12, atol=1e-15)
+        parent.parm(f"ramp_custom{suffix}").set(0 if whole_run else 1)
+        for name, value in (("ramp_start", first.points[0]),
+                            ("ramp_end", first.points[1])):
+            ramp = parent.parm(f"{name}{suffix}")
+            ramp.deleteAllKeyframes()
+            ramp.set(float(value))
+        return
+    parm.set(TIME_CURVE_TOKENS.index("animated"))
+    parms = list(parent.parmTuple(f"curve_multiplier{suffix}")) \
+        if width == 3 else [parent.parm(f"curve_scale{suffix}")]
+    for component, function in zip(parms, functions):
+        component.deleteAllKeyframes()
+        if function is None:
+            component.set(1.0)
+            continue
+        keys = []
+        for point, value in zip(function.points, function.values):
+            key = hou.Keyframe()
+            key.setFrame(line.frame(point))
+            key.setValue(float(value))
+            key.setExpression("linear()", hou.exprLanguage.Hscript)
+            keys.append(key)
+        component.setKeyframes(keys)
+
+
+def _sideset_conditions(parent, geo, vol, sideset, lazy_timeline=None):
+    """The conditions entered on one sideset, parsed, in interface order.
+
+    Each carries "curves": the time function of every component (None =
+    constant 1; see _condition_curves)."""
+    if lazy_timeline is None:
+        lazy_timeline = _LazyTimeline(parent)
     conditions = []
     count = parent.evalParm(f"Boundary_Condition__{geo}_{vol}_{sideset}")
     for k in range(1, count + 1):
@@ -1732,13 +2218,16 @@ def _sideset_conditions(parent, geo, vol, sideset):
         vector_text = parent.evalParm(f"vector_{suffix}")
         value_text = parent.evalParm(f"value_{suffix}")
         text = vector_text if kind in (0, 1) else value_text
+        label = (f"geo {geo} subdomain {vol} sideset {sideset} "
+                 f"condition {k} ({_BC_TYPE_NAMES[kind]})")
         condition = {
-            "k": k, "type": kind,
-            "label": (f"geo {geo} subdomain {vol} sideset {sideset} "
-                      f"condition {k} ({_BC_TYPE_NAMES[kind]})"),
+            "k": k, "type": kind, "label": label,
             "value": parse_vector(text, f"BC {geo}/{vol}/{sideset}/{k}"),
+            "curves": _condition_curves(parent, suffix, kind, lazy_timeline,
+                                        label),
             "record": {"type": int(kind), "vector": vector_text,
                        "value": value_text}}
+        condition["record"].update(_curve_record(parent, suffix, kind))
         if kind == 0:
             condition["dims"] = [
                 bool(parent.evalParm(f"{axis}_dimension{suffix}"))
@@ -1842,26 +2331,80 @@ def _added(conditions):
     return add(values)
 
 
+def _merged_load(conditions, where):
+    """One entry for the loads of one kind acting on the same faces: their
+    values added, with their time curves. Loads whose curves differ are added
+    into one table per component (value 1 x table), which needs their values
+    to be numbers."""
+    kind = conditions[0]["type"]
+    vector = kind == 1
+    width = 3 if vector else 1
+    entry = {"value": _added(conditions)}
+    first = conditions[0]["curves"]
+    if all(_same_curve(first[axis], condition["curves"][axis])
+           for condition in conditions for axis in range(width)):
+        curves = first
+    else:
+        curves = []
+        for axis in range(width):
+            parts = []
+            for condition in conditions:
+                value = condition["value"][axis] if vector \
+                    else condition["value"]
+                if isinstance(value, bool) \
+                        or not isinstance(value, (int, float)):
+                    raise hou.NodeError(
+                        f"{condition['label']}: several "
+                        f"{_BC_TYPE_NAMES[kind]} loads with different time "
+                        f"curves act on {where}. The asset adds them into one "
+                        f"time table, so their values must be numbers, not "
+                        f"expressions ({_value_text(value)}). Express the time "
+                        f"dependence with the Time Curve instead, or keep the "
+                        f"loads on separate faces.")
+                parts.append((float(value), condition["curves"][axis]))
+            points = np.unique(np.concatenate(
+                [curve.points for _, curve in parts if curve is not None]))
+            total = sum(value * (np.ones(len(points)) if curve is None
+                                 else curve.at(points))
+                        for value, curve in parts)
+            curves.append(TimeCurve(*_compressed_table(points, total)))
+        entry["value"] = [1.0, 1.0, 1.0] if vector else 1.0
+    if vector:
+        interpolation = _vector_interpolation(curves)
+    else:
+        interpolation = None if curves[0] is None else curves[0].as_json()
+    if interpolation is not None:
+        entry["interpolation"] = interpolation
+    return entry
+
+
 def merge_conditions(conditions, where):
     """The entries PolyFEM honours for one boundary id: at most one of each kind.
 
     Dirichlet components are combined, and a component prescribed by two
-    conditions must agree (PolyFEM refuses a second dirichlet entry for an
-    id). Loads of one kind are added (PolyFEM applies only the first entry of
-    a kind). A Neumann and a normal-aligned traction cannot share faces:
-    PolyFEM replaces the first by the second instead of adding them. A cavity
-    has one pressure. Returns [(list key, entry without id)].
+    conditions must agree, time curve included (PolyFEM refuses a second
+    dirichlet entry for an id); each component keeps the time curve of the
+    condition prescribing it. Loads of one kind are added (PolyFEM applies
+    only the first entry of a kind), see _merged_load. A Neumann and a
+    normal-aligned traction cannot share faces: PolyFEM replaces the first by
+    the second instead of adding them. A cavity has one pressure. Returns
+    [(list key, entry without id)].
     """
     by_kind = [[condition for condition in conditions
                 if condition["type"] == kind] for kind in range(5)]
     entries = []
     dirichlet = by_kind[0]
     if len(dirichlet) == 1:
-        entries.append(("dirichlet_boundary", {
-            "value": dirichlet[0]["value"],
-            "dimension": list(dirichlet[0]["dims"])}))
+        entry = {"value": dirichlet[0]["value"],
+                 "dimension": list(dirichlet[0]["dims"])}
+        interpolation = _vector_interpolation(dirichlet[0]["curves"],
+                                              dirichlet[0]["dims"])
+        if interpolation is not None:
+            entry["interpolation"] = interpolation
+        entries.append(("dirichlet_boundary", entry))
     elif dirichlet:
         value, dims, owner = [0, 0, 0], [False, False, False], [None] * 3
+        curves = [None, None, None]
         for condition in dirichlet:
             vector = condition["value"]
             if not (isinstance(vector, list) and len(vector) == 3):
@@ -1881,12 +2424,25 @@ def merge_conditions(conditions, where):
                             f"{_value_text(vector[axis])}). A face can have only "
                             f"one prescription per component: remove the "
                             f"overlap, or turn {'xyz'[axis]} off on one of them.")
+                    if not _same_curve(curves[axis],
+                                       condition["curves"][axis]):
+                        raise hou.NodeError(
+                            f"{owner[axis]['label']} and {condition['label']} "
+                            f"both prescribe the {'xyz'[axis]} displacement on "
+                            f"{where}, with different time curves. A face can "
+                            f"have only one prescription per component: remove "
+                            f"the overlap, give both the same Time Curve, or "
+                            f"turn {'xyz'[axis]} off on one of them.")
                     continue
                 value[axis] = vector[axis]
                 dims[axis] = True
                 owner[axis] = condition
-        entries.append(("dirichlet_boundary",
-                        {"value": value, "dimension": dims}))
+                curves[axis] = condition["curves"][axis]
+        entry = {"value": value, "dimension": dims}
+        interpolation = _vector_interpolation(curves, dims)
+        if interpolation is not None:
+            entry["interpolation"] = interpolation
+        entries.append(("dirichlet_boundary", entry))
     neumann, normal = by_kind[1], by_kind[2]
     if neumann and normal:
         raise hou.NodeError(
@@ -1896,19 +2452,20 @@ def merge_conditions(conditions, where):
             f"for the normal load (it adds to the traction), or keep the two "
             f"loads on separate faces.")
     if neumann:
-        entries.append(("neumann_boundary", {"value": _added(neumann)}))
+        entries.append(("neumann_boundary", _merged_load(neumann, where)))
     if normal:
         entries.append(("normal_aligned_neumann_boundary",
-                        {"value": _added(normal)}))
+                        _merged_load(normal, where)))
     if by_kind[3]:
-        entries.append(("pressure_boundary", {"value": _added(by_kind[3])}))
+        entries.append(("pressure_boundary",
+                        _merged_load(by_kind[3], where)))
     cavities = by_kind[4]
     if len(cavities) > 1:
         raise hou.NodeError(
             f"{cavities[0]['label']} and {cavities[1]['label']} act on "
             f"{where}: a cavity has a single pressure.")
     if cavities:
-        entries.append(("pressure_cavity", {"value": cavities[0]["value"]}))
+        entries.append(("pressure_cavity", _merged_load(cavities, where)))
     return entries
 
 
@@ -1981,97 +2538,115 @@ def resolve_sidesets(parent, geo, num_vols):
         centres[rows] += positions[corners[rows, column]]
     centres /= np.maximum(used.sum(axis=1), 1)[:, None]
 
-    face_sets, point_sets = [], []
-    for vol in range(1, num_vols + 1):
-        vol_faces = np.flatnonzero(entity == vol)
-        vol_points = None
-        for j in range(1, parent.evalParm(f"sideset_selection{geo}_{vol}") + 1):
-            pattern = parent.evalParm(f"basegroup{geo}_{vol}_{j}")
-            grouptype = parent.evalParm(f"grouptype{geo}_{vol}_{j}")
-            conditions = _sideset_conditions(parent, geo, vol, j)
-            record = {"subdomain": vol, "sideset": j,
-                      "group_type": int(grouptype), "pattern": pattern,
-                      "conditions": [c["record"] for c in conditions]}
-            plan["records"].append(record)
-            if not conditions:
-                continue  # nothing acts on it; it is only kept as a record
-            text = pattern.strip()
-            name = f"geo {geo} subdomain {vol} sideset {j}"
-            if grouptype == 1:  # nodes
-                loads = [c for c in conditions if c["type"] != 0]
-                if loads:
-                    raise hou.NodeError(
-                        f"{loads[0]['label']}: sideset {j} of geo {geo}/vol "
-                        f"{vol} selects points, and PolyFEM applies tractions "
-                        f"and pressures to faces only, so this load would do "
-                        f"nothing. Set its Group Type to Primitives.")
-                if vol_points is None:
-                    touched = corners[vol_faces]
-                    vol_points = np.unique(touched[touched >= 0])
-                if text == "*":
-                    members = vol_points
-                elif is_native_selection(text):
-                    members = vol_points[native_selection_mask(
-                        text, positions[vol_points], name)]
-                else:
-                    members = np.asarray(expand_group_str(text),
-                                         dtype=np.int64)
-                    outside = members[(members < 0)
-                                      | (members >= len(point_keys))]
-                    if len(outside):
-                        raise hou.NodeError(
-                            f"Sideset {j} of geo {geo}/vol {vol}: point(s) "
-                            f"{list(outside[:10])} are not on this surface; "
-                            f"pick the points again")
-                members = np.unique(members)
-                if not len(members):
-                    raise hou.NodeError(
-                        f"Sideset {j} of geo {geo}/vol {vol} selects nothing")
-                record.update(kind="nodes", count=int(len(members)))
-                point_sets.append((vol, j, members, conditions))
-                continue
+    face_sets, point_sets, measured = [], [], []
+    lazy_timeline = _LazyTimeline(parent)
+    volume_points = {}
 
+    def members_of(vol, j, text, grouptype, conditions, warnings):
+        """("nodes" | "faces", the sideset's points or faces)."""
+        vol_faces = np.flatnonzero(entity == vol)
+        name = f"geo {geo} subdomain {vol} sideset {j}"
+        if grouptype == 1:  # nodes
+            loads = [c for c in conditions if c["type"] != 0]
+            if loads:
+                raise hou.NodeError(
+                    f"{loads[0]['label']}: sideset {j} of geo {geo}/vol "
+                    f"{vol} selects points, and PolyFEM applies tractions "
+                    f"and pressures to faces only, so this load would do "
+                    f"nothing. Set its Group Type to Primitives.")
+            if vol not in volume_points:
+                touched = corners[vol_faces]
+                volume_points[vol] = np.unique(touched[touched >= 0])
+            vol_points = volume_points[vol]
             if text == "*":
-                members = vol_faces
+                members = vol_points
             elif is_native_selection(text):
-                members = vol_faces[native_selection_mask(
-                    text, centres[vol_faces], name)]
-                if not len(members):
-                    raise hou.NodeError(
-                        f"Sideset {j} of geo {geo}/vol {vol} selects nothing: "
-                        f"no face centre of subdomain {vol} satisfies '{text}'")
+                members = vol_points[native_selection_mask(
+                    text, positions[vol_points], name)]
             else:
-                idx = np.unique(np.asarray(expand_group_str(text),
-                                           dtype=np.int64))
-                if len(idx) == 0:
-                    raise hou.NodeError(
-                        f"Sideset {j} of geo {geo}/vol {vol} selects nothing")
-                outside = idx[(idx < 0) | (idx >= n_faces)]
+                members = np.asarray(expand_group_str(text),
+                                     dtype=np.int64)
+                outside = members[(members < 0)
+                                  | (members >= len(point_keys))]
                 if len(outside):
                     raise hou.NodeError(
-                        f"Sideset {j} of geo {geo}/vol {vol}: face(s) "
-                        f"{list(outside[:10])} are not on this surface; pick "
-                        f"the faces again")
-                # Restrict to this volume's faces. An explicit pick that loses
-                # faces here was made against another subdomain's surface --
-                # report it rather than quietly writing a sideset the user did
-                # not select.
-                members = idx[entity[idx] == vol]
-                if len(members) == 0:
-                    raise hou.NodeError(
-                        f"Sideset {j} of geo {geo}/vol {vol} selects "
-                        f"{len(idx)} face(s), none of which are on subdomain "
-                        f"{vol}; pick faces on that subdomain instead")
-                if len(members) != len(idx):
-                    plan["warnings"].append(
-                        f"  geo {geo}, subdomain {vol}, sideset {j}: dropped "
-                        f"{len(idx) - len(members)} of {len(idx)} faces")
+                        f"Sideset {j} of geo {geo}/vol {vol}: point(s) "
+                        f"{list(outside[:10])} are not on this surface; "
+                        f"pick the points again")
             members = np.unique(members)
             if not len(members):
                 raise hou.NodeError(
                     f"Sideset {j} of geo {geo}/vol {vol} selects nothing")
-            record.update(kind="faces", count=int(len(members)))
-            face_sets.append((vol, j, members, conditions))
+            return "nodes", members
+
+        if text == "*":
+            members = vol_faces
+        elif is_native_selection(text):
+            members = vol_faces[native_selection_mask(
+                text, centres[vol_faces], name)]
+            if not len(members):
+                raise hou.NodeError(
+                    f"Sideset {j} of geo {geo}/vol {vol} selects nothing: "
+                    f"no face centre of subdomain {vol} satisfies '{text}'")
+        else:
+            idx = np.unique(np.asarray(expand_group_str(text),
+                                       dtype=np.int64))
+            if len(idx) == 0:
+                raise hou.NodeError(
+                    f"Sideset {j} of geo {geo}/vol {vol} selects nothing")
+            outside = idx[(idx < 0) | (idx >= n_faces)]
+            if len(outside):
+                raise hou.NodeError(
+                    f"Sideset {j} of geo {geo}/vol {vol}: face(s) "
+                    f"{list(outside[:10])} are not on this surface; pick "
+                    f"the faces again")
+            # Restrict to this volume's faces. An explicit pick that loses
+            # faces here was made against another subdomain's surface --
+            # report it rather than quietly writing a sideset the user did
+            # not select.
+            members = idx[entity[idx] == vol]
+            if len(members) == 0:
+                raise hou.NodeError(
+                    f"Sideset {j} of geo {geo}/vol {vol} selects "
+                    f"{len(idx)} face(s), none of which are on subdomain "
+                    f"{vol}; pick faces on that subdomain instead")
+            if len(members) != len(idx):
+                warnings.append(
+                    f"  geo {geo}, subdomain {vol}, sideset {j}: dropped "
+                    f"{len(idx) - len(members)} of {len(idx)} faces")
+        members = np.unique(members)
+        if not len(members):
+            raise hou.NodeError(
+                f"Sideset {j} of geo {geo}/vol {vol} selects nothing")
+        return "faces", members
+
+    for vol in range(1, num_vols + 1):
+        for j in range(1, parent.evalParm(f"sideset_selection{geo}_{vol}") + 1):
+            pattern = parent.evalParm(f"basegroup{geo}_{vol}_{j}")
+            grouptype = parent.evalParm(f"grouptype{geo}_{vol}_{j}")
+            conditions = _sideset_conditions(parent, geo, vol, j,
+                                             lazy_timeline)
+            record = {"subdomain": vol, "sideset": j,
+                      "group_type": int(grouptype), "pattern": pattern,
+                      "conditions": [c["record"] for c in conditions]}
+            plan["records"].append(record)
+            text = pattern.strip()
+            if not conditions:
+                # Nothing acts on it; it is kept as a record, and when it
+                # selects something, as a set Read PVD can sum forces over.
+                if text:
+                    try:
+                        kind, members = members_of(vol, j, text, grouptype,
+                                                   conditions, [])
+                        measured.append((kind, vol, j, members))
+                    except hou.Error:
+                        pass
+                continue
+            kind, members = members_of(vol, j, text, grouptype, conditions,
+                                       plan["warnings"])
+            record.update(kind=kind, count=int(len(members)))
+            (point_sets if kind == "nodes" else face_sets).append(
+                (vol, j, members, conditions))
 
     counters = {}
 
@@ -2153,6 +2728,19 @@ def resolve_sidesets(parent, geo, num_vols):
 
     plan.update(face_ids=face_ids, face_vids=face_vids, point_ids=point_ids,
                 point_vids=point_vids)
+    # Each sideset's own faces/nodes (overlaps included), for the force
+    # sets Read PVD sums nodal forces over (write_scene_record).
+    plan["sets"] = [
+        {"subdomain": int(vol), "sideset": int(j), "kind": kind,
+         "members": members,
+         "conditions": sorted({_BC_TYPE_NAMES[c["type"]] for c in conds})}
+        for kind, sets in (("faces", face_sets), ("nodes", point_sets))
+        for vol, j, members, conds in sets]
+    plan["sets"].extend(
+        {"subdomain": int(vol), "sideset": int(j), "kind": kind,
+         "members": members, "conditions": []}
+        for kind, vol, j, members in measured)
+    plan["sets"].sort(key=lambda item: (item["subdomain"], item["sideset"]))
     return plan
 
 
@@ -3516,7 +4104,268 @@ def export_per_element_materials(parent, input_dir, output_dir=None):
 # =============================================================================
 
 
-def build_geometry_and_materials(parent, data, input_dir, plans=None):
+# =============================================================================
+# Animated obstacles (2026-10-02)
+#
+# An obstacle moves when its Translate / Rotate / Scale / Pivot parameters
+# are keyframed, like any Houdini object (the display chain already follows
+# them). Its rest pose is the pose at the Time tab's Start Frame. A motion
+# that only translates is exported as obstacle_displacements tables (value
+# [1, 1, 1] times the displacement of each component at every step); any
+# other motion as a mesh sequence: the obstacle surface posed at every frame
+# of an integer frame rate on which every time step falls (PolyFEM's
+# mesh_sequence interpolates vertices linearly between frames and holds the
+# last one). A simulated body's transform only places its rest shape, so it
+# must not be animated.
+# =============================================================================
+
+_TRANSFORM_VECTORS = (("translate", "xform_t__{}"), ("rotate", "xform_r__{}"),
+                      ("scale", "xform_s__{}"), ("pivot", "tpivot_{}"),
+                      ("pivot_rotate", "rpivot_{}"))
+_TRANSFORM_ORDERS = ("xform_xOrd__{}", "xform_rOrd__{}")
+# Files of one obstacle's mesh sequence, in its own folder under input/.
+OBSTACLE_SEQUENCE_DIR = "obstacle_geo{}"
+OBSTACLE_SEQUENCE_FILE = "frame_{:06d}.obj"
+# A sequence may hold at most this many frames per time step (and in all);
+# beyond that dt needs too high a frame rate.
+_MAX_FRAMES_PER_STEP = 10
+
+
+def _transform_parms(parent, geo):
+    parms = []
+    for _, name in _TRANSFORM_VECTORS:
+        tuple_parm = parent.parmTuple(name.format(geo))
+        if tuple_parm is not None:
+            parms.extend(tuple_parm)
+    for name in _TRANSFORM_ORDERS:
+        parm = parent.parm(name.format(geo))
+        if parm is not None:
+            parms.append(parm)
+    return parms
+
+
+def transform_is_animated(parent, geo):
+    """Whether a geometry's transform changes over time (keys, expressions)."""
+    return any(parm.isTimeDependent() for parm in _transform_parms(parent, geo))
+
+
+def geometry_matrix(parent, geo, time):
+    """The geometry's transform at Houdini time `time`, built exactly as its
+    transform SOP builds it (hou.hmath.buildTransform; row vectors, the
+    translation in the last row)."""
+    values = {}
+    for key, name in _TRANSFORM_VECTORS:
+        values[key] = tuple(float(parm.evalAtTime(time))
+                            for parm in parent.parmTuple(name.format(geo)))
+    orders = []
+    for name in _TRANSFORM_ORDERS:
+        parm = parent.parm(name.format(geo))
+        orders.append(parm.menuItems()[int(parm.evalAtTime(time))])
+    matrix = hou.hmath.buildTransform(values, orders[0], orders[1])
+    return np.asarray(matrix.asTuple(), dtype=np.float64).reshape(4, 4)
+
+
+def rest_matrix(parent, geo):
+    """The transform PolyFEM receives as the rest pose: the transform SOP's
+    own matrix for a static transform (as before), the pose at the Start
+    Frame for an animated one."""
+    if transform_is_animated(parent, geo):
+        return geometry_matrix(
+            parent, geo, hou.frameToTime(parent.evalParm("houdini_start_frame")))
+    node = parent.node(f"transform_{geo}")
+    return np.asarray(node.geometry().attribValue("xform"),
+                      dtype=np.float64).reshape(4, 4)
+
+
+def obstacle_motion(parent, geo, line):
+    """How an obstacle moves over the run: {"kind": "static" | "translation"
+    | "sequence", "matrices": its transform at every step}. Only translation
+    -> per-step displacement of each component in "displacement"."""
+    if not transform_is_animated(parent, geo):
+        return {"kind": "static"}
+    matrices = np.array([geometry_matrix(parent, geo, float(T))
+                         for T in line.houdini_times])
+    if np.all(matrices == matrices[0]):
+        return {"kind": "static", "matrices": matrices}
+    if np.all(matrices[:, :3, :3] == matrices[0, :3, :3]):
+        return {"kind": "translation", "matrices": matrices,
+                "times": line.times,
+                "displacement": matrices[:, 3, :3] - matrices[0, 3, :3]}
+    return {"kind": "sequence", "matrices": matrices}
+
+
+def _frame_rate_of(value):
+    """Smallest whole number F such that value * F is whole (to 1e-9), or
+    None."""
+    from fractions import Fraction
+    if value == 0:
+        return 1
+    fraction = Fraction(value).limit_denominator(100000)
+    if abs(float(fraction) - value) > 1e-9 * abs(value):
+        return None
+    return fraction.denominator
+
+
+def sequence_rate(line):
+    """The integer frame rate of an obstacle mesh sequence: every time step
+    (t0 + k dt) must be a frame, since PolyFEM's frame index is t * fps
+    (frames count from time 0). None when that needs more than
+    _MAX_FRAMES_PER_STEP frames per step on average."""
+    rates = [_frame_rate_of(line.dt), _frame_rate_of(line.t0)]
+    if None in rates:
+        return None
+    rate = math.lcm(*rates)
+    frames = int(round(float(line.times[-1]) * rate)) + 1
+    if frames > _MAX_FRAMES_PER_STEP * (line.steps + 1):
+        return None
+    return rate
+
+
+def _read_obj_surface(path):
+    """Vertices (float64, as written) and triangles of an .obj file; polygons
+    are split into fans."""
+    vertices, faces = [], []
+    with open(path) as handle:
+        for line in handle:
+            parts = line.split()
+            if not parts:
+                continue
+            if parts[0] == "v":
+                vertices.append([float(x) for x in parts[1:4]])
+            elif parts[0] == "f":
+                index = []
+                for token in parts[1:]:
+                    number = int(token.split("/")[0])
+                    index.append(number - 1 if number > 0
+                                 else len(vertices) + number)
+                for k in range(1, len(index) - 1):
+                    faces.append([index[0], index[k], index[k + 1]])
+            elif parts[0] == "l":
+                raise hou.NodeError(
+                    f"{os.path.basename(path)} has line elements; an "
+                    "obstacle that rotates or scales is written as triangle "
+                    "frames, so it must be a triangle surface.")
+    return (np.asarray(vertices, dtype=np.float64).reshape(-1, 3),
+            np.asarray(faces, dtype=np.int64).reshape(-1, 3))
+
+
+def _tet_boundary(tets):
+    """Boundary triangles of a tet mesh (faces used once), outward."""
+    faces = np.concatenate([tets[:, [1, 2, 3]], tets[:, [0, 3, 2]],
+                            tets[:, [0, 1, 3]], tets[:, [0, 2, 1]]])
+    keys = np.sort(faces, axis=1)
+    _, first, counts = np.unique(keys, axis=0, return_index=True,
+                                 return_counts=True)
+    return faces[first[counts == 1]]
+
+
+def obstacle_surface(parent, geo):
+    """(vertices, triangles, exact) of an obstacle mesh in its file's own
+    coordinates: float64 from the file for .obj and .msh (the surface of a tet
+    mesh, as PolyFEM extracts it), Houdini's float32 points otherwise."""
+    path = parent.evalParm(f"file_location{geo}")
+    extension = os.path.splitext(path)[1].lower()
+    if extension == ".obj":
+        vertices, faces = _read_obj_surface(path)
+        return vertices, faces, True
+    if extension == ".msh":
+        reader = hou.nodeType(hou.sopNodeTypeCategory(), "MSH_Reader::3.0")
+        mesh = reader.hdaModule().read_msh(path)
+        cells = mesh["cells"]
+        if "tet" in cells:
+            faces = _tet_boundary(np.asarray(cells["tet"]["corners"])[:, :4])
+        elif "tri" in cells:
+            faces = np.asarray(cells["tri"]["corners"])[:, :3]
+        else:
+            raise hou.NodeError(
+                f"Obstacle {geo}: {os.path.basename(path)} has no triangles "
+                "or tetrahedra.")
+        used, faces = np.unique(faces, return_inverse=True)
+        points = np.asarray(mesh["points"], dtype=np.float64)[used]
+        return points, faces.reshape(-1, 3), True
+    source = parent.node(f"geo_{geo}").geometry()
+    points = np.frombuffer(source.pointFloatAttribValuesAsString("P"),
+                           dtype=np.float32).astype(np.float64).reshape(-1, 3)
+    faces = []
+    for prim in source.prims():
+        ids = [vertex.point().number() for vertex in prim.vertices()]
+        for k in range(1, len(ids) - 1):
+            faces.append([ids[0], ids[k], ids[k + 1]])
+    return points, np.asarray(faces, dtype=np.int64).reshape(-1, 3), False
+
+
+def _write_obj(path, vertices, faces):
+    with open(path, "w") as handle:
+        handle.write("".join(
+            f"v {x!r} {y!r} {z!r}\n" for x, y, z in vertices.tolist()))
+        handle.write("".join(
+            f"f {a + 1} {b + 1} {c + 1}\n" for a, b, c in faces.tolist()))
+
+
+def write_obstacle_sequence(parent, geo, line, input_dir):
+    """Write one obstacle's mesh sequence (frame i = the obstacle posed at
+    simulation time i / fps, in simulation coordinates; times before Start
+    Time hold the rest pose) and return its geometry entry."""
+    rate = sequence_rate(line)
+    if rate is None:
+        raise hou.NodeError(SEQUENCE_RATE_ERROR.format(
+            geo=geo, dt=line.dt, t0=line.t0))
+    last = int(round(float(line.times[-1]) * rate))
+    vertices, faces, _ = obstacle_surface(parent, geo)
+    if not len(faces):
+        raise hou.NodeError(f"Obstacle {geo} has no triangles to write.")
+    folder = OBSTACLE_SEQUENCE_DIR.format(geo)
+    directory = os.path.join(input_dir, folder)
+    os.makedirs(directory, exist_ok=True)
+    for name in os.listdir(directory):
+        if name.startswith("frame_") and name.endswith(".obj"):
+            os.remove(os.path.join(directory, name))
+    homogeneous = np.column_stack((vertices, np.ones(len(vertices))))
+    files = []
+    for index in range(last + 1):
+        t = max(index / rate, line.t0)
+        matrix = geometry_matrix(parent, geo, line.houdini_time(t))
+        name = OBSTACLE_SEQUENCE_FILE.format(index)
+        _write_obj(os.path.join(directory, name), (homogeneous @ matrix)[:, :3],
+                   faces)
+        files.append(f"{folder}/{name}")
+    return {"type": "mesh_sequence", "mesh_sequence": files, "fps": int(rate),
+            "enabled": bool(parent.parm(f"is_enabled{geo}").eval()),
+            "is_obstacle": True}
+
+
+SEQUENCE_RATE_ERROR = (
+    "Obstacle {geo} rotates or scales over time, so it is written as one "
+    "mesh per frame of a whole-number frame rate on which every time step "
+    "falls (PolyFEM counts the frames from time 0). For dt = {dt:g} and "
+    "Start Time {t0:g} that needs more than 10 frames per time step; choose "
+    "a dt whose inverse is a whole number, e.g. 0.01 or 0.0125, and a Start "
+    "Time that is a multiple of it (Time tab).")
+ANIMATED_BODY_ERROR = (
+    "Geometry {geo} is a simulated body and its transform is animated "
+    "(keyframes or a time expression on Translate/Rotate/Scale/Pivot). A "
+    "body's transform only places its rest shape; move the body with a "
+    "Dirichlet condition (with a Time Curve), or remove the keys. Obstacles "
+    "can be animated.")
+ANIMATED_OBSTACLE_EXPRESSION_ERROR = (
+    "Obstacle {geo} has an animated transform and an Obstacle Displacement "
+    "expression; PolyFEM can take only one motion per obstacle. Set Obstacle "
+    "Displacement to [0, 0, 0] (or remove the transform keys).")
+
+
+def _obstacle_displacement_is_zero(parent, geo):
+    try:
+        value = parse_vector(parent.evalParm(f"obstacle_disp{geo}"),
+                             f"obstacle {geo}")
+    except hou.Error:
+        return False
+    return isinstance(value, list) and all(
+        isinstance(v, (int, float)) and not isinstance(v, bool) and v == 0
+        for v in value)
+
+
+def build_geometry_and_materials(parent, data, input_dir, plans=None,
+                                 motions=None):
     num_geos = parent.evalParm("num_geos")
     if num_geos == 0:
         raise hou.NodeError("No input geometry provided!")
@@ -3533,6 +4382,7 @@ def build_geometry_and_materials(parent, data, input_dir, plans=None):
     # working directory they are staged again here, under names that two
     # different meshes can never share.
     taken = _staged_meshes(parent, input_dir)
+    lazy_timeline = _LazyTimeline(parent)
     for geo in range(1, num_geos + 1):
         is_obstacle = bool(parent.parm(f"is_obstacle{geo}").eval())
         enabled = bool(parent.parm(f"is_enabled{geo}").eval())
@@ -3542,13 +4392,27 @@ def build_geometry_and_materials(parent, data, input_dir, plans=None):
         mesh_ref = os.path.basename(
             _stage_mesh(geo, path_parm, input_dir, taken))
 
-        transform_node = parent.node(f"transform_{geo}")
+        animated = transform_is_animated(parent, geo)
+        if animated and not is_obstacle:
+            raise hou.NodeError(ANIMATED_BODY_ERROR.format(geo=geo))
         T, R, S = decompose_rowvec_xyz_4x4(
-            transform_node.geometry().attribValue("xform"))
+            rest_matrix(parent, geo).ravel().tolist())
         transformation = {"translation": list(T), "rotation": list(R),
                           "scale": list(S)}
 
         if is_obstacle:
+            motion = obstacle_motion(parent, geo, lazy_timeline.get()) \
+                if animated else {"kind": "static"}
+            if motions is not None:
+                motions[geo] = motion
+            if motion["kind"] != "static" \
+                    and not _obstacle_displacement_is_zero(parent, geo):
+                raise hou.NodeError(ANIMATED_OBSTACLE_EXPRESSION_ERROR.format(
+                    geo=geo))
+            if motion["kind"] == "sequence":
+                data["geometry"].append(write_obstacle_sequence(
+                    parent, geo, lazy_timeline.get(), input_dir))
+                continue
             data["geometry"].append({
                 "mesh": mesh_ref, "enabled": enabled, "is_obstacle": True,
                 "surface_selection": obstacle_id(geo),
@@ -3823,7 +4687,23 @@ def build_contact(parent, data):
             "min_distance_ratio": parent.evalParm("min_dist_ratio")})
 
 
-def build_conditions(parent, data, plans=None):
+def obstacle_displacement_entry(parent, geo, motion):
+    """The obstacle_displacements entry of one obstacle (None for a mesh
+    sequence, which carries its own motion)."""
+    if motion["kind"] == "sequence":
+        return None
+    if motion["kind"] == "translation":
+        tables = [TimeCurve(*_compressed_table(motion["times"],
+                                               motion["displacement"][:, d]))
+                  for d in range(3)]
+        return {"id": obstacle_id(geo), "value": [1, 1, 1],
+                "interpolation": [table.as_json() for table in tables]}
+    vector = parse_vector(parent.evalParm(f"obstacle_disp{geo}"),
+                          f"obstacle {geo}")
+    return {"id": obstacle_id(geo), "value": vector}
+
+
+def build_conditions(parent, data, plans=None, motions=None):
     """Initial and boundary conditions.
 
     Sideset conditions come from the resolved sideset plans (one boundary id
@@ -3839,9 +4719,14 @@ def build_conditions(parent, data, plans=None):
     for geo in range(1, num_geos + 1):
         is_obstacle = bool(parent.parm(f"is_obstacle{geo}").eval())
         if is_obstacle:
-            vector = parse_vector(
-                parent.evalParm(f"obstacle_disp{geo}"), f"obstacle {geo}")
-            obstacle.append({"id": obstacle_id(geo), "value": vector})
+            motion = (motions or {}).get(geo)
+            if motion is None:
+                motion = obstacle_motion(parent, geo, timeline(parent)) \
+                    if transform_is_animated(parent, geo) \
+                    else {"kind": "static"}
+            entry = obstacle_displacement_entry(parent, geo, motion)
+            if entry is not None:
+                obstacle.append(entry)
             continue
         num_vols = parent.evalParm(f"num_volumes{geo}")
         for vol in range(1, num_vols + 1):
@@ -4288,6 +5173,62 @@ def _hdf5_note(parent):
             "Houdini's Python to get HDF5 output.")
 
 
+def _condition_kinds_used(parent):
+    """Boundary types (0..4) of every condition on every simulated body."""
+    kinds = set()
+    for geo in range(1, parent.evalParm("num_geos") + 1):
+        if parent.parm(f"is_obstacle{geo}").eval():
+            continue
+        for vol in range(1, parent.evalParm(f"num_volumes{geo}") + 1):
+            count = parent.parm(f"sideset_selection{geo}_{vol}")
+            for j in range(1, (count.eval() if count is not None else 0) + 1):
+                for k in range(1, parent.evalParm(
+                        f"Boundary_Condition__{geo}_{vol}_{j}") + 1):
+                    kinds.add(int(parent.evalParm(
+                        f"boundary_type{geo}_{vol}_{j}_{k}")))
+    return kinds
+
+
+def _material_damping_used(parent):
+    for geo in range(1, parent.evalParm("num_geos") + 1):
+        for vol in range(1, (parent.evalParm(f"num_volumes{geo}")
+                             if not parent.parm(f"is_obstacle{geo}").eval()
+                             else 0) + 1):
+            damping = parent.parm(f"damping{geo}_{vol}")
+            if damping is not None and not damping.isDisabled() \
+                    and damping.eval():
+                return True
+    return False
+
+
+def force_field_names(parent):
+    """The nodal-force fields (PolyFEM's <form>_forces) of the forms this
+    scene has, which Read PVD's force curves add up. PolyFEM writes zeros
+    for a form a scene does not have, so those are not requested."""
+    names = ["elastic_forces"]
+    kinds = _condition_kinds_used(parent)
+    rhs = parent.evalParm("RHS").strip()
+    try:
+        gravity = parse_vector(rhs, "rhs") if rhs else [0, 0, 0]
+    except hou.Error:
+        gravity = rhs
+    no_gravity = isinstance(gravity, list) and all(
+        isinstance(v, (int, float)) and v == 0 for v in gravity)
+    if kinds & {1, 2} or not no_gravity:
+        names.append("body_forces")
+    if kinds & {3, 4}:
+        names.append("pressure_forces")
+    if parent.evalParm("enable"):
+        names.append("contact_forces")
+        if parent.evalParm("cof") > 0:
+            names.append("friction_forces")
+    if not parent.evalParm("quasistatic"):
+        names.append("inertia_forces")
+    if _material_damping_used(parent):
+        names.append("damping_forces")
+    return names
+
+
 def build_output(parent, data):
     def b(name):
         return bool(parent.evalParm(name))
@@ -4343,6 +5284,11 @@ def build_output(parent, data):
                 (jacobian_validity, "validity")):
             if enabled:
                 export_fields.append(name)
+        # Nodal forces of every form the scene has (Read PVD's force
+        # curves); without them in the whitelist PolyFEM wrote none.
+        if b("forces_fields"):
+            export_fields.extend(name for name in force_field_names(parent)
+                                 if name not in export_fields)
 
     # XML when Read PVD could not open HDF5 here (Check Setup says so).
     use_hdf5 = b("use_hdf5") and hdf5_readable_here()[0]
@@ -4442,11 +5388,12 @@ def build_params(parent):
     os.makedirs(os.path.join(working_dir, "output"), exist_ok=True)
 
     data = {}
-    plans = {}
-    orders = build_geometry_and_materials(parent, data, input_dir, plans)
+    plans, motions = {}, {}
+    orders = build_geometry_and_materials(parent, data, input_dir, plans,
+                                          motions)
     build_time(parent, data)
     build_contact(parent, data)
-    build_conditions(parent, data, plans)
+    build_conditions(parent, data, plans, motions)
     build_space(parent, data, orders)
     build_solver(parent, data)
     build_output(parent, data)
@@ -4456,6 +5403,7 @@ def build_params(parent):
     with open(params_path, "w") as f:
         json.dump(data, f, indent=4)
     write_sideset_record(input_dir, data, plans)
+    write_scene_record(parent, input_dir, data, plans, motions)
     _set_export_report(parent, plans)
     return params_path
 
@@ -4581,6 +5529,109 @@ def write_sideset_record(input_dir, data, plans):
     with open(temporary, "w") as handle:
         json.dump(record, handle, indent=2)
     os.replace(temporary, path)
+
+
+# Written next to params.json: what Read PVD and Import need beyond it -- the
+# timeline (Houdini frames <-> simulation time), each animated obstacle's
+# transform keyframes, and the force sets: every sideset's faces (or nodes)
+# and every obstacle's surface in simulation coordinates, over which Read
+# PVD sums PolyFEM's nodal forces. PolyFEM never reads it.
+SCENE_RECORD_FILE = "hda_scene.json"
+SCENE_RECORD_SCHEMA = "polyfem-houdini-scene"
+
+
+def _vertex_positions(parent, geo, matrix):
+    """PolyFEM's vertices of one geometry's .msh in simulation coordinates
+    (float64 from the file, PolyFEM's numbering, the rest transform)."""
+    reader = hou.nodeType(hou.sopNodeTypeCategory(), "MSH_Reader::3.0")
+    mesh = reader.hdaModule().read_msh(parent.evalParm(f"file_location{geo}"))
+    points = np.asarray(mesh["points"], dtype=np.float64)
+    tags = np.asarray(mesh["node_tags"], dtype=np.int64)
+    if len(tags) and int(tags.max()) == len(tags):
+        by_vid = np.empty_like(points)
+        by_vid[tags - 1] = points  # tag - 1 when the tags are exactly 1..N
+    else:
+        by_vid = points  # file order otherwise (io/MshReader.cpp)
+    return by_vid @ matrix[:3, :3] + matrix[3, :3]
+
+
+def _force_set_label(geo, entry):
+    conditions = ", ".join(entry["conditions"]) or "no condition"
+    return (f"Geometry {geo} subdomain {entry['subdomain']} sideset "
+            f"{entry['sideset']} ({conditions})")
+
+
+def write_scene_record(parent, input_dir, data, plans, motions):
+    """input/hda_scene.json (see SCENE_RECORD_FILE)."""
+    try:
+        line = timeline(parent)
+    except hou.Error:
+        line = None
+    record = {"schema": SCENE_RECORD_SCHEMA, "version": 1,
+              "params_sha256": _digest(data),
+              "timeline": line.record() if line is not None else None,
+              "obstacles": {}, "force_sets": []}
+    for geo in range(1, parent.evalParm("num_geos") + 1):
+        if not parent.parm(f"is_enabled{geo}").eval() \
+                or parent.node(f"geo_{geo}") is None:
+            continue
+        matrix = rest_matrix(parent, geo)
+        if parent.parm(f"is_obstacle{geo}").eval():
+            motion = (motions or {}).get(geo, {"kind": "static"})
+            vertices, _, exact = obstacle_surface(parent, geo)
+            vertices = vertices @ matrix[:3, :3] + matrix[3, :3]
+            record["obstacles"][str(geo)] = {
+                "motion": motion["kind"],
+                "mesh": parent.parm(f"file_location{geo}").unexpandedString(),
+                "transform": {parm.name(): _keyframes_record(parm)
+                              for parm in _transform_parms(parent, geo)}
+                if motion["kind"] != "static" else {}}
+            record["force_sets"].append({
+                "label": f"Obstacle {geo} (force on the obstacle)",
+                "kind": "obstacle", "geometry": geo, "body": 0,
+                "vertices": vertices.tolist(), "exact": exact})
+            continue
+        plan = (plans or {}).get(geo)
+        if not plan or not plan.get("sets"):
+            continue
+        positions = _vertex_positions(parent, geo, matrix)
+        for entry in plan["sets"]:
+            vol = entry["subdomain"]
+            if entry["kind"] == "faces":
+                corners = plan["face_vids"][entry["members"]]
+            else:
+                corners = plan["point_vids"][entry["members"]].reshape(-1, 1)
+            used, inverse = np.unique(corners[corners >= 0],
+                                      return_inverse=True)
+            index = np.full(corners.shape, -1, dtype=np.int64)
+            index[corners >= 0] = inverse
+            record["force_sets"].append({
+                "label": _force_set_label(geo, entry),
+                "kind": entry["kind"], "geometry": geo, "subdomain": vol,
+                "sideset": entry["sideset"], "body": vol_id(geo, vol),
+                "conditions": entry["conditions"],
+                "order": int(parent.evalParm(f"mainOrder{geo}_{vol}")) + 1,
+                "vertices": positions[used].tolist(),
+                "faces": index.tolist()})
+    path = os.path.join(input_dir, SCENE_RECORD_FILE)
+    temporary = path + ".tmp"
+    with open(temporary, "w") as handle:
+        json.dump(record, handle)
+    os.replace(temporary, path)
+    return record
+
+
+def load_scene_record(input_dir):
+    path = os.path.join(input_dir, SCENE_RECORD_FILE)
+    try:
+        with open(path) as handle:
+            record = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) \
+            or record.get("schema") != SCENE_RECORD_SCHEMA:
+        return None
+    return record
 
 
 def load_sideset_record(input_dir, data, resource_dir=None):
@@ -5045,6 +6096,8 @@ def check_setup(parent, purpose="check"):
                 "obstacle.")
             continue
         simulated.append(geo)
+        if transform_is_animated(parent, geo):
+            errors.append(ANIMATED_BODY_ERROR.format(geo=geo))
         determinant = _transform_determinant(parent, geo)
         if determinant is not None and determinant < 0:
             errors.append(
@@ -5147,11 +6200,98 @@ def check_setup(parent, purpose="check"):
         errors.append("The number of time steps must be at least 1 "
                       "(Time tab).")
 
+    _timeline_findings(parent, obstacles, errors, notes)
+
     notes.extend(_expert_notes(parent))
     hdf5 = _hdf5_note(parent)
     if hdf5:
         notes.append(hdf5)
     return {"errors": errors, "warnings": warnings, "notes": notes}
+
+
+def _timeline_findings(parent, obstacles, errors, notes):
+    """Check Setup: the timeline, animated obstacles, time curves and what
+    force curves can include."""
+    try:
+        line = timeline(parent)
+    except hou.Error as exc:
+        if not any("Time tab" in error for error in errors):
+            errors.append(_error_text(exc))
+        line = None
+    for geo in obstacles:
+        if line is None or not transform_is_animated(parent, geo):
+            continue
+        motion = obstacle_motion(parent, geo, line)
+        if motion["kind"] == "static":
+            continue
+        if not _obstacle_displacement_is_zero(parent, geo):
+            errors.append(ANIMATED_OBSTACLE_EXPRESSION_ERROR.format(geo=geo))
+        if motion["kind"] == "translation":
+            notes.append(
+                f"Obstacle {geo} moves (its transform is keyframed; "
+                f"translation only): written as a displacement table over "
+                f"the {line.steps} time steps, its rest pose being the pose "
+                f"at frame {line.start_frame:g}.")
+            continue
+        rate = sequence_rate(line)
+        if rate is None:
+            errors.append(SEQUENCE_RATE_ERROR.format(geo=geo, dt=line.dt,
+                                                     t0=line.t0))
+            continue
+        frames = int(round(float(line.times[-1]) * rate)) + 1
+        _, _, exact = obstacle_surface(parent, geo)
+        notes.append(
+            f"Obstacle {geo} rotates or scales over time: it is written as "
+            f"{frames} posed copies of its surface (input/"
+            f"{OBSTACLE_SEQUENCE_DIR.format(geo)}/, {rate} per simulated "
+            f"second), its rest pose being the pose at frame "
+            f"{line.start_frame:g}."
+            + ("" if exact else " Its points come from Houdini (single "
+               "precision); .obj and .msh files are written at full "
+               "precision."))
+    pressures = set()
+    for geo in range(1, parent.evalParm("num_geos") + 1):
+        if parent.parm(f"is_obstacle{geo}").eval():
+            continue
+        for vol in range(1, parent.evalParm(f"num_volumes{geo}") + 1):
+            count = parent.parm(f"sideset_selection{geo}_{vol}")
+            for j in range(1, (count.eval() if count is not None else 0) + 1):
+                for k in range(1, parent.evalParm(
+                        f"Boundary_Condition__{geo}_{vol}_{j}") + 1):
+                    suffix = f"{geo}_{vol}_{j}_{k}"
+                    mode = parent.parm(f"time_curve{suffix}").evalAsString()
+                    kind = parent.evalParm(f"boundary_type{suffix}")
+                    if mode != "entered" and kind in (3, 4):
+                        pressures.add(_BC_TYPE_NAMES[kind])
+                    if mode != "animated":
+                        continue
+                    parms = list(parent.parmTuple(
+                        f"curve_multiplier{suffix}")) if kind in (0, 1) \
+                        else [parent.parm(f"curve_scale{suffix}")]
+                    if not any(p.isTimeDependent() for p in parms):
+                        notes.append(
+                            f"Geometry {geo} subdomain {vol} sideset {j} "
+                            f"condition {k}: Time Curve is Animated "
+                            f"multiplier, but the Multiplier has no keyframes "
+                            f"({', '.join(f'{p.eval():g}' for p in parms)} "
+                            f"throughout).")
+    if pressures:
+        notes.append(
+            f"A time curve on {' and '.join(sorted(pressures))} needs PolyFEM "
+            "ddb4579a3 or later; older builds refuse 'interpolation' on "
+            "pressures (invalid input json).")
+    if parent.evalParm("forces_fields"):
+        missing = []
+        if parent.evalParm("enable") and parent.evalParm("adhesion_enable"):
+            missing.append("adhesion")
+        if parent.evalParm("num_rayleigh") > 0:
+            missing.append("Rayleigh damping")
+        if missing:
+            notes.append(
+                f"Force curves leave out {' and '.join(missing)}: PolyFEM "
+                f"does not write {'those' if len(missing) > 1 else 'its'} "
+                f"nodal forces. Reactions are off by that force where it "
+                f"acts.")
 
 
 # What Show Expert Controls hides: (folder label path or parm names, label,
@@ -6135,9 +7275,48 @@ def _ensure_sideset(parent, geo, vol, j):
         parm.set(int(j))
 
 
-def _restore_conditions(parent, data, volume_remap=None):
+def _restore_obstacle_tables(parent, geo, entry, line, notes):
+    """An obstacle moved by displacement tables (a keyed translation when
+    the asset wrote it): keys on its Translate at the tables' points."""
+    value = entry.get("value")
+    if not (isinstance(value, list) and len(value) == 3 and all(
+            isinstance(v, (int, float)) for v in value)):
+        notes.append(f"Obstacle {geo}: its displacement has a time function "
+                     "on an expression; the time function was not restored.")
+        return False
+    if line is None:
+        notes.append(f"Obstacle {geo}: its motion was not restored (the Time "
+                     "tab defines no run).")
+        return False
+    functions, note = _interpolation_functions(entry["interpolation"], 3,
+                                               line)
+    if note:
+        notes.append(f"Obstacle {geo}: {note}")
+    for axis, (component, function) in enumerate(zip("xyz", functions)):
+        parm = parent.parm(f"xform_t__{geo}{component}")
+        rest = parm.eval()
+        parm.deleteAllKeyframes()
+        if function is None:
+            points, values = [line.t0], [1.0]
+        else:
+            points, values = function.points, function.values
+        keys = []
+        for point, factor in zip(points, values):
+            key = hou.Keyframe()
+            key.setFrame(line.frame(point))
+            key.setValue(rest + float(value[axis]) * float(factor))
+            key.setExpression("linear()", hou.exprLanguage.Hscript)
+            keys.append(key)
+        parm.setKeyframes(keys)
+    return True
+
+
+def _restore_conditions(parent, data, volume_remap=None, scene=None,
+                        notes=None):
     """Initial conditions, body force and obstacle motion from new-format
-    json (sideset conditions are restored by _restore_sidesets)."""
+    json (sideset conditions are restored by _restore_sidesets). An obstacle
+    the asset animated gets its transform keyframes back from the scene
+    record; displacement tables without one become keys on Translate."""
     ic = data.get("initial_conditions", {})
     counts, entries = {}, []
     for type_idx, key in enumerate(("solution", "velocity", "acceleration")):
@@ -6162,11 +7341,34 @@ def _restore_conditions(parent, data, volume_remap=None):
     bc = data.get("boundary_conditions", {})
     if "rhs" in bc and parent.parm("RHS") is not None:
         parent.setParms({"RHS": _format_vector(bc["rhs"])})
+    notes = notes if notes is not None else []
+    recorded = (scene or {}).get("obstacles", {})
+    for geo_text, obstacle in recorded.items():
+        if obstacle.get("motion", "static") == "static":
+            continue
+        for name, keys in obstacle.get("transform", {}).items():
+            _restore_keyframes(parent.parm(name), keys)
+    line = None
     for entry in bc.get("obstacle_displacements", []):
         geo = (int(entry.get("id", 0)) - 100000) // 1000
-        if parent.parm(f"obstacle_disp{geo}") is not None:
+        if parent.parm(f"obstacle_disp{geo}") is None:
+            continue
+        if entry.get("interpolation") is None:
             parent.setParms(
                 {f"obstacle_disp{geo}": _format_vector(entry.get("value"))})
+            continue
+        if recorded.get(str(geo), {}).get("motion") == "translation":
+            continue  # the record's keys say it exactly
+        if line is None:
+            try:
+                line = timeline(parent)
+            except hou.Error:
+                line = None
+        try:
+            _restore_obstacle_tables(parent, geo, entry, line, notes)
+        except (hou.Error, KeyError, TypeError, ValueError) as exc:
+            notes.append(f"Obstacle {geo}: its motion was not restored "
+                         f"({exc}).")
 
 
 def _native_pattern(entry):
@@ -6300,13 +7502,21 @@ def _restore_sidesets(parent, data, geometry, input_dir, resource_dir,
             _restore_recorded_sidesets(parent, i, geo_record, faces_by_id,
                                        points_by_id, notes, remap)
         else:
+            try:
+                line = timeline(parent)
+            except hou.Error:
+                line = None
             _restore_sidesets_from_ids(parent, i, conditions, faces_by_id,
-                                       points_by_id, natives, notes, remap)
+                                       points_by_id, natives, notes, remap,
+                                       line)
     return notes
 
 
 def _set_condition_parms(parent, suffix, kind, vector=None, value=None,
-                         dimension=None):
+                         dimension=None, curve_record=None, functions=None,
+                         line=None):
+    """One condition's parameters; its time curve from the sideset record
+    (exact) or from imported time functions (keys at their points)."""
     if parent.parm(f"boundary_type{suffix}") is None:
         return
     parms = {f"boundary_type{suffix}": int(kind)}
@@ -6318,6 +7528,10 @@ def _set_condition_parms(parent, suffix, kind, vector=None, value=None,
         for axis, flag in zip("xyz", dimension):
             parms[f"{axis}_dimension{suffix}"] = int(bool(flag))
     parent.setParms(parms)
+    if curve_record is not None:
+        _restore_curve_record(parent, suffix, int(kind), curve_record)
+    elif functions is not None and line is not None:
+        _set_curve_from_functions(parent, suffix, int(kind), functions, line)
 
 
 def _restore_recorded_sidesets(parent, geo, geo_record, faces_by_id,
@@ -6388,13 +7602,16 @@ def _restore_recorded_sidesets(parent, geo, geo_record, faces_by_id,
                 parent, f"{geo}_{vol}_{j}_{k}", condition.get("type", 0),
                 vector=condition.get("vector"), value=condition.get("value"),
                 dimension=condition.get("dimension")
-                if int(condition.get("type", 0)) == 0 else None)
+                if int(condition.get("type", 0)) == 0 else None,
+                curve_record=condition)
 
 
 def _restore_sidesets_from_ids(parent, geo, conditions, faces_by_id,
-                               points_by_id, natives, notes, remap=None):
+                               points_by_id, natives, notes, remap=None,
+                               line=None):
     """Sidesets rebuilt from params.json ids (no usable record).
-    remap: {subdomain number in the ids: subdomain here}."""
+    remap: {subdomain number in the ids: subdomain here}; line: the run's
+    timeline, for conditions with time functions."""
     remap = remap or {}
 
     def decode(sid):
@@ -6507,12 +7724,27 @@ def _restore_sidesets_from_ids(parent, geo, conditions, faces_by_id,
             count_parm.set(len(entries))
         for k, (_, kind, entry) in enumerate(entries, 1):
             value = _format_vector(entry.get("value"))
+            functions = None
+            if entry.get("interpolation") is not None:
+                where = f"geo {geo} subdomain {vol} sideset {j} condition {k}"
+                try:
+                    functions, note = _interpolation_functions(
+                        entry["interpolation"], 3 if kind in (0, 1) else 1,
+                        line)
+                    if note:
+                        notes.append(f"{where}: {note}")
+                    if line is None:
+                        notes.append(f"{where}: its time function was not "
+                                     "restored (the Time tab defines no run)")
+                except (hou.Error, KeyError, TypeError, ValueError) as exc:
+                    notes.append(f"{where}: its time function was not "
+                                 f"restored ({exc})")
             _set_condition_parms(
                 parent, f"{geo}_{vol}_{j}_{k}", kind,
                 vector=value if kind in (0, 1) else None,
                 value=value if kind not in (0, 1) else None,
                 dimension=entry.get("dimension", [True, True, True])
-                if kind == 0 else None)
+                if kind == 0 else None, functions=functions, line=line)
 
 
 def _restore_legacy_scene(parent, data, geometry, input_dir, material_slots):
@@ -7665,6 +8897,48 @@ def _restore_units(parent, data):
     parent.setParms(parms)
 
 
+def _sequence_as_obstacle(item, index, scene, resource_dir, warnings):
+    """A mesh_sequence obstacle entry as the obstacle it was made from: the
+    mesh the scene record names (its keyframes come back with the
+    conditions), else the sequence's first frame, static."""
+    if not isinstance(item, dict) or item.get("type") != "mesh_sequence":
+        return item
+    recorded = ((scene or {}).get("obstacles") or {}).get(str(index), {})
+    mesh = recorded.get("mesh")
+    if mesh:
+        mesh = os.path.expandvars(mesh)
+        if not os.path.isabs(mesh):
+            mesh = os.path.join(resource_dir, mesh)
+    if mesh and os.path.isfile(mesh):
+        return {"mesh": mesh, "is_obstacle": True,
+                "enabled": item.get("enabled", True)}
+    frames = item.get("mesh_sequence")
+    first = frames[0] if isinstance(frames, list) and frames else None
+    if isinstance(first, str):
+        warnings.append(
+            f"Geometry {index} is a moving obstacle (a mesh sequence) without "
+            f"the asset's record of its keyframes; it was imported as its "
+            f"first frame, standing still.")
+        return {"mesh": first if os.path.isabs(first)
+                else os.path.join(resource_dir, first),
+                "is_obstacle": True, "enabled": item.get("enabled", True)}
+    return item
+
+
+def _restore_timeline(parent, scene):
+    """Start Frame and Time Scale from the scene record (same Houdini time
+    at another frame rate)."""
+    line = (scene or {}).get("timeline")
+    if not isinstance(line, dict):
+        return
+    try:
+        start = (float(line["start_frame"]) - 1.0) / float(line["fps"])
+        parent.setParms({"houdini_start_frame": hou.timeToFrame(start),
+                         "time_scale": float(line["time_scale"])})
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        pass
+
+
 def read_params(kwargs):
     parent = kwargs["node"]
     selected_value = parent.evalParm("old_input_dir").strip()
@@ -7715,6 +8989,10 @@ def read_params(kwargs):
     if not isinstance(raw_geometry, list):
         _message("The geometry section is not a list.")
         return
+    scene = load_scene_record(input_dir)
+    raw_geometry = [
+        _sequence_as_obstacle(item, index, scene, resource_dir, warnings)
+        for index, item in enumerate(raw_geometry, 1)]
     geometry = [
         item for item in raw_geometry
         if isinstance(item, dict) and "mesh" in item]
@@ -7861,6 +9139,7 @@ def read_params(kwargs):
             _import_isotropic(parent, geo, vol, m)
 
     _restore_time(parent, data)
+    _restore_timeline(parent, scene)
     _restore_contact(parent, data)
     _restore_space(parent, data, material_slots, legacy, warnings)
     _restore_solver(parent, data, legacy, warnings)
@@ -7871,7 +9150,7 @@ def read_params(kwargs):
     # generic PolyFEM selection ids are rebuilt through a compatibility mapper.
     if not legacy:
         try:
-            _restore_conditions(parent, data, volume_remap)
+            _restore_conditions(parent, data, volume_remap, scene, warnings)
         except Exception as e:
             warnings.append(f"Conditions were only partially restored: {e}")
         try:

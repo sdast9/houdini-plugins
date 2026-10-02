@@ -12,3 +12,8 @@ if output_node is None:
 if output_node.input(0) is None:
     output_node.setInput(0, merge_node)
 node.layoutChildren()
+# New nodes write the nodal forces Read PVD's force curves need; the
+# parameter's default stays off so scenes saved before keep their output.
+forces = node.parm("forces_fields")
+if forces is not None:
+    forces.set(1)

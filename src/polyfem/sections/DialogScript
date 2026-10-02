@@ -2425,6 +2425,78 @@
                                 help    "Apply the Dirichlet condition to the z component. Turn off to leave z free."
                                 parmtag { "script_callback_language" "python" }
                             }
+                            parm {
+                                name    "time_curve#_#_#_#"
+                                label   "Time Curve"
+                                type    ordinal
+                                default { "0" }
+                                menu {
+                                    "entered"   "Value as entered"
+                                    "ramp"      "Ramp from 0 to the value"
+                                    "animated"  "Animated multiplier (keyframes)"
+                                }
+                                help    "How this condition changes over time. Value as entered: exactly the value above (it may itself be an expression of time t). Ramp from 0 to the value: the value is multiplied by a ramp from 0 to 1 over the whole run (or between Ramp Start and Ramp End with Custom Ramp Times) that then stays at 1. Animated multiplier: the value is multiplied by the Multiplier below, which you keyframe on Houdini's timeline like any other parameter (Alt+click its field, or right-click > Keyframes); the Time tab's Start Frame and Time Scale say which Houdini frame is which simulation time. The multiplier is read at every time step of the run (PolyFEM evaluates conditions only there) and exported as a time table (PolyFEM's interpolation), so changing dt never moves the curve in time."
+                                parmtag { "script_callback_language" "python" }
+                            }
+                            parm {
+                                name    "ramp_custom#_#_#_#"
+                                label   "Custom Ramp Times"
+                                type    toggle
+                                default { "0" }
+                                hidewhen "{ time_curve#_#_#_# != ramp }"
+                                help    "Off: the ramp spans the whole run, from 0 at Start Time to the full value at the last time step. On: it starts at Ramp Start and reaches the full value at Ramp End."
+                                parmtag { "script_callback_language" "python" }
+                            }
+                            parm {
+                                name    "ramp_start#_#_#_#"
+                                label   "Ramp Start"
+                                type    float
+                                joinnext
+                                default { "0" }
+                                hidewhen "{ time_curve#_#_#_# != ramp } { ramp_custom#_#_#_# == 0 }"
+                                range   { 0 10 }
+                                help    "Simulation time at which the ramp starts; the multiplier is 0 until then."
+                                parmtag { "script_callback_language" "python" }
+                            }
+                            parm {
+                                name    "ramp_end#_#_#_#"
+                                label   "Ramp End"
+                                type    float
+                                default { "1" }
+                                hidewhen "{ time_curve#_#_#_# != ramp } { ramp_custom#_#_#_# == 0 }"
+                                range   { 0 10 }
+                                help    "Simulation time at which the ramp reaches 1 (the full value), which it keeps afterwards. Must be later than Ramp Start."
+                                parmtag { "script_callback_language" "python" }
+                            }
+                            parm {
+                                name    "curve_multiplier#_#_#_#"
+                                label   "Multiplier [x, y, z]"
+                                type    vector
+                                size    3
+                                default { "1" "1" "1" }
+                                hidewhen "{ time_curve#_#_#_# != animated } { boundary_type#_#_#_# == Normal_Aligned_Neumann } { boundary_type#_#_#_# == Pressure_Boundary } { boundary_type#_#_#_# == Pressure_Cavity }"
+                                range   { -1 1 }
+                                help    "Keyframe these on the timeline: each component multiplies the same component of Value at every time step. For example, Value [0, 0, -0.005] with z keyed 0 at the start frame, 1 halfway and 0 at the end pushes the surface 5 mm down and back. Bezier, ease and linear keys, expressions and CHOP exports all work: the channel itself is evaluated at each step."
+                                parmtag { "script_callback_language" "python" }
+                            }
+                            parm {
+                                name    "curve_scale#_#_#_#"
+                                label   "Multiplier"
+                                type    float
+                                default { "1" }
+                                hidewhen "{ time_curve#_#_#_# != animated } { boundary_type#_#_#_# == Dirichlet } { boundary_type#_#_#_# == Neumann }"
+                                range   { -1 1 }
+                                help    "Keyframe this on the timeline: it multiplies Value at every time step (a load or pressure curve). Bezier, ease and linear keys, expressions and CHOP exports all work: the channel itself is evaluated at each step. A curve on Pressure Boundary or Pressure Cavity needs PolyFEM ddb4579a3 or later."
+                                parmtag { "script_callback_language" "python" }
+                            }
+                            parm {
+                                name    "curve_hint#_#_#_#"
+                                label   ""
+                                type    label
+                                default { "Keyframe the Multiplier on the timeline (Alt+click its field). The Time tab's Start Frame and Time Scale relate frames to simulation time." }
+                                hidewhen "{ time_curve#_#_#_# != animated }"
+                                parmtag { "sidefx::look" "block" }
+                            }
                         }
 
                     }
@@ -2662,6 +2734,38 @@
             range   { 0 1 }
             help    "Newmark gamma parameter. 0.5 introduces no numerical damping; larger values damp high-frequency vibrations."
             parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "sepparm_timeline"
+            label   "Separator"
+            type    separator
+            default { "" }
+        }
+        parm {
+            name    "houdini_start_frame"
+            label   "Start Frame"
+            type    float
+            default { "1" }
+            range   { 1 240 }
+            help    "Houdini frame at which the simulation starts: there the simulation time is Start Time. Houdini time is simulation time: a frame's simulation time is Start Time + (that frame's time - this frame's time) x Time Scale, with Houdini time in seconds at the scene's frame rate. Keyframed condition multipliers and keyframed obstacle transforms are read on this timeline, and Read PVD plays the results back on it."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "time_scale"
+            label   "Time Scale"
+            type    float
+            default { "1" }
+            range   { 0.001 10 }
+            help    "Simulated time per unit of Houdini time. 1 = one simulated second per second of Houdini time (24 frames at 24 fps); 0.01 shows a 10 ms impact over one Houdini second. Changing dt or the number of time steps never moves a keyframed curve or motion in time; only Start Frame and Time Scale do."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "timeline_info"
+            label   "Timeline"
+            type    string
+            default { [ "hou.pwd().hdaModule().timeline_text(hou.pwd())" python ] }
+            disablewhen "{ working_dir != __polyfem_report_edit_sentinel__ }"
+            help    "Read-only: the Houdini frames the run spans (Start Time at Start Frame, End Time at the last frame) and how many time steps fall on each frame."
         }
     }
 
@@ -4654,10 +4758,10 @@
                     }
                     parm {
                         name    "forces_fields"
-                        label   "Forces"
+                        label   "Nodal Forces (force curves)"
                         type    toggle
                         default { "0" }
-                        help    "Export the nodal force vectors of the elastic, inertia and external terms."
+                        help    "Export each node's force vectors, one field per term the scene has (elastic, loads, pressure, contact, friction, inertia, damping). Read PVD adds them up over a sideset or an obstacle to give force-displacement curves (Analysis > Force Curves): the reaction of a fixed or moved sideset, the contact force on an obstacle. Costs 3 numbers per output point per term (one term, the elastic force, in a quasistatic scene without loads or contact, about +14% per frame). New nodes start with it on; scenes saved before keep their setting."
                         parmtag { "export_disable" "1" }
                         parmtag { "script_callback_language" "python" }
                     }

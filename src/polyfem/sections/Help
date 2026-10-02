@@ -52,6 +52,56 @@ TIP:
     subdomain's settings; __Duplicate Geometry__ adds a copy with every
     setting.
 
+== Loads that change over time ==
+
+Every condition of a sideset has a __Time Curve__:
+
+* __Value as entered__: the value as typed; it may itself be an expression
+  of time `t`, such as `"-0.1*t"`.
+* __Ramp from 0 to the value__: the value is multiplied by a ramp from 0 at
+  the run's start to 1 at its last time step (__Custom Ramp Times__: from
+  __Ramp Start__ to __Ramp End__), then held.
+* __Animated multiplier (keyframes)__: the value is multiplied by
+  __Multiplier__, which you keyframe on the timeline like any Houdini
+  parameter (Alt+click the field, or right-click > Keyframes). Each
+  component of a vector condition has its own multiplier.
+
+The multiplier is read at every time step of the run, which is when PolyFEM
+evaluates a condition, and is written as a time table; changing dt never
+moves the curve in time.
+
+=== The timeline ===
+
+Houdini time is simulation time. On the __Time tab__, __Start Frame__ is the
+frame at which the simulation is at its Start Time, and __Time Scale__ is
+the simulated time per second of Houdini time:
+
+    simulation time = Start Time + (frame's time - Start Frame's time) x Time Scale
+
+__Timeline__ shows the frames the run spans. Read PVD plays the results back
+on the same timeline, so a keyed load or obstacle and its result are on the
+same frame.
+
+== Moving obstacles ==
+
+Keyframe an obstacle's __Translate__, __Rotate__, __Scale__ or __Pivot__
+like any Houdini object; the viewport shows it moving. Its pose at the
+__Start Frame__ is where it starts. A motion that only translates is written
+as a displacement table; a rotation or scaling as one posed copy of the
+obstacle per time step (`input/obstacle_geo<N>/`, a PolyFEM mesh sequence),
+which needs a dt whose inverse is a whole number (0.01, 0.0125, 0.025...).
+Keep __Obstacle Displacement__ at `[0, 0, 0]` on a keyed obstacle. A
+simulated body's transform only places its rest shape: move a body with a
+Dirichlet condition and a time curve.
+
+== Forces on sidesets and obstacles ==
+
+With __Output > Nodal Forces__ on (new nodes start with it on), every node's
+forces are written, and Read PVD's __Analysis > Force Curves__ adds them up
+over each sideset and obstacle: the reaction of a fixed or moved sideset,
+the contact force on an obstacle, as force-displacement curves and a CSV. A
+sideset without a condition can be made just to measure a force.
+
 == Gravity and other body loads ==
 
 __Body Load (rhs = minus acceleration)__ on the Global tab is PolyFEM's
@@ -143,7 +193,9 @@ conditions.
 
 == Time ==
 
-Quasistatic or dynamic, the time range and step, and the time integrator.
+Quasistatic or dynamic, the time range and step, the time integrator, and
+the timeline: __Start Frame__ and __Time Scale__ relate Houdini frames to
+simulation time (keyed loads, moving obstacles, Read PVD playback).
 
 == Contact ==
 
@@ -158,7 +210,8 @@ the method that converges on contact scenes.
 == Output ==
 
 What PolyFEM writes: the log, result fields (VTK-HDF by default; body ids
-and contact forces are on by default), and optional files.
+and contact forces are on by default; nodal forces for force curves on new
+nodes), and optional files.
 
 == Global ==
 
