@@ -758,32 +758,13 @@
             default { "" }
         }
         parm {
-            name    "Export_params"
-            label   "Run PolyFEM"
+            name    "check_setup"
+            label   "Check Setup"
             type    button
             joinnext
             default { "0" }
-            help    "Write params.json and all input files, then launch PolyFEM in a terminal window so you can watch its progress. Use this for a first run; use Run in Background for long jobs."
-            parmtag { "script_callback" "hou.pwd().hm().write_params(kwargs)" }
-            parmtag { "script_callback_language" "python" }
-        }
-        parm {
-            name    "run_background"
-            label   "Run in Background"
-            type    button
-            joinnext
-            default { "0" }
-            help    "Write the inputs and start PolyFEM as a background process without a terminal. Progress goes to <working_dir>/output/log.txt; read it with Show Log. Houdini stays responsive while the simulation runs."
-            parmtag { "script_callback" "hou.pwd().hm().run_background(kwargs)" }
-            parmtag { "script_callback_language" "python" }
-        }
-        parm {
-            name    "show_log"
-            label   "Show Log"
-            type    button
-            default { "0" }
-            help    "Open the most recent background-run log (<working_dir>/output/log.txt) to check progress, warnings and errors."
-            parmtag { "script_callback" "hou.pwd().hm().show_log(kwargs)" }
+            help    "List every problem in the setup at once, before PolyFEM runs: errors PolyFEM could not run (a missing binary, a 2D mesh, a mirrored transform, an unfinished material, conflicting sideset conditions, unsupported hexahedral orders) and warnings for setups that are legal but usually wrong (a body nothing holds in a quasistatic run, a contact distance that is large for the model). Write and both Run buttons run the same check first: errors stop them; warnings are confirmed once before a run and only reported by Write. The result is in Check Setup Report below."
+            parmtag { "script_callback" "hou.phm().check_setup_button(kwargs)" }
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -791,8 +772,76 @@
             label   "Write params.json Only"
             type    button
             default { "0" }
-            help    "Write params.json and the input files without running anything. Useful to inspect or hand-edit the setup, or to run PolyFEM yourself from a shell or on another machine."
+            help    "Write params.json and the input files without running anything. Useful to inspect or hand-edit the setup, or to run PolyFEM yourself from a shell or on another machine. Check Setup runs first; its errors stop the write, its warnings are only reported."
             parmtag { "script_callback" "hou.pwd().hm().write_params_only(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "Export_params"
+            label   "Run in Terminal"
+            type    button
+            joinnext
+            default { "0" }
+            help    "Check the setup, write params.json and all input files, then run PolyFEM in a terminal window so you can watch its output. Run Status below follows the run (step, time, and at the end what the exit status means); Stop ends it. The window's text is also saved to output/terminal_log.txt."
+            parmtag { "script_callback" "hou.pwd().hm().write_params(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "run_background"
+            label   "Run in Background"
+            type    button
+            default { "0" }
+            help    "Check the setup, write the inputs and run PolyFEM without a terminal window. Houdini stays responsive; Run Status below follows the run, and its output goes to <working_dir>/output/log.txt (Open Log / Show Log). A second run into a folder whose run is still going is refused."
+            parmtag { "script_callback" "hou.pwd().hm().run_background(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "run_status"
+            label   "Run Status"
+            type    string
+            default { "No run yet." }
+            disablewhen "{ working_dir != __polyfem_report_edit_sentinel__ }"
+            help    "What the last run started from this node is doing: running (time step k of N and the simulated time), completed, or stopped -- with the meaning of PolyFEM's exit status: 0 completed; 1 a named failure, not a crash (the reason from the log's 'PolyFEM stopped:' line is shown); 3 a resource limit, a safety stop that keeps the written steps; a signal means the solver crashed or was killed. Updated about once a second. Read-only."
+            parmtag { "editor" "1" }
+            parmtag { "editorlines" "1-4" }
+        }
+        parm {
+            name    "stop_run"
+            label   "Stop"
+            type    button
+            joinnext
+            default { "0" }
+            help    "Stop the PolyFEM run writing into this Working Directory (asks first). The time steps already written stay on disk and can be opened."
+            parmtag { "script_callback" "hou.phm().stop_run(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "open_log"
+            label   "Open Log"
+            type    button
+            joinnext
+            default { "0" }
+            help    "Open the latest run's log in your text editor (output/log.txt for Run in Background, output/terminal_log.txt for Run in Terminal)."
+            parmtag { "script_callback" "hou.phm().open_log(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "show_log"
+            label   "Show Log"
+            type    button
+            joinnext
+            default { "0" }
+            help    "Show the last 60 lines of the latest run's log in a dialog."
+            parmtag { "script_callback" "hou.pwd().hm().show_log(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "open_results"
+            label   "Open Results"
+            type    button
+            default { "0" }
+            help    "Show this run's results: creates a Read PVD node next to this one the first time (and reuses it afterwards), loads output/<PolyFEM file name>.pvd, sets the playbar to its time steps and frames the viewport on it. Works while the run is still going (press again to pick up new steps)."
+            parmtag { "script_callback" "hou.phm().open_results(kwargs)" }
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -800,6 +849,16 @@
             label   "Separator"
             type    separator
             default { "" }
+        }
+        parm {
+            name    "check_report"
+            label   "Check Setup Report"
+            type    string
+            default { "Not checked yet: press Check Setup, or Write/Run." }
+            disablewhen "{ working_dir != __polyfem_report_edit_sentinel__ }"
+            help    "The last Check Setup result: errors (PolyFEM cannot run this setup), warnings (legal but usually wrong) and notes. Read-only."
+            parmtag { "editor" "1" }
+            parmtag { "sidefx::look" "block" }
         }
         parm {
             name    "export_report"

@@ -32,8 +32,10 @@ import math
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
+import time
 
 import numpy as np
 
@@ -409,17 +411,46 @@ def destroy_geo_nodes(parent, geo_number):
 
 
 def working_dir_check(kwargs):
+    """Working Directory callback: create input/ and output/, and end the
+    path with a slash -- keeping the text as typed, so "$HIP/sim" stays
+    relative to the scene file and a moved or shared .hip still finds it."""
     parent = kwargs["node"]
-    working_dir = parent.evalParm("working_dir")
+    parm = parent.parm("working_dir")
+    working_dir = parm.eval()
     if not working_dir:
         _message("Please provide working directory location.")
         return False
-    if not working_dir.endswith("/"):
-        working_dir += "/"
-    os.makedirs(os.path.join(working_dir, "input"), exist_ok=True)
-    os.makedirs(os.path.join(working_dir, "output"), exist_ok=True)
-    parent.setParms({"working_dir": working_dir})
+    try:
+        os.makedirs(os.path.join(working_dir, "input"), exist_ok=True)
+        os.makedirs(os.path.join(working_dir, "output"), exist_ok=True)
+    except OSError as exc:
+        _message(f"Could not create the working directory {working_dir}: "
+                 f"{exc}")
+        return False
+    raw = parm.unexpandedString()
+    if not raw.endswith(("/", "\\")):
+        parm.set(raw + "/")
     return True
+
+
+def portable_path(parent, path):
+    """`path` written relative to the Working Directory as the user typed it.
+
+    Files the node stages into <working_dir>/input are stored as e.g.
+    "$HIP/sim/input/part.msh" when the working directory is "$HIP/sim/", so
+    moving the .hip together with its simulation folder keeps them. Paths
+    outside the working directory are returned unchanged.
+    """
+    raw = parent.parm("working_dir").unexpandedString()
+    expanded = parent.evalParm("working_dir")
+    if not raw or not expanded or raw == expanded:
+        return path
+    base = os.path.normpath(os.path.abspath(expanded))
+    target = os.path.normpath(os.path.abspath(path))
+    if not target.startswith(base + os.sep):
+        return path
+    relative = os.path.relpath(target, base).replace(os.sep, "/")
+    return raw.rstrip("/\\") + "/" + relative
 
 
 def _stage_material_file(parent, source, label="material file"):
@@ -429,7 +460,7 @@ def _stage_material_file(parent, source, label="material file"):
     the UI parameter pointed at the staged copy makes the viewport preview and
     the solver consume the exact same file, and makes the input folder portable.
     """
-    source = os.path.abspath(os.path.expandvars(source))
+    source = os.path.abspath(hou.text.expandString(source))
     if not os.path.isfile(source):
         raise hou.NodeError(f"{label} not found: {source}")
     working_dir = parent.evalParm("working_dir")
@@ -524,7 +555,7 @@ def material_file_changed(kwargs):
                 _message(str(exc))
                 return
             if os.path.abspath(source) != os.path.abspath(staged):
-                parm.set(staged)
+                parm.set(portable_path(parent, staged))
                 _status(f"Staged {os.path.basename(staged)} in "
                         f"{os.path.dirname(staged)}")
     material_display_changed(kwargs)
@@ -587,6 +618,7 @@ def create_geo_nodes(kwargs):
     except (OSError, hou.Error) as e:
         _message(f"Could not copy mesh into working dir: {e}")
         return
+    dst = portable_path(parent, dst)
     parent.setParms({f"file_location{geo_number}": dst})
 
     if obstacle_check == 0 or not non_msh:
@@ -1747,6 +1779,26 @@ MATERIAL_TOKENS = (
     "ActiveFiber", "MaterialSum",
 )
 FIBER_MODELS = ("HGOFiber", "HGODispersion", "ActiveFiber")
+# Readable names of the PolyFEM types, for messages (the tokens above are
+# what params.json receives).
+MATERIAL_LABELS = {
+    "LinearElasticity": "Linear Elastic (small strains only)",
+    "HookeLinearElasticity": "Anisotropic Linear Elastic (Hooke)",
+    "IncompressibleLinearElasticity": "Incompressible Linear Elastic",
+    "NeoHookean": "Neo-Hookean (recommended)",
+    "IncompressibleOgden": "Ogden, Incompressible",
+    "UnconstrainedOgden": "Ogden, Compressible",
+    "MooneyRivlin": "Mooney-Rivlin, 2 Parameters",
+    "MooneyRivlin3Param": "Mooney-Rivlin, 3 Parameters",
+    "MooneyRivlin3ParamSymbolic": "Mooney-Rivlin, 3 Parameters (Symbolic)",
+    "SaintVenant": "Saint Venant-Kirchhoff (Anisotropic)",
+    "FixedCorotational": "Fixed Corotational",
+    "IsochoricNeoHookean": "Isochoric Neo-Hookean",
+    "HGOFiber": "HGO Fiber (aligned)",
+    "HGODispersion": "HGO Dispersion (GOH)",
+    "ActiveFiber": "Active Fiber (muscle)",
+    "MaterialSum": "Composite (Matrix + Fiber Families)",
+}
 
 # Volume-level parameter names that differ from their family-level base.
 _VOLUME_PARM_ALIASES = {"k1": "hgo_k1", "k2": "hgo_k2"}
@@ -3675,6 +3727,10 @@ def build_solver(parent, data):
     data["solver"] = solver
 
 
+def _hdf5_note(parent):
+    return None
+
+
 def build_output(parent, data):
     def b(name):
         return bool(parent.evalParm(name))
@@ -3815,8 +3871,13 @@ def build_output(parent, data):
 
 def build_params(parent):
     working_dir = parent.evalParm("working_dir")
-    if not os.path.isdir(working_dir):
-        raise hou.NodeError("Working directory is not valid!")
+    if not working_dir.strip():
+        raise hou.NodeError("Choose a Working Directory first.")
+    try:
+        os.makedirs(working_dir, exist_ok=True)
+    except OSError as exc:
+        raise hou.NodeError(
+            f"Could not create the working directory {working_dir}: {exc}")
     input_dir = os.path.join(working_dir, "input")
     os.makedirs(input_dir, exist_ok=True)
     os.makedirs(os.path.join(working_dir, "output"), exist_ok=True)
@@ -3831,7 +3892,6 @@ def build_params(parent):
     build_solver(parent, data)
     build_output(parent, data)
     build_provenance(parent, data)
-    _warn_non_newton_contact(parent, data)
 
     params_path = os.path.join(input_dir, "params.json")
     with open(params_path, "w") as f:
@@ -3854,7 +3914,8 @@ NON_NEWTON_CONTACT_WARNING = (
 
 def _warn_non_newton_contact(parent, data):
     """Warn (without refusing) when a contact scene uses a method other than
-    Newton; returns the message, or None."""
+    Newton; returns the message, or None. Write and Run show the same
+    warning through Check Setup."""
     method = data.get("solver", {}).get("nonlinear", {}).get("solver", "Newton")
     if method == "Newton" or not data.get("contact", {}).get("enabled", False):
         return None
@@ -4085,16 +4146,557 @@ def confirm_output_folder(parent):
 
 
 def write_params_only(kwargs):
+    """Write params.json and every input file without running anything."""
     parent = kwargs["node"]
+    path = _prepare_inputs(parent, "write")
+    if path:
+        _status(f"Wrote {path}")
+    return path
+
+
+def _prepare_inputs(parent, purpose):
+    """Everything Write and Run do before the solver starts.
+
+    Check Setup first (problems PolyFEM would only report as a failure),
+    then refuse a folder whose run is still going, then confirm replacing an
+    earlier run's results, then write the inputs. purpose is "write", "run"
+    (terminal) or "background". Returns the params.json path, or None when a
+    check refused or the user cancelled.
+    """
+    if not gate_setup(parent, purpose):
+        return None
+    running = active_run(parent)
+    if running is not None:
+        _message(
+            f"A PolyFEM run is still writing into {running['output']} "
+            f"({_describe_process(running)}). Wait for it, press Stop, or "
+            "choose another Working Directory.")
+        return None
     if not confirm_output_folder(parent):
         return None
     try:
-        path = build_params(parent)
+        return build_params(parent)
     except hou.NodeError as e:
         _message(str(e))
         return None
-    _status(f"Wrote {path}")
-    return path
+
+
+# =============================================================================
+# Check Setup: one pre-flight report
+#
+# Setup mistakes that PolyFEM reports only as a failure that does not name
+# the cause (an unconstrained body ends in "Reached iteration limit", a
+# placeholder tensor in a JSON type error, a mirrored mesh in "element 0 is
+# flipped", a 2D mesh in nothing at all) are found here and listed together.
+# Errors are setups PolyFEM cannot run; warnings are setups that are legal
+# but usually wrong; notes are for information. Write and Run run the check
+# first: errors refuse both; warnings are confirmed once per node and set
+# before a run, and only reported by Write.
+# =============================================================================
+
+_E_NU_MODELS = ("LinearElasticity", "NeoHookean", "FixedCorotational",
+                "IsochoricNeoHookean", "IncompressibleLinearElasticity")
+_TENSOR_MODELS = ("HookeLinearElasticity", "SaintVenant")
+# Entry counts PolyFEM accepts for a 3D elasticity tensor
+# (assembler/MatParams.cpp: transversely isotropic, orthotropic, full).
+_TENSOR_SIZES = (5, 9, 21)
+# Lagrange hexahedra exist up to Q3 (autogen::MAX_Q_BASES).
+_MAX_HEX_ORDER = 3
+_WARNINGS_ACCEPTED = "polyfem_setup_warnings_accepted"
+
+
+def _error_text(exc):
+    """The message of a raised hou error without Houdini's generic first
+    line ("Error generated by Python node.")."""
+    text = str(exc).strip()
+    generic = "Error generated by Python node."
+    if text.startswith(generic):
+        text = text[len(generic):].strip()
+    return text
+
+
+def _numbers(text):
+    """A typed list of plain numbers, or None."""
+    try:
+        value = ast.literal_eval(str(text).strip())
+    except (ValueError, SyntaxError):
+        return None
+    if not isinstance(value, (list, tuple)) or not all(
+            isinstance(v, (int, float)) and not isinstance(v, bool)
+            for v in value):
+        return None
+    return [float(v) for v in value]
+
+
+def _material_findings(parent, geo, vol, quasistatic, errors):
+    """Material parameters PolyFEM cannot use (errors are appended)."""
+    token = material_token(parent, geo, vol)
+    where = f"Geometry {geo} subdomain {vol}"
+    models = [token]
+    if token == "MaterialSum":
+        matrix = parent.parm(f"matrix_model{geo}_{vol}").evalAsString()
+        models = [matrix] if matrix != "None" else []
+    for model in models:
+        name = MATERIAL_LABELS.get(model, model).replace(" (recommended)", "")
+        if model in _E_NU_MODELS:
+            young = parent.evalParm(f"E{geo}_{vol}")
+            nu = parent.evalParm(f"nu{geo}_{vol}")
+            if not young > 0:
+                errors.append(f"{where} ({name}): Young's modulus E must be "
+                              f"greater than 0 (it is {young:g}).")
+            if not -1.0 < nu < 0.5:
+                errors.append(
+                    f"{where} ({name}): Poisson's ratio must lie between -1 "
+                    f"and 0.5, both excluded (it is {nu:g}); 0.5 itself "
+                    "makes the bulk modulus infinite.")
+        elif model in _TENSOR_MODELS:
+            text = parent.evalParm(f"elast_tensor{geo}_{vol}")
+            entries = _numbers(text)
+            if entries is None or len(entries) not in _TENSOR_SIZES:
+                errors.append(
+                    f"{where} ({name}): Elasticity Tensor must be a list of 9 "
+                    "numbers [E1, E2, E3, nu12, nu13, nu23, G23, G31, G12] "
+                    "(orthotropic), or 5 (transversely isotropic) or 21 "
+                    f"(full); it is {text!r}. Replace the placeholder names "
+                    "with values.")
+            axes = _numbers(parent.evalParm(f"material_coord{geo}_{vol}"))
+            if axes is None or len(axes) != 9:
+                errors.append(
+                    f"{where} ({name}): Material Axes must be 9 numbers, a "
+                    "3x3 rotation written row by row "
+                    "(identity: [1,0,0,0,1,0,0,0,1]).")
+        elif model == "MooneyRivlin":
+            if parent.evalParm(f"c1{geo}_{vol}") == 0 \
+                    and parent.evalParm(f"c2{geo}_{vol}") == 0:
+                errors.append(f"{where} ({name}): C1 and C2 are both 0, so "
+                              "the material has no shear stiffness.")
+        elif model in ("MooneyRivlin3Param", "MooneyRivlin3ParamSymbolic"):
+            if all(parent.evalParm(f"{key}{geo}_{vol}") == 0
+                   for key in ("c1", "c2", "c3")):
+                errors.append(f"{where} ({name}): C1, C2 and C3 are all 0, "
+                              "so the material has no shear stiffness.")
+        elif model in ("IncompressibleOgden", "UnconstrainedOgden"):
+            keys = (("ogdenC", "ogdenM") if model == "IncompressibleOgden"
+                    else ("ogden_alphas", "ogden_mus", "ogden_ds"))
+            lists = [_numbers(parent.evalParm(f"{key}{geo}_{vol}"))
+                     for key in keys]
+            if any(entry is None or not entry for entry in lists) \
+                    or len({len(entry) for entry in lists}) != 1:
+                errors.append(f"{where} ({name}): the Ogden coefficient "
+                              "lists must be numbers, one entry per term, "
+                              "all of the same length.")
+    if not quasistatic and not parent.evalParm(f"rho{geo}_{vol}") > 0:
+        errors.append(f"{where}: the density must be greater than 0 in a "
+                      "dynamic (non-quasistatic) run.")
+    try:
+        build_material(parent, geo, vol)
+    except (hou.Error, ValueError, TypeError) as exc:
+        errors.append(f"{where}: {_error_text(exc)}")
+
+
+def _transform_determinant(parent, geo):
+    node = parent.node(f"transform_{geo}")
+    if node is None:
+        return None
+    try:
+        matrix = np.asarray(node.geometry().attribValue("xform"),
+                            dtype=np.float64).reshape(4, 4)
+    except (hou.Error, TypeError, ValueError):
+        return None
+    return float(np.linalg.det(matrix[:3, :3]))
+
+
+def _vertex_table(geo_data):
+    """(primitive, position in primitive, point) of every vertex, from one
+    compiled VEX pass instead of a Python walk over the primitives."""
+    verb = hou.sopNodeTypeCategory().nodeVerb("attribvop")
+    verb.setParms({"bindclass": 3, "vexsrc": 3, "vexsnippet": (
+        "i@__pf_prim = vertexprim(0, @vtxnum);\n"
+        "i@__pf_index = vertexprimindex(0, @vtxnum);\n"
+        "i@__pf_point = @ptnum;")})
+    result = hou.Geometry()
+    verb.execute(result, [geo_data])
+    return tuple(np.frombuffer(result.vertexIntAttribValuesAsString(name),
+                               dtype=np.int32).astype(np.int64)
+                 for name in ("__pf_prim", "__pf_index", "__pf_point"))
+
+
+# Edges of a tetrahedron and of a hexahedron in Houdini's vertex order (the
+# MSH Reader writes Gmsh corners 0,1,3,2,4,5,7,6, so these are Gmsh's twelve
+# hexahedron edges).
+_TET_EDGES = ((0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3))
+_HEX_EDGES = ((0, 1), (1, 3), (3, 2), (2, 0), (4, 5), (5, 7), (7, 6), (6, 4),
+              (0, 4), (1, 5), (3, 7), (2, 6))
+
+
+def _hex_order_findings(parent, geo, errors):
+    """Hexahedral orders PolyFEM refuses only once the run has started:
+    Q4 and higher (Lagrange tables end at Q3), and a hexahedron next to a
+    lower-order element across an edge or face (lower-order interface
+    stitching exists for simplices only)."""
+    branch = parent.node(f"branch_{geo}")
+    if branch is None:
+        return
+    geo_data = branch.geometry()
+    hexes = geo_data.countPrimType(hou.primType.Hexahedron)
+    if not hexes:
+        return
+    tets = geo_data.countPrimType(hou.primType.Tetrahedron)
+    total = geo_data.intrinsicValue("primitivecount")
+    if tets + hexes != total:
+        return      # not an MSH Reader volume mesh; leave it to PolyFEM
+    orders = {vol: parent.evalParm(f"mainOrder{geo}_{vol}") + 1
+              for vol in range(1, parent.evalParm(f"num_volumes{geo}") + 1)}
+    entity = np.frombuffer(geo_data.primIntAttribValuesAsString("Entity"),
+                           dtype=np.int32).astype(np.int64)
+    prim_of, index_of, point_of = _vertex_table(geo_data)
+    sizes = np.bincount(prim_of, minlength=total)
+    points = point_of[np.lexsort((index_of, prim_of))]
+    offsets = np.concatenate(([0], np.cumsum(sizes)))
+    used = sorted(set(entity.tolist()))
+    hex_vols = sorted(set(entity[sizes == 8].tolist()))
+    for vol in hex_vols:
+        if orders.get(vol, 1) > _MAX_HEX_ORDER:
+            errors.append(
+                f"Geometry {geo} subdomain {vol}: hexahedra of order "
+                f"{orders[vol]} are not available (PolyFEM's Lagrange "
+                f"hexahedra go up to order {_MAX_HEX_ORDER}). Lower its "
+                "Element Order, or use a tetrahedral mesh (up to order 4).")
+    if len({orders.get(vol, 1) for vol in used}) < 2:
+        return
+    edges = {}
+    for vol in used:
+        rows = []
+        for size, local in ((4, _TET_EDGES), (8, _HEX_EDGES)):
+            prims = np.flatnonzero((entity == vol) & (sizes == size))
+            if not len(prims):
+                continue
+            start = offsets[prims]
+            for a, b in local:
+                rows.append(np.sort(np.stack(
+                    (points[start + a], points[start + b]), axis=1), axis=1))
+        if rows:
+            pairs = np.concatenate(rows)
+            edges[vol] = np.unique(pairs[:, 0] * (int(points.max()) + 1)
+                                   + pairs[:, 1])
+    for vol in hex_vols:
+        for other in used:
+            if other == vol or vol not in edges or other not in edges \
+                    or orders.get(other, 1) >= orders.get(vol, 1):
+                continue
+            if np.intersect1d(edges[vol], edges[other]).size:
+                errors.append(
+                    f"Geometry {geo}: subdomain {vol} (hexahedra, order "
+                    f"{orders[vol]}) touches subdomain {other} (order "
+                    f"{orders[other]}). PolyFEM refuses hexahedra next to a "
+                    "lower-order element (the interface stitching exists for "
+                    "tetrahedra only): give both the same Element Order.")
+
+
+def _model_diagonal(parent, geometries):
+    """Bounding-box diagonal of the transformed geometries (all bodies)."""
+    low, high = np.full(3, np.inf), np.full(3, -np.inf)
+    for geo in geometries:
+        node = parent.node(f"transform_{geo}")
+        if node is None:
+            continue
+        box = node.geometry().boundingBox()
+        if not box.isValid():
+            continue
+        low = np.minimum(low, box.minvec())
+        high = np.maximum(high, box.maxvec())
+    if not np.isfinite(low).all():
+        return None
+    return float(np.linalg.norm(high - low))
+
+
+def _min_boundary_edge(parent, geometries):
+    values = []
+    for geo in geometries:
+        node = parent.node(f"mindist_{geo}")
+        if node is None:
+            continue
+        try:
+            data = np.frombuffer(node.geometry().primFloatAttribValuesAsString(
+                "min_edge_length"), dtype=np.float32)
+        except hou.Error:
+            continue
+        if len(data):
+            values.append(float(data.min()))
+    return min(values) if values else None
+
+
+def check_setup(parent, purpose="check"):
+    """Find setup problems before PolyFEM does.
+
+    purpose: "check" (the button: everything), "write" (no binary needed) or
+    "run"/"background". Returns {"errors", "warnings", "notes"}: lists of
+    sentences. Nothing is written.
+    """
+    errors, warnings, notes = [], [], []
+    working_dir = parent.evalParm("working_dir")
+    if not working_dir.strip():
+        errors.append("Working Directory is empty: choose the folder this "
+                      "node writes the simulation's input and output to.")
+    elif not os.path.isdir(working_dir):
+        notes.append(f"Working Directory {working_dir} does not exist yet; "
+                     "it is created when the input is written.")
+    if purpose != "write":
+        binary = parent.evalParm("polyfem_bin")
+        if not binary.strip():
+            errors.append("PolyFEM Binary is empty: point it at the PolyFEM "
+                          "executable (PolyFEM_bin).")
+        elif not os.path.isfile(binary):
+            errors.append(f"PolyFEM Binary not found: {binary}")
+        elif platform.system() != "Windows" and not os.access(binary,
+                                                              os.X_OK):
+            errors.append(f"PolyFEM Binary is not executable: {binary}")
+
+    quasistatic = bool(parent.evalParm("quasistatic"))
+    contact = bool(parent.evalParm("enable"))
+    num_geos = parent.evalParm("num_geos")
+    simulated, bodies, obstacles = [], [], []
+    if num_geos < 1:
+        errors.append("There is no geometry: load a mesh on the Geometry "
+                      "tab.")
+    for geo in range(1, num_geos + 1):
+        path = parent.evalParm(f"file_location{geo}")
+        obstacle = bool(parent.evalParm(f"is_obstacle{geo}"))
+        if not parent.evalParm(f"is_enabled{geo}"):
+            continue
+        if not path.strip():
+            errors.append(f"Geometry {geo} has no mesh file.")
+            continue
+        if not os.path.isfile(path):
+            errors.append(f"Geometry {geo}: mesh file not found: {path}")
+        if parent.node(f"geo_{geo}") is None:
+            errors.append(f"Geometry {geo}: the mesh is not loaded; pick its "
+                          "file again.")
+            continue
+        if obstacle:
+            obstacles.append(geo)
+            continue
+        source = parent.node(f"geo_{geo}").geometry()
+        if source.countPrimType(hou.primType.Tetrahedron) \
+                + source.countPrimType(hou.primType.Hexahedron) == 0:
+            errors.append(
+                f"Geometry {geo} has no tetrahedra or hexahedra (a 2D or "
+                "surface mesh). This node writes 3D simulations: mesh the "
+                "volume (tetrahedra or hexahedra), or load it as an "
+                "obstacle.")
+            continue
+        simulated.append(geo)
+        determinant = _transform_determinant(parent, geo)
+        if determinant is not None and determinant < 0:
+            errors.append(
+                f"Geometry {geo}: its transform mirrors the mesh (a negative "
+                "scale), which turns every element inside out; PolyFEM would "
+                "stop with 'element 0 is flipped'. Use positive scales, and "
+                "mirror the mesh file itself if you need a mirrored part.")
+        elif determinant is not None and abs(determinant) < 1e-12:
+            errors.append(f"Geometry {geo}: its transform has a zero scale, "
+                          "which flattens the mesh.")
+        num_vols = parent.evalParm(f"num_volumes{geo}")
+        fibers = False
+        for vol in range(1, num_vols + 1):
+            _material_findings(parent, geo, vol, quasistatic, errors)
+            fibers = fibers or material_token(parent, geo, vol) in \
+                FIBER_MODELS + ("MaterialSum",)
+        if fibers:
+            try:
+                per_element_data(parent, geo)
+            except hou.Error as exc:
+                errors.append(f"Geometry {geo}: {_error_text(exc)}")
+        try:
+            _hex_order_findings(parent, geo, errors)
+        except hou.Error:
+            pass
+        try:
+            plan = resolve_sidesets(parent, geo, num_vols)
+        except hou.Error as exc:
+            errors.append(f"Geometry {geo} sidesets: {_error_text(exc)}")
+            plan = None
+        if plan is None:
+            continue
+        for warning in plan["warnings"]:
+            warnings.append("Some picked faces lie on another subdomain and "
+                            "are left out:" + warning)
+        for record in plan["records"]:
+            if not record["conditions"] and record["pattern"].strip():
+                notes.append(
+                    f"Geometry {geo} subdomain {record['subdomain']} sideset "
+                    f"{record['sideset']} has a selection but no boundary "
+                    "condition; it does nothing.")
+        fixed = [False, False, False]
+        for entries in plan["conditions"].values():
+            for key, entry in entries:
+                if key == "dirichlet_boundary":
+                    fixed = [a or bool(b) for a, b in
+                             zip(fixed, entry.get("dimension", [1, 1, 1]))]
+        bodies.append((geo, fixed))
+
+    if quasistatic:
+        for geo, fixed in bodies:
+            if all(fixed):
+                continue
+            free = "".join(axis for axis, flag in zip("xyz", fixed)
+                           if not flag)
+            held = ("" if not contact else
+                    " unless contact with a fixed body or obstacle holds it "
+                    "in place")
+            warnings.append(
+                f"Geometry {geo} is not held in {free}: no Dirichlet "
+                f"condition fixes {'it' if free == 'xyz' else free}. A "
+                "quasistatic run looks for an equilibrium, and a body free "
+                "to move has none, so PolyFEM usually stops with 'Reached "
+                f"iteration limit'{held}. Fix part of its surface "
+                "(Dirichlet [0, 0, 0]), or make the run dynamic (turn off "
+                "Quasistatic on the Time tab).")
+
+    if contact and simulated:
+        dhat = parent.evalParm("dhat")
+        diagonal = _model_diagonal(parent, simulated + obstacles)
+        if diagonal and dhat > 1e-2 * diagonal:
+            warnings.append(
+                f"The contact distance dhat ({dhat:g}) is {100 * dhat / diagonal:.1f}% "
+                f"of the model's size (bounding-box diagonal {diagonal:.4g}): "
+                "contact forces start that far from a surface and stiffen "
+                f"the response. A typical value is 1e-3 x diagonal = "
+                f"{1e-3 * diagonal:.3g} (Contact tab).")
+        edge = _min_boundary_edge(parent, simulated)
+        if edge and dhat > edge:
+            notes.append(
+                f"dhat ({dhat:g}) is larger than the shortest boundary edge "
+                f"({edge:.4g}); PolyFEM warns about this too. Contact may "
+                "act between neighbouring surface nodes.")
+        method = _menu_token(parent, "solver_nl")
+        if method != "Newton":
+            warnings.append(NON_NEWTON_CONTACT_WARNING.format(method=method))
+    try:
+        _check_composite_consistency(parent)
+    except hou.Error as exc:
+        errors.append(_error_text(exc))
+
+    t0, tend = parent.evalParm("t0"), parent.evalParm("tend")
+    if parent.evalParm("end_time_bool") and not tend > t0:
+        errors.append(f"End Time ({tend:g}) must be after Start Time "
+                      f"({t0:g}) (Time tab).")
+    if parent.evalParm("time_inc_bool") and not parent.evalParm("dt") > 0:
+        errors.append("The time step dt must be greater than 0 (Time tab).")
+    if parent.evalParm("num_timesteps_bool") \
+            and not parent.evalParm("num_timesteps") >= 1:
+        errors.append("The number of time steps must be at least 1 "
+                      "(Time tab).")
+
+    notes.extend(_expert_notes(parent))
+    hdf5 = _hdf5_note(parent)
+    if hdf5:
+        notes.append(hdf5)
+    return {"errors": errors, "warnings": warnings, "notes": notes}
+
+
+def _expert_notes(parent):
+    return []
+
+
+def setup_report_text(report, when=None):
+    import datetime
+    stamp = (when or datetime.datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+    errors, warnings, notes = (report["errors"], report["warnings"],
+                               report["notes"])
+    if not errors and not warnings:
+        head = f"Checked {stamp}: no problems found."
+    else:
+        head = (f"Checked {stamp}: {len(errors)} error"
+                f"{'s' if len(errors) != 1 else ''} (PolyFEM cannot run "
+                f"this), {len(warnings)} warning"
+                f"{'s' if len(warnings) != 1 else ''} (legal, but usually "
+                "wrong).")
+    lines = [head]
+    lines.extend("ERROR: " + item for item in errors)
+    lines.extend("WARNING: " + item for item in warnings)
+    lines.extend("Note: " + item for item in notes)
+    return "\n".join(lines)
+
+
+def _set_check_report(parent, report):
+    parm = parent.parm("check_report")
+    if parm is not None:
+        with hou.undos.disabler():
+            parm.set(setup_report_text(report))
+
+
+def check_setup_button(kwargs):
+    """Check Setup button: list every problem at once."""
+    parent = kwargs["node"]
+    report = check_setup(parent, "check")
+    _set_check_report(parent, report)
+    if report["errors"] or report["warnings"]:
+        _message(setup_report_text(report))
+    else:
+        _status("Check Setup: no problems found.")
+    return report
+
+
+def gate_setup(parent, purpose):
+    """Run Check Setup before Write/Run; True means go ahead.
+
+    Errors refuse (PolyFEM could not run the scene). Warnings are confirmed
+    before a run, once per node for the same list; writing only reports
+    them, and without an interface (hython) they are printed.
+    """
+    report = check_setup(parent, purpose)
+    _set_check_report(parent, report)
+    if report["errors"]:
+        _message("PolyFEM cannot run this setup yet (Check Setup on the Main "
+                 "tab lists it too):\n\n" + "\n".join(
+                     "- " + item for item in report["errors"]),
+                 severity=hou.severityType.Error)
+        return False
+    if not report["warnings"]:
+        return True
+    text = "\n".join("- " + item for item in report["warnings"])
+    if purpose == "write" or not hou.isUIAvailable():
+        _status(f"Check Setup: {len(report['warnings'])} warning(s); see the "
+                "Check Setup report on the Main tab.")
+        if not hou.isUIAvailable():
+            print("[PolyFEM HDA] Check Setup warnings:\n" + text)
+        return True
+    key = _digest(report["warnings"])
+    if parent.userData(_WARNINGS_ACCEPTED) == key:
+        return True
+    choice = hou.ui.displayMessage(
+        "Check Setup found something that is legal but usually wrong:\n\n"
+        + text, buttons=("Run Anyway", "Cancel"),
+        severity=hou.severityType.Warning, default_choice=1, close_choice=1,
+        title="PolyFEM: Check Setup")
+    if choice != 0:
+        return False
+    parent.setUserData(_WARNINGS_ACCEPTED, key)
+    return True
+
+
+# =============================================================================
+# Running PolyFEM: launch, follow, stop, open
+#
+# Both run buttons leave files in output/ that say how to follow the run:
+#   .polyfem_run.json     who started what, when (kind, launcher pid, log)
+#   run-manifest.json     written by PolyFEM itself: its pid and, at the
+#                         end, the completion status and exit status
+#   .polyfem_exit_status  the terminal script's record of the exit status
+# A poller (an event-loop callback in the interface) reads them about once a
+# second and writes Run Status. PolyFEM's exit statuses: 0 completed,
+# 1 named failure (the log's "PolyFEM stopped:" line says why), 3 resource
+# limit (a safety stop; the steps written are intact), a signal = a crash.
+# =============================================================================
+
+_RUN_RECORD = ".polyfem_run.json"
+_EXIT_STATUS_FILE = ".polyfem_exit_status"
+_LAUNCHER_PID_FILE = ".polyfem_launcher_pid"
+_TERMINAL_LOG = "terminal_log.txt"
+_POLL_SECONDS = 1.0
+_STEP_RE = re.compile(r"\b(\d+)/(\d+)\s+t=([-+0-9.eE]+)")
+_STOPPED_RE = re.compile(r"PolyFEM stopped: (.*)")
 
 
 def _launch_command(parent, params_path):
@@ -4111,69 +4713,710 @@ def _launch_command(parent, params_path):
     return input_dir, args
 
 
-def write_params(kwargs):
-    """Write params.json and launch PolyFEM in a terminal (1.2 behavior)."""
-    parent = kwargs["node"]
-    if not confirm_output_folder(parent):
-        return
+def _output_dir(parent):
+    working_dir = parent.evalParm("working_dir")
+    if not working_dir.strip():
+        return None
+    return os.path.normpath(os.path.abspath(
+        os.path.join(working_dir, "output")))
+
+
+def _runs():
+    """This session's runs, {output folder: run} (kept in hou.session so a
+    reloaded asset definition still sees them)."""
+    return hou.session.__dict__.setdefault("polyfem_run_registry", {})
+
+
+def _read_json(path):
     try:
-        params_path = build_params(parent)
-        input_dir, args = _launch_command(parent, params_path)
-    except hou.NodeError as e:
-        _message(str(e))
+        with open(path) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+
+def _write_json(path, value):
+    temporary = path + ".tmp"
+    with open(temporary, "w") as handle:
+        json.dump(value, handle, indent=2)
+    os.replace(temporary, path)
+
+
+def _process_alive(pid, expect=None):
+    """Whether process `pid` exists (and, when `expect` is given, whether its
+    command line contains that text -- a recycled pid is not our run)."""
+    if not pid:
+        return False
+    try:
+        import psutil
+        try:
+            process = psutil.Process(int(pid))
+            if process.status() == psutil.STATUS_ZOMBIE:
+                return False
+            if expect:
+                try:
+                    command = " ".join(process.cmdline())
+                except (psutil.AccessDenied, psutil.ZombieProcess):
+                    return True
+                return expect in command
+            return True
+        except (psutil.NoSuchProcess, ValueError):
+            return False
+        except psutil.AccessDenied:
+            return True
+    except ImportError:
+        pass
+    if platform.system() == "Windows":
+        # os.kill(pid, 0) terminates a process on Windows; ask tasklist.
+        try:
+            listing = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {int(pid)}", "/NH"],
+                capture_output=True, text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return str(int(pid)) in listing
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OSError, ValueError):
+        return False
+    try:
+        state, _, command = subprocess.run(
+            ["ps", "-p", str(int(pid)), "-o", "stat=", "-o", "command="],
+            capture_output=True, text=True, timeout=5
+        ).stdout.strip().partition(" ")
+    except (OSError, subprocess.SubprocessError):
+        return True
+    if state.startswith("Z"):       # ended, not yet reaped
+        return False
+    return expect in command if expect else True
+
+
+def _manifest(output):
+    return _read_json(os.path.join(output, "run-manifest.json")) or {}
+
+
+def _manifest_of_run(run):
+    """PolyFEM's run manifest when it belongs to this run (written after it
+    was started), else {}."""
+    path = os.path.join(run["output"], "run-manifest.json")
+    try:
+        if os.path.getmtime(path) < run["started"] - 0.5:
+            return {}
+    except OSError:
+        return {}
+    return _manifest(run["output"])
+
+
+def _solver_pid(run):
+    if run.get("popen") is not None:
+        return run["popen"].pid
+    if run.get("pid"):
+        return run["pid"]
+    process = _manifest_of_run(run).get("process", {})
+    pid = process.get("pid") if isinstance(process, dict) else None
+    return pid if isinstance(pid, int) else None
+
+
+def _log_tail(path, size=262144):
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            length = handle.tell()
+            handle.seek(max(0, length - size))
+            return handle.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def _progress(text):
+    """(step, steps, time) of the last 'k/N  t=...' line PolyFEM logged."""
+    matches = _STEP_RE.findall(text)
+    if not matches:
+        return None
+    step, steps, t = matches[-1]
+    return int(step), int(steps), t
+
+
+def _stopped_reason(text, manifest=None):
+    matches = _STOPPED_RE.findall(text)
+    if matches:
+        return matches[-1].strip()
+    completion = (manifest or {}).get("completion", {})
+    message = completion.get("message") if isinstance(completion, dict) \
+        else None
+    return message.strip() if isinstance(message, str) else ""
+
+
+def _elapsed(seconds):
+    seconds = int(max(0, seconds))
+    if seconds < 60:
+        return f"{seconds} s"
+    minutes, seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes} min {seconds:02d} s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours} h {minutes:02d} min"
+
+
+def exit_status_meaning(code, signal_number=None):
+    """Plain-language meaning of PolyFEM's exit status."""
+    if signal_number:
+        import signal
+        try:
+            name = signal.Signals(signal_number).name
+        except ValueError:
+            name = f"signal {signal_number}"
+        return (f"killed by {name} (signal {signal_number}), i.e. a solver "
+                "crash or an outside kill; the log shows how far it got")
+    if code == 0:
+        return "completed"
+    if code == 1:
+        return ("a named failure, not a crash: PolyFEM stopped and said why "
+                "(the 'PolyFEM stopped:' line in the log)")
+    if code == 3:
+        return ("a resource limit, not a crash: a safety stop before memory "
+                "ran out; the steps already written are intact")
+    return f"exit status {code}"
+
+
+def _finished(run):
+    """(exit code, signal number) once the run has ended, else None."""
+    popen = run.get("popen")
+    if popen is not None:
+        code = popen.poll()
+        if code is None:
+            return None
+        return (None, -code) if code < 0 else (code, None)
+    status_file = os.path.join(run["output"], _EXIT_STATUS_FILE)
+    if run["kind"] == "terminal" and os.path.isfile(status_file):
+        try:
+            code = int(open(status_file).read().strip() or "-1")
+        except (OSError, ValueError):
+            code = -1
+        if code > 128:
+            return (None, code - 128)
+        return (code, None)
+    pid = _solver_pid(run)
+    if pid and _process_alive(pid, "params.json"):
+        return None
+    launcher = run.get("launcher_pid") or _read_launcher_pid(run["output"])
+    if launcher and _process_alive(launcher):
+        return None
+    completion = _manifest_of_run(run).get("completion", {})
+    if isinstance(completion, dict) and completion.get("status") not in (
+            None, "running"):
+        code = completion.get("exit_status")
+        if not isinstance(code, int):
+            code = 0 if completion.get("status") == "completed" else 1
+        return (code, None)
+    if time.time() - run["started"] < 20.0 and not pid:
+        return None     # still starting: no pid known yet
+    return (-1, None)   # ended without leaving a status
+
+
+def run_status_text(run, now=None):
+    """The Run Status line for a run, from its process, log and manifest."""
+    now = time.time() if now is None else now
+    elapsed = _elapsed((run.get("ended") or now) - run["started"])
+    tail = _log_tail(run["log"]) if run.get("log") else ""
+    # PolyFEM logs "k/N  t=..." when step k is done. A busy step can push
+    # that line out of the log's tail, so keep the last one seen.
+    progress = _progress(tail) or run.get("progress")
+    run["progress"] = progress
+    finished = run.get("result")
+    if finished is None:
+        pid = _solver_pid(run)
+        done = (f"{progress[0]} of {progress[1]} time steps done "
+                f"(t = {progress[2]})" if progress
+                else "setting up and solving the first time step")
+        return f"Running{f' (pid {pid})' if pid else ''}: {done}, {elapsed}."
+    code, signal_number = finished
+    where = (f"after {progress[0]} of {progress[1]} time steps (t = "
+             f"{progress[2]})" if progress
+             else "before the first time step was done")
+    if run.get("stop_requested"):
+        return (f"Stopped by you {where}, {elapsed} into the run; the steps "
+                "already written stay on disk.")
+    if code == 0:
+        return (f"Completed in {elapsed}"
+                f"{f', {progress[1]} time steps' if progress else ''} (exit "
+                "status 0). Press Open Results to view it.")
+    if code == -1 and not signal_number:
+        return (f"Ended {where}, {elapsed} into the run, without reporting "
+                "an exit status; see Open Log.")
+    reason = _stopped_reason(tail, _manifest_of_run(run))
+    if signal_number:
+        head = f"Crashed {where}: {exit_status_meaning(None, signal_number)}"
+    elif code == 1:
+        head = (f"Failed {where}: exit status 1, a named failure (not a "
+                "crash)")
+    elif code == 3:
+        head = (f"Stopped {where}: exit status 3, a resource limit (a safety "
+                "stop, not a crash; the steps already written are intact)")
+    else:
+        head = f"Failed {where}: exit status {code}"
+    return head + (f". PolyFEM stopped: {reason}" if reason
+                   else ". See Open Log for the reason.")
+
+
+def _set_run_status(node, text):
+    parm = node.parm("run_status") if node is not None else None
+    if parm is not None and parm.eval() != text:
+        with hou.undos.disabler():
+            parm.set(text)
+
+
+def _node_of(run):
+    node = hou.node(run["node"]) if run.get("node") else None
+    if node is None or node.sessionId() != run.get("session_id",
+                                                   node.sessionId()):
+        return None
+    return node
+
+
+def poll_runs():
+    """Update every tracked run once; True while any is still going."""
+    active = False
+    for output, run in list(_runs().items()):
+        if run.get("result") is None:
+            result = _finished(run)
+            if result is not None:
+                run["result"] = result
+                run["ended"] = time.time()
+                handle = run.pop("log_handle", None)
+                if handle is not None:
+                    try:
+                        handle.close()
+                    except OSError:
+                        pass
+            else:
+                active = True
+        node = _node_of(run)
+        text = run_status_text(run)
+        _set_run_status(node, text)
+        if run.get("result") is not None and not run.get("announced"):
+            run["announced"] = True
+            _status(f"PolyFEM ({os.path.dirname(output)}): {text}")
+    return active
+
+
+def _poll_callback():
+    state = hou.session.__dict__.setdefault("polyfem_poll_state", {})
+    now = time.monotonic()
+    if now - state.get("last", 0.0) < _POLL_SECONDS:
         return
-    shell = " ".join(args)
-    system = platform.system()
-    if system == "Darwin":
-        command = f"cd '{input_dir}' && {shell}"
-        escaped = command.replace('"', '\\"')
-        os.system(
-            f'osascript -e \'tell application "Terminal" to do script "{escaped}"\'')
-    elif system == "Linux":
-        subprocess.Popen(
-            ["xterm", "-hold", "-e",
-             f"bash -c 'cd \"{input_dir}\" && {shell}'"])
-    elif system == "Windows":
-        subprocess.Popen(
-            ["cmd", "/c", "start", "", "cmd", "/k",
-             f'cd /d "{input_dir}" && {shell}'])
+    state["last"] = now
+    try:
+        active = poll_runs()
+    except Exception as exc:     # never let a poll error spam the UI
+        print(f"[PolyFEM HDA] run status poll failed: {exc}")
+        active = False
+    if not active:
+        _stop_poller()
+
+
+def _start_poller():
+    if not hou.isUIAvailable():
+        return
+    callback = hou.session.__dict__.get("polyfem_poll_callback")
+    if callback is not None and callback in hou.ui.eventLoopCallbacks():
+        return
+    hou.ui.addEventLoopCallback(_poll_callback)
+    hou.session.polyfem_poll_callback = _poll_callback
+
+
+def _stop_poller():
+    callback = hou.session.__dict__.get("polyfem_poll_callback")
+    if callback is not None and hou.isUIAvailable():
+        try:
+            hou.ui.removeEventLoopCallback(callback)
+        except hou.OperationFailed:
+            pass
+    hou.session.__dict__.pop("polyfem_poll_callback", None)
+
+
+def _register_run(parent, kind, output, log, popen=None, launcher_pid=None,
+                  binary=None):
+    run = {"output": output, "node": parent.path(),
+           "session_id": parent.sessionId(), "kind": kind, "popen": popen,
+           "pid": popen.pid if popen is not None else None,
+           "launcher_pid": launcher_pid, "started": time.time(), "log": log,
+           "binary": binary, "result": None}
+    _runs()[output] = run
+    _write_json(os.path.join(output, _RUN_RECORD), {
+        "schema": "polyfem-houdini-run", "version": 1, "kind": kind,
+        "node": parent.path(), "started": run["started"],
+        "pid": run["pid"], "log": log, "binary": binary,
+        "houdini_pid": os.getpid()})
+    _set_run_status(parent, run_status_text(run))
+    _start_poller()
+    return run
+
+
+def _run_for(parent, output=None):
+    output = output or _output_dir(parent)
+    return _runs().get(output) if output else None
+
+
+def active_run(parent):
+    """The run still writing into this node's output folder, or None.
+
+    Looks at this session's runs and, for runs started elsewhere (another
+    node, an earlier Houdini session, a terminal), at the folder's run
+    record and PolyFEM's manifest; a dead or recycled pid does not count.
+    """
+    output = _output_dir(parent)
+    if not output:
+        return None
+    run = _runs().get(output)
+    if run is not None and run.get("result") is None:
+        if _finished(run) is None:
+            return run
+        poll_runs()
+        return None
+    if run is not None:
+        return None
+    manifest = _manifest(output)
+    completion = manifest.get("completion", {})
+    process = manifest.get("process", {})
+    pid = process.get("pid") if isinstance(process, dict) else None
+    if isinstance(completion, dict) and completion.get("status") == "running" \
+            and _process_alive(pid, "params.json"):
+        return {"output": output, "pid": pid, "kind": "external"}
+    record = _read_json(os.path.join(output, _RUN_RECORD)) or {}
+    launcher = _read_launcher_pid(output)
+    if record.get("kind") == "terminal" and launcher \
+            and not os.path.isfile(os.path.join(output, _EXIT_STATUS_FILE)) \
+            and _process_alive(launcher):
+        return {"output": output, "pid": None, "launcher_pid": launcher,
+                "kind": "external"}
+    return None
+
+
+def _read_launcher_pid(output):
+    try:
+        return int(open(os.path.join(output, _LAUNCHER_PID_FILE)).read())
+    except (OSError, ValueError):
+        return None
+
+
+def _describe_process(run):
+    pid = run.get("pid") if run.get("kind") == "external" \
+        else _solver_pid(run)
+    if pid:
+        return f"process {pid}"
+    if run.get("launcher_pid"):
+        return f"terminal script, process {run['launcher_pid']}"
+    return "starting"
+
+
+def _clear_run_files(output):
+    """Remove the previous run's status files before a new run starts, so
+    nothing of it (its pid in PolyFEM's manifest, its exit status) is read
+    as the new run's. The user has already agreed to replace that run."""
+    for name in (_EXIT_STATUS_FILE, _LAUNCHER_PID_FILE, "run-manifest.json"):
+        path = os.path.join(output, name)
+        if os.path.isfile(path):
+            os.remove(path)
 
 
 def run_background(kwargs):
-    """Write params.json and run PolyFEM headless with log capture."""
+    """Write params.json and run PolyFEM without a terminal, following it in
+    Run Status (log: <working_dir>/output/log.txt)."""
     parent = kwargs["node"]
-    if not confirm_output_folder(parent):
-        return
+    params_path = _prepare_inputs(parent, "background")
+    if not params_path:
+        return None
     try:
-        params_path = build_params(parent)
         input_dir, args = _launch_command(parent, params_path)
     except hou.NodeError as e:
         _message(str(e))
-        return
-    log_path = os.path.join(os.path.dirname(input_dir), "output", "log.txt")
+        return None
+    output = os.path.normpath(os.path.join(os.path.dirname(input_dir),
+                                           "output"))
+    _clear_run_files(output)
+    log_path = os.path.join(output, "log.txt")
     log_file = open(log_path, "w")
+    options = {}
+    if platform.system() == "Windows":
+        options["creationflags"] = getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        # its own session: it survives Houdini quitting, and Stop can signal
+        # the whole process group
+        options["start_new_session"] = True
     proc = subprocess.Popen(args, cwd=input_dir, stdout=log_file,
-                            stderr=subprocess.STDOUT)
-    hou.session.__dict__.setdefault("polyfem_runs", []).append(
-        {"pid": proc.pid, "log": log_path})
+                            stderr=subprocess.STDOUT, **options)
+    run = _register_run(parent, "background", output, log_path, popen=proc,
+                        binary=args[0])
+    run["log_handle"] = log_file
     _status(f"PolyFEM running in background (pid {proc.pid}); log: {log_path}")
+    return run
+
+
+def write_launch_script(input_dir, output, args, system=None):
+    """A script that runs PolyFEM in a terminal window and records what the
+    node needs to follow it. Every path is quoted for the shell that runs
+    it, so spaces, apostrophes and $ in folder names are safe."""
+    system = system or platform.system()
+    status = os.path.join(output, _EXIT_STATUS_FILE)
+    if system == "Windows":
+        def bat(text):
+            return '"' + str(text).replace("%", "%%") + '"'
+        path = os.path.join(output, "run_polyfem.bat")
+        lines = ["@echo off",
+                 "rem Written by the Houdini PolyFEM node: runs PolyFEM in "
+                 "this window.",
+                 f"cd /d {bat(input_dir)} || exit /b 1",
+                 " ".join(bat(arg) for arg in args),
+                 f"echo %ERRORLEVEL%> {bat(status)}",
+                 "echo.",
+                 "echo PolyFEM finished. The Houdini node's Run Status says "
+                 "what the exit status means."]
+        with open(path, "w", newline="\r\n") as handle:
+            handle.write("\n".join(lines) + "\n")
+        return path
+    quote = shlex.quote
+    path = os.path.join(output, "run_polyfem.command" if system == "Darwin"
+                        else "run_polyfem.sh")
+    command = " ".join(quote(arg) for arg in args)
+    text = f"""#!/bin/bash
+# Written by the Houdini PolyFEM node: runs PolyFEM in this terminal window.
+# The node follows the run through the files written next to this script.
+cd {quote(input_dir)} || exit 1
+echo $$ > {quote(os.path.join(output, _LAUNCHER_PID_FILE))}
+{command} 2>&1 | tee {quote(os.path.join(output, _TERMINAL_LOG))}
+status=${{PIPESTATUS[0]}}
+echo "$status" > {quote(status)}
+echo
+echo "PolyFEM finished with exit status $status (the Houdini node's Run Status says what it means). You can close this window."
+"""
+    with open(path, "w") as handle:
+        handle.write(text)
+    os.chmod(path, 0o755)
+    return path
+
+
+def terminal_command(script, system=None):
+    """argv that opens a terminal window running `script`, or None."""
+    system = system or platform.system()
+    if system == "Darwin":
+        return ["open", "-a", "Terminal", script]
+    if system == "Windows":
+        return ["cmd", "/c", "start", "", "cmd", "/k", script]
+    for name, prefix in (("x-terminal-emulator", ["-e"]),
+                         ("gnome-terminal", ["--"]), ("konsole", ["-e"]),
+                         ("xfce4-terminal", ["-x"]), ("xterm", ["-hold", "-e"])):
+        found = shutil.which(name)
+        if found:
+            return [found] + prefix + [script]
+    return None
+
+
+def write_params(kwargs):
+    """Run PolyFEM button: write params.json and run PolyFEM in a terminal
+    window, following it in Run Status like a background run."""
+    parent = kwargs["node"]
+    params_path = _prepare_inputs(parent, "run")
+    if not params_path:
+        return None
+    try:
+        input_dir, args = _launch_command(parent, params_path)
+    except hou.NodeError as e:
+        _message(str(e))
+        return None
+    output = os.path.normpath(os.path.join(os.path.dirname(input_dir),
+                                           "output"))
+    _clear_run_files(output)
+    script = write_launch_script(input_dir, output, args)
+    command = terminal_command(script)
+    if command is None:
+        _message("No terminal program was found (tried x-terminal-emulator, "
+                 "gnome-terminal, konsole, xfce4-terminal, xterm); use Run in "
+                 f"Background instead, or run {script} yourself.")
+        return None
+    subprocess.Popen(command)
+    run = _register_run(parent, "terminal", output,
+                        os.path.join(output, _TERMINAL_LOG), binary=args[0])
+    _status(f"PolyFEM started in a terminal window ({script}).")
+    return run
+
+
+def reattach_run(parent):
+    """Follow a run this node started before the scene was reloaded (or that
+    another session started in its folder). Called by OnLoaded."""
+    output = _output_dir(parent)
+    if not output or output in _runs():
+        return None
+    record = _read_json(os.path.join(output, _RUN_RECORD))
+    if not record:
+        return None
+    kind = record.get("kind", "background")
+    log = record.get("log") or os.path.join(output, "log.txt")
+    run = {"output": output, "node": parent.path(),
+           "session_id": parent.sessionId(), "kind": kind, "popen": None,
+           "pid": record.get("pid"),
+           "launcher_pid": _read_launcher_pid(output),
+           "started": float(record.get("started", time.time())), "log": log,
+           "binary": record.get("binary"), "result": None}
+    _runs()[output] = run
+    poll_runs()
+    if run.get("result") is None:
+        _start_poller()
+    return run
+
+
+def stop_run(kwargs):
+    """Stop button: end the run writing into this node's working directory."""
+    parent = kwargs["node"]
+    run = active_run(parent)
+    if run is None:
+        _status("No PolyFEM run is going on in this Working Directory.")
+        return False
+    if hou.isUIAvailable():
+        choice = hou.ui.displayMessage(
+            f"Stop the PolyFEM run in {run['output']}?\n\nThe time steps "
+            "already written stay on disk.", buttons=("Stop", "Cancel"),
+            severity=hou.severityType.Warning, default_choice=1,
+            close_choice=1, title="PolyFEM: Stop")
+        if choice != 0:
+            return False
+    import signal
+    tracked = _runs().get(run["output"])
+    if tracked is not None:
+        tracked["stop_requested"] = True
+    popen = run.get("popen")
+    pid = _solver_pid(run) if run.get("kind") != "external" else run.get("pid")
+    try:
+        if popen is not None and platform.system() != "Windows":
+            os.killpg(popen.pid, signal.SIGTERM)
+        elif popen is not None:
+            popen.terminate()
+        elif pid and platform.system() == "Windows":
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, timeout=10)
+        elif pid:
+            os.kill(int(pid), signal.SIGTERM)
+        elif run.get("launcher_pid") or _read_launcher_pid(run["output"]):
+            launcher = run.get("launcher_pid") or \
+                _read_launcher_pid(run["output"])
+            os.killpg(os.getpgid(launcher), signal.SIGTERM)
+    except (OSError, subprocess.SubprocessError) as exc:
+        _message(f"Could not stop the run: {exc}")
+        return False
+    if tracked is None:
+        _set_run_status(parent, "Stopped by you; the steps already written "
+                                "stay on disk.")
+    else:
+        poll_runs()
+    return True
+
+
+def log_path_for(parent):
+    """The log of this node's latest run (Run in Background: log.txt; Run in
+    Terminal: terminal_log.txt), or PolyFEM's own Save Log file."""
+    output = _output_dir(parent)
+    if not output:
+        return None
+    run = _runs().get(output)
+    if run is not None and run.get("log") and os.path.isfile(run["log"]):
+        return run["log"]
+    candidates = [os.path.join(output, name)
+                  for name in ("log.txt", _TERMINAL_LOG)]
+    existing = [path for path in candidates if os.path.isfile(path)]
+    if not existing:
+        return None
+    return max(existing, key=os.path.getmtime)
+
+
+def _open_with_system(path):
+    system = platform.system()
+    if system == "Darwin":
+        subprocess.Popen(["open", "-t", path])
+    elif system == "Windows":
+        os.startfile(path)
+    else:
+        subprocess.Popen(["xdg-open", path])
+
+
+def open_log(kwargs):
+    """Open Log button: the latest run's log in the system's text viewer."""
+    path = log_path_for(kwargs["node"])
+    if not path:
+        _message("There is no log yet: run the simulation first.")
+        return None
+    _open_with_system(path)
+    return path
 
 
 def show_log(kwargs):
+    """Show Log button: the last lines of the latest run's log."""
     parent = kwargs["node"]
-    runs = getattr(hou.session, "polyfem_runs", [])
-    log_path = runs[-1]["log"] if runs else os.path.join(
-        parent.evalParm("working_dir"), "output", "log.txt")
-    if not os.path.isfile(log_path):
-        _message(f"No log found at {log_path}")
+    log_path = log_path_for(parent)
+    if not log_path:
+        _message(f"No log found in {_output_dir(parent)}")
         return
-    with open(log_path) as f:
-        tail = f.readlines()[-60:]
+    tail = _log_tail(log_path).splitlines()[-60:]
     if hou.isUIAvailable():
-        hou.ui.displayMessage("".join(tail) or "(log empty)",
+        hou.ui.displayMessage("\n".join(tail) or "(log empty)",
                               title=os.path.basename(log_path))
     else:
-        print("".join(tail))
+        print("\n".join(tail))
+
+
+def results_pvd(parent):
+    return os.path.join(parent.evalParm("working_dir"), "output",
+                        parent.evalParm("paraview_file_name"))
+
+
+_RESULTS_NODE = "polyfem_results_node"
+
+
+def open_results(kwargs):
+    """Open Results button: a Read PVD node on this run's .pvd (created next
+    to this node the first time, then reused), the playbar set to its time
+    steps, and the viewport framed on it."""
+    parent = kwargs["node"]
+    pvd = results_pvd(parent)
+    if not os.path.isfile(pvd):
+        _message(f"There are no results yet ({pvd} does not exist): run the "
+                 "simulation first.")
+        return None
+    node_type = hou.nodeType(hou.objNodeTypeCategory(), "readPVD::1.0")
+    if node_type is None:
+        _message("The Read PVD 1.0 asset is not installed.")
+        return None
+    reader = None
+    path = parent.userData(_RESULTS_NODE)
+    if path:
+        candidate = hou.node(path)
+        if candidate is not None and candidate.type() == node_type:
+            reader = candidate
+    if reader is None:
+        network = parent.parent()
+        reader = network.createNode("readPVD::1.0",
+                                    f"{parent.name()}_results")
+        reader.setPosition(parent.position() + hou.Vector2(0, -1.5))
+        parent.setUserData(_RESULTS_NODE, reader.path())
+    value = portable_path(parent, pvd)
+    same = os.path.normpath(reader.evalParm("PVD_file") or "") == \
+        os.path.normpath(pvd)
+    reader.parm("PVD_file").set(value)
+    module = reader.hdaModule()
+    if same:
+        module.refresh({"node": reader}, force_clear_cache=True)
+    else:
+        module.start({"node": reader})
+    reader.setDisplayFlag(True)
+    if hou.isUIAvailable():
+        reader.setSelected(True, clear_all_selected=True)
+        reader.setCurrent(True)
+        module._frame_result(reader)
+    return reader
 
 
 # =============================================================================
