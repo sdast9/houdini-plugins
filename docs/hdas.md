@@ -38,6 +38,8 @@ hython tests/test_help_cards.py          # help cards parse
 hython tests/test_time_curves.py         # keyed load curves, the timeline
 hython tests/test_animated_obstacles.py  # keyframed obstacle motion
 hython tests/test_force_curves.py        # reaction/contact force curves
+hython tests/test_export_mesh.py         # Read PVD: deformed mesh -> .msh
+hython tests/test_export_data.py         # Read PVD: data over time -> .xlsx
 hython tests/test_readpvd_hda.py         # result loading incl. Contact block
 hython tests/test_legacy_import.py       # old params.json migration
 hython tests/test_polyfem_materials.py   # fiber models, composites, per-element data
@@ -187,6 +189,10 @@ Targets the current build's strict-validated schema — the old fork keys
   per step otherwise), with the step and its simulation time shown under
   it. *Analysis > Force Curves* gives each sideset's and obstacle's reaction
   and contact force per step (CSV, readout, chart window).
+* **Export** (2026-10-03): the deformed shape at any step as a `.msh` the
+  PolyFEM node loads like the original mesh, and any field over time as an
+  Excel workbook laid out for presentation plots. See *Read PVD export*
+  below.
 * **Topology caching**: topology is parsed once (configurable frame) and
   only P + fields upload per frame. ~1M tets: first cook 1.75 s, then
   **0.25 s per frame change**. A *Remeshing Mode* toggle rebuilds topology
@@ -368,6 +374,175 @@ Targets the current build's strict-validated schema — the old fork keys
    viewport overlay legend, and scene gnomon; try both Auto Range buttons;
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
+
+### Read PVD export: deformed mesh and data over time (2026-10-03)
+
+A new **Export** tab on Read PVD with two output functions. Files go to the
+run's `exports` folder, or to a chosen *Export Folder*. That folder sits next
+to `input` and `output`, so a new run into the same folder leaves the exports
+alone. Design and decisions:
+`hda-review-work/readpvd-export-design-2026-10-02.md` (workspace).
+
+#### Deformed Mesh
+
+For each simulated geometry of the run, the export writes
+`<mesh>_step<N>.msh` at the chosen step (*Step on Screen* or a *Step
+Number*). The file is the mesh the PolyFEM node staged in `input/`, with only
+its node coordinates moved to the step's deformed positions.
+
+* **What stays the same**:
+  * node tags and elements;
+  * the Gmsh physical groups and their names (the subdomains);
+  * the MSH version and encoding (2.2 or 4.1, ASCII or binary). Everything
+    outside `$Nodes` is copied byte for byte; an ASCII `$Nodes` section is
+    rewritten in the standard layout.
+* **Coordinates**:
+  * *Mesh File* (the default): the file's own coordinates. The export pulls
+    back PolyFEM's rest transform (scale, rotate, translate, as `params.json`
+    gives it). Pick the file as the geometry's *Mesh File* on the node that
+    made the run: the shape sits where the deformed body was, and the node
+    keeps the geometry's Transform, subdomain materials and picked sidesets.
+  * *Simulation*: the Transform is already applied, and the file name ends in
+    `_simulation`. Load it with no Transform.
+* **Linear elements only** (user decision): a P2 or higher run's corners are
+  moved, and the curvature of its edges is reported, not kept. On the coarse
+  test bar the largest gap was 3.5 % of an edge length.
+* **Refused by name**:
+  * inverted or flat elements, listed by number;
+  * a missing mesh file, or a curved (10-node) one;
+  * a run without `params.json`;
+  * sampled output (*Output > High Order Mesh* off);
+  * copies of a node with different displacements.
+
+  Every output element is matched to its mesh element by position. A mesh,
+  transform or run that changed since the results were written is therefore
+  refused, not written wrongly.
+* **Stress-free**: the exported shape is a new rest shape. A simulation that
+  starts from it starts without stress, strain or velocity, and the report
+  says so. PolyFEM's initial conditions take one expression per body, so
+  neither a stress state nor a per-node velocity can be carried over.
+
+#### Data Over Time
+
+An Excel workbook for presentation plots, with no charts in the file (user
+decision). Its *Data* sheet has:
+
+* one row per output step: Step, Time and the Houdini frame;
+* one column per region × quantity × statistic;
+* one header row that reads as a chart legend, such as
+  *Cartilage: von Mises stress, max (kPa)*;
+* numbers only: a missing value is an empty cell.
+
+**Regions** form a list; with none, the whole model is measured. A region is
+fixed on the undeformed shape, so the same material is followed at every
+step. The kinds are:
+
+* the whole model;
+* bodies, named after their Gmsh groups;
+* a sideset of the run record: its nodes, and the elements with a face on
+  it;
+* a box, a sphere or a half space (element centroids and nodes in the
+  undeformed shape);
+* one element or one node, by its `.msh` number.
+
+Two options apply to them: *Only in Bodies* restricts a region to some
+bodies, and *Set From Probe* uses the point clicked with the Probe tab's
+probe.
+
+**Quantities** form a list too; the first one follows the Display tab.
+Available:
+
+* any field Read PVD can color by, exported or derived, with the *Field
+  Value To Display* values plus the off-diagonal entries xy, yz and xz;
+* fiber stretch, isochoric stretch and I4 on fiber runs;
+* the region's volume.
+
+Each quantity is measured per element (the mean of its nodes in PolyFEM's
+output, exact for linear elements) or per node (the mean of its copies, as
+*Smooth Field* shows). Its statistics:
+
+* max and min;
+* volume-weighted mean and arithmetic mean;
+* percentiles;
+* integral and sum;
+* RMS, standard deviation and count;
+* where the max is.
+
+Volumes are the current (deformed) or the rest ones.
+
+**Units** (user decision): there are no unit labels until the run's unit
+system is known.
+
+* *Automatic* uses the units the PolyFEM node recorded (its *Units* on).
+* Otherwise, choose the system: m-kg-s, mm-tonne-s, mm-kg-s or mm-g-s.
+* Lengths, stresses, forces and time then convert (mm, kPa, MPa, mN, ms
+  ...); volumes, velocities and integrals follow.
+
+**Extra columns and sheets**:
+
+* *Add Force Curves* appends Analysis > Force Curves (reaction, contact force
+  and mean displacement per set) to the same table, so force against
+  displacement plots from one table.
+* *Values per Element / Node* adds a sheet with every element or node, its
+  position and its value at chosen steps, for profiles and histograms.
+* The *About* sheet names:
+  * the run (its id, PolyFEM commit and input hash from `run-manifest.json`);
+  * the regions;
+  * the units;
+  * what every statistic means.
+
+A step that cannot be read (a run still writing, a damaged file) gives
+empty cells and a note; the other steps are exported.
+
+The writer is Read PVD's own: standard library only, nothing to install. It
+streams rows into the zip file and checks Excel's sheet limits.
+
+#### Cost
+
+Like *Auto Range: All Frames*, the export reads every chosen step, with a
+progress bar and Cancel.
+
+* About 1.8 s per step on a 343k-element run with three quantities, two
+  regions and a per-element sheet.
+* 3.7 s for the deformed mesh of the 612k-element uniaxial run.
+
+#### Under the hood
+
+* The VTU / VTK-HDF parser keeps every cell's nodes, and which cell each
+  display sub-tet came from.
+* The MSH parser records each element's position among the file's elements
+  (PolyFEM's order), and gained a writer for a copy with moved nodes.
+* Read PVD now embeds the MSH parser and an `.xlsx` writer
+  (`src/common/xlsx_writer.py`).
+* Checked on PolyFEM's output (2026-10-02):
+  * one volume cell per FE element, in FE order;
+  * the copies of a node are bitwise identical;
+  * PolyFEM's rest transform is reproduced to 3e-16.
+
+#### Tests
+
+All with real solver runs.
+
+* `test_export_mesh.py`:
+  * round trip of a rotated, unevenly scaled, translated two-subdomain bar:
+    the reloaded geometry starts a new run at the deformed positions to
+    4e-16, with the same body ids, stress-free;
+  * Q1 hexes, a binary MSH 4.1 mesh, P2;
+  * two geometries and an obstacle;
+  * the four node writers;
+  * every refusal.
+* `test_export_data.py`:
+  * uniaxial bar: every statistic equals E × strain at every step, the
+    integral equals stress × volume, and the volume is 2 J;
+  * the corner displacement, against its closed form;
+  * every region kind;
+  * time and frame columns, units, force-curve columns;
+  * the per-element and About sheets;
+  * a damaged step gives empty cells;
+  * LibreOffice reads every sheet back;
+  * exact P2 and hex volumes.
+* Also run on eight `test_cases` runs (up to 612k elements, four geometries,
+  dynamics): every mesh exported, none refused.
 
 ### Time curves, moving obstacles and force curves (2026-10-02)
 
