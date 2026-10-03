@@ -74,6 +74,56 @@ that follows the playbar. Nodes on an edge between two sidesets count in
 both. Adhesion and Rayleigh-damping forces are not written by PolyFEM and
 are not included.
 
+== Export ==
+
+The __Export__ tab writes files into the run's `exports` folder (next to
+`input` and `output`), or the __Export Folder__ you choose.
+
+__Deformed Mesh__ writes the shape at a step (the one on screen, or a step
+number) as a `.msh` file per simulated geometry: the run's own mesh file
+with only its node positions moved. Node numbers, elements and the Gmsh
+physical groups and names (the subdomains) stay the same.
+
+* Pick the file as the __Mesh File__ of the geometry on the PolyFEM node
+  that made the run. The node keeps the geometry's Transform, the materials
+  of its subdomains and its picked sidesets, and the shape sits where the
+  deformed body was. With __Coordinates: Simulation__ the Transform is
+  already applied (the file name ends in `_simulation`): load it with no
+  Transform.
+* The exported shape is a new __rest shape__: a simulation that starts from
+  it starts without stress, strain or velocity.
+* The elements are linear. A P2 or higher run's curved edges are
+  straightened; the __Report__ says by how much. Inverted elements are
+  refused.
+
+__Data Over Time__ writes an Excel workbook (`.xlsx`) for plots in a
+presentation:
+
+# Add __Regions__ (whole model, bodies, a sideset, a box, a sphere, a half
+  space, one element or one node). __Set From Probe__ uses the point last
+  clicked with the probe. A region is fixed on the undeformed shape.
+# Add __Quantities__: any field Read PVD can color by, its value (a
+  component, a principal value, an entry such as xy), whether it is
+  measured per element or per node, and its statistics (max, min,
+  volume-weighted mean, percentiles, integral...).
+# Choose the units. A run whose PolyFEM node recorded its units is labelled
+  automatically; otherwise choose the run's unit system, or leave the
+  headers without units. Then convert to kPa, MPa, mm...
+# Press __Export Spreadsheet__.
+
+The __Data__ sheet has one row per output step (Step, Time, Frame) and one
+column per region, quantity and statistic. The header text is the legend
+of a chart, and the cells hold numbers only (an empty cell is a missing
+value). To plot, select the Time column and a value column (or two value
+columns, such as stress against strain) and insert a scatter chart with
+lines. __Add Force Curves__ adds each sideset's reaction and mean
+displacement as columns of the same table. __Values per Element / Node__
+adds a sheet with every element or node and its position, for profiles and
+histograms. The __About__ sheet names the run, the regions, the units and
+what each column means.
+
+The export reads every chosen step, like __Auto Range: All Frames__.
+
 == HDF5 results ==
 
 PolyFEM's default output is compressed VTK-HDF. This node bundles the h5py
@@ -107,6 +157,19 @@ table>>
     tr>>
         td>> Memory grows while scrubbing
         td>> Lower __Cache Memory Limit__, or turn off __Cache Frames__.
+    tr>>
+        td>> Deformed Mesh: "a sampled visualization mesh"
+        td>> The run was written with the PolyFEM node's __Output > High
+             Order Mesh__ off (or from a curved mesh): run it again with it
+             on.
+    tr>>
+        td>> Deformed Mesh: "inverted or flat"
+        td>> Some elements are turned inside out at that step: export an
+             earlier step.
+    tr>>
+        td>> No units in the spreadsheet's headers
+        td>> The run did not record its units: choose them in __Run Units__
+             (Export tab).
 
 == More ==
 

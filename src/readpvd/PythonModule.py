@@ -135,6 +135,15 @@ def _load_embedded_h5py():
 # @VTU_PARSER@
 # ---- end embedded parser ----------------------------------------------------
 
+# ---- embedded MSH parser (built from src/common/msh_parser.py) -------------
+# The Export tab reads the run's own .msh files and writes moved copies.
+# @MSH_PARSER@
+# ---- end embedded MSH parser -------------------------------------------------
+
+# ---- embedded .xlsx writer (built from src/common/xlsx_writer.py) ----------
+# @XLSX_WRITER@
+# ---- end embedded .xlsx writer -----------------------------------------------
+
 FIELD_ALIASES = {
     "cauchy_stess_1": "cauchy_stress_1", "cauchy_stess_2": "cauchy_stress_2",
     "cauchy_stess_3": "cauchy_stress_3",
@@ -3729,3 +3738,2297 @@ def open_force_csv(kwargs):
             subprocess.Popen(["xdg-open", path])
     except OSError as exc:
         _message(f"Could not open {path}: {exc}")
+
+
+# =============================================================================
+# Export: the deformed mesh, and data over time (2026-10-03)
+#
+# Two output functions on the Export tab:
+#  * Deformed Mesh -- for each simulated geometry of the run, the run's own
+#    .msh (staged in <run>/input/ by the PolyFEM node) with only its node
+#    coordinates moved to one step's deformed positions: the same node tags,
+#    elements, physical groups and names, and file format, so the PolyFEM
+#    node treats it as the same mesh. Linear elements only (the edge
+#    curvature of a P2+ run is reported, not kept). The exported shape is a
+#    new rest shape: it carries no stress.
+#  * Data Over Time -- per output step, statistics of any quantity Read PVD
+#    can color by, over named regions, plus the force curves, as one
+#    plot-ready table in an Excel workbook (for presentation plots: no
+#    charts in the file), with optional per element / node sheets.
+#
+# Both rest on PolyFEM's high-order volume output (checked 2026-10-02): one
+# volume cell per FE element, in FE order -- the enabled simulated
+# geometries of params.json concatenated, each mesh in file order -- every
+# element with its own bitwise-identical copies of its nodes, the obstacle
+# rows last (body id 0). PolyFEM's rest transform is rebuilt from
+# params.json exactly as GeometryReader.cpp applies it.
+# =============================================================================
+
+EXPORT_FOLDER = "exports"
+_TET_TYPES = (10, 24, 71)
+_HEX_TYPES = (12, 25, 72)
+_CORNERS = {"tet": 4, "hex": 8}
+_PARAMS_CACHE = {}
+_TOPOLOGY_CACHE = {}
+_MATCH_CACHE = {}
+_MSH_CACHE = {}
+
+
+class ExportError(Exception):
+    """Why an export cannot be done (shown to the user as is)."""
+
+
+def run_folder(pvd_path):
+    """The PolyFEM node's working directory of <run>/output/<name>.pvd."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(pvd_path)))
+
+
+def export_folder(node):
+    """Export Folder, or <run>/exports when it is empty."""
+    text = node.evalParm("export_folder").strip()
+    if text:
+        return os.path.abspath(os.path.expanduser(text))
+    return os.path.join(run_folder(node.evalParm("PVD_file")), EXPORT_FOLDER)
+
+
+def _open_with_system(path):
+    try:
+        if platform.system() == "Darwin":
+            subprocess.Popen(["open", path])
+        elif platform.system() == "Windows":
+            os.startfile(path)  # noqa: S606 -- the user's own results
+        else:
+            subprocess.Popen(["xdg-open", path])
+    except OSError as exc:
+        _message(f"Could not open {path}: {exc}")
+
+
+def open_export_folder(kwargs):
+    """Open Folder button: the export folder in Finder/Explorer."""
+    node = kwargs["node"]
+    if not node.evalParm("PVD_file"):
+        _message("Load a PVD file first.")
+        return
+    folder = export_folder(node)
+    os.makedirs(folder, exist_ok=True)
+    _open_with_system(folder)
+
+
+def run_params(pvd_path):
+    """The run's input/params.json (as the PolyFEM node wrote it), or None."""
+    path = os.path.join(run_folder(pvd_path), "input", "params.json")
+    try:
+        key = _file_key(path)
+    except OSError:
+        return None
+    cached = _PARAMS_CACHE.get(path)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    try:
+        with open(path) as handle:
+            params = json.load(handle)
+    except (OSError, ValueError):
+        params = None
+    if not isinstance(params, dict):
+        params = None
+    if len(_PARAMS_CACHE) > 8:
+        _PARAMS_CACHE.clear()
+    _PARAMS_CACHE[path] = (key, params)
+    return params
+
+
+def simulated_geometries(pvd_path, params):
+    """[{number, entry, path}] of the enabled, simulated (non-obstacle)
+    geometries of params.json; number is the entry's 1-based position, the
+    PolyFEM node's geometry number (body ids are 1000 x number + subdomain)."""
+    input_dir = os.path.join(run_folder(pvd_path), "input")
+    entries = params.get("geometry", [])
+    if isinstance(entries, dict):
+        entries = [entries]
+    result = []
+    for number, entry in enumerate(entries, 1):
+        if not isinstance(entry, dict) or entry.get("is_obstacle", False) \
+                or not entry.get("enabled", True) \
+                or entry.get("type", "mesh") != "mesh":
+            continue
+        mesh = entry.get("mesh")
+        if not isinstance(mesh, str) or not mesh:
+            continue
+        path = mesh if os.path.isabs(mesh) else os.path.join(input_dir, mesh)
+        result.append({"number": number, "entry": entry,
+                       "path": os.path.normpath(path)})
+    return result
+
+
+def _axis_angle(angle, axis):
+    axis = np.asarray(axis, dtype=np.float64)
+    x, y, z = axis / np.linalg.norm(axis)
+    c, s = math.cos(angle), math.sin(angle)
+    t = 1.0 - c
+    return np.array([[c + x * x * t, x * y * t - z * s, x * z * t + y * s],
+                     [y * x * t + z * s, c + y * y * t, y * z * t - x * s],
+                     [z * x * t - y * s, z * y * t + x * s, c + z * z * t]])
+
+
+def polyfem_rotation(rotation, mode="xyz"):
+    """PolyFEM's to_rotation_matrix (utils/JSONUtils.cpp): degrees; for an
+    axis-order mode such as "xyz", entry j is the angle about axis j and the
+    rotations are applied in the order the mode names them."""
+    mode = str(mode or "xyz").lower()
+    if isinstance(rotation, (int, float)):
+        values = [0.0, 0.0, 0.0]
+        values["xyz".index(mode[0])] = float(rotation)
+        rotation = values
+    values = [float(value) for value in (rotation or [])]
+    if not values:
+        return np.eye(3)
+    if mode == "axis_angle":
+        return _axis_angle(math.radians(values[0]), values[1:4])
+    if mode == "quaternion":
+        x, y, z, w = np.asarray(values[:4]) / np.linalg.norm(values[:4])
+        return np.array(
+            [[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+             [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+             [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+    radians = np.radians(np.asarray(values, dtype=np.float64))
+    if mode == "rotation_vector":
+        angle = float(np.linalg.norm(radians))
+        return np.eye(3) if angle == 0 else _axis_angle(angle, radians / angle)
+    matrix = np.eye(3)
+    for axis_name in mode:
+        axis = "xyz".index(axis_name)
+        matrix = _axis_angle(radians[axis], np.eye(3)[axis]) @ matrix
+    return matrix
+
+
+def polyfem_rest_transform(entry, file_points):
+    """(A, b) such that PolyFEM's rest positions are A x + b for the mesh
+    file's positions x: GeometryReader.cpp's construct_affine_transformation
+    -- scale, then rotate about the origin, then translate."""
+    number = entry.get("_number", "")
+    advanced = entry.get("advanced") or {}
+    if advanced.get("normalize_mesh"):
+        raise ExportError(
+            f"Geometry {number} is normalized by PolyFEM (advanced/"
+            "normalize_mesh), which the export cannot reproduce.")
+    if entry.get("unit"):
+        raise ExportError(
+            f"Geometry {number} has its own length unit ('unit' in "
+            "params.json), which the export does not convert.")
+    if int(entry.get("n_refs", 0) or 0) > 0:
+        raise ExportError(
+            f"Geometry {number} was refined by PolyFEM (n_refs): the "
+            "simulated mesh is not the mesh file.")
+    transform = entry.get("transformation") or {}
+    dimensions = transform.get("dimensions")
+    if isinstance(dimensions, list) and dimensions:
+        extent = np.ptp(np.asarray(file_points, dtype=np.float64), axis=0)
+        extent[extent == 0] = 1.0
+        values = [float(value) for value in dimensions] + [0.0, 0.0, 0.0]
+        scale = np.asarray(values[:3]) / extent
+    elif isinstance(transform.get("scale"), (int, float)):
+        scale = np.full(3, float(transform["scale"]))
+    else:
+        values = [float(value) for value in transform.get("scale") or []]
+        scale = np.ones(3) if not values \
+            else np.asarray((values + [0.0, 0.0, 0.0])[:3])
+    rotation = polyfem_rotation(transform.get("rotation", []),
+                                transform.get("rotation_mode", "xyz"))
+    translation = [float(value) for value in transform.get("translation")
+                   or []]
+    return (rotation @ np.diag(scale),
+            np.asarray((translation + [0.0, 0.0, 0.0])[:3]))
+
+
+def _parsed_mesh(path):
+    key = _file_key(path)
+    cached = _MSH_CACHE.get(path)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    try:
+        parsed = read_msh(path)
+    except (OSError, MshParseError, ValueError, IndexError) as exc:
+        raise ExportError(f"Could not read the mesh {path}: {exc}")
+    if len(_MSH_CACHE) > 4:
+        _MSH_CACHE.clear()
+    _MSH_CACHE[path] = (key, parsed)
+    return parsed
+
+
+def volume_mesh(pvd_path, step):
+    """The parsed Volume block of one output step."""
+    blocks = _frame_block_paths(pvd_path, step)
+    path = blocks.get("Volume")
+    if path is None or not os.path.isfile(path):
+        raise ExportError(f"Step {step} has no Volume block.")
+    return read_mesh_cached(path)
+
+
+# ---- elements and nodes of the output -------------------------------------
+
+def volume_topology(mesh):
+    """Elements (the volume cells, in PolyFEM's element order) and nodes
+    (each element's copies of a vertex, merged per body) of a Volume block;
+    cached per topology."""
+    key = (str(mesh.get("topo_key")), len(mesh["points"]))
+    cached = _TOPOLOGY_CACHE.get(key)
+    if cached is not None:
+        return cached
+    if mesh.get("cell_types") is None:
+        raise ExportError("This frame was read by an older Read PVD: press "
+                          "Clear Cache and try again.")
+    types = np.asarray(mesh["cell_types"], dtype=np.int64)
+    is_hex = np.isin(types, _HEX_TYPES)
+    cells = np.flatnonzero(np.isin(types, _TET_TYPES) | is_hex)
+    if not len(cells):
+        raise ExportError("This result has no tetrahedra or hexahedra.")
+    starts = np.asarray(mesh["cell_starts"], dtype=np.int64)[cells]
+    sizes = np.asarray(mesh["cell_sizes"], dtype=np.int64)[cells]
+    connectivity = np.asarray(mesh["cell_connectivity"], dtype=np.int64)
+    hexes = is_hex[cells]
+    corner_count = np.where(hexes, 8, 4)
+    corners = np.full((len(cells), 8), -1, dtype=np.int64)
+    for corner in range(8):
+        mask = corner < corner_count
+        corners[mask, corner] = connectivity[starts[mask] + corner]
+    owner = np.repeat(np.arange(len(cells)), sizes)
+    within = np.arange(int(sizes.sum())) - np.repeat(
+        np.cumsum(sizes) - sizes, sizes)
+    members = connectivity[np.repeat(starts, sizes) + within]
+    points = np.asarray(mesh["points"], dtype=np.float64)
+    body_ids = mesh["point_data"].get("body_ids")
+    if body_ids is not None and len(body_ids) == len(points):
+        point_body = np.rint(np.asarray(body_ids, dtype=np.float64).reshape(
+            len(points), -1)[:, 0]).astype(np.int64)
+    else:
+        point_body = np.zeros(len(points), dtype=np.int64)
+    used = np.unique(members)
+    keys = np.column_stack((points[used], point_body[used]))
+    _, first, inverse = np.unique(keys, axis=0, return_index=True,
+                                  return_inverse=True)
+    point_node = np.full(len(points), -1, dtype=np.int64)
+    point_node[used] = np.asarray(inverse).ravel()
+    node_point = used[first]
+    point_element = np.full(len(points), -1, dtype=np.int64)
+    point_element[members] = owner
+    topology = {
+        "key": key, "cells": cells, "hex": hexes, "starts": starts,
+        "sizes": sizes, "corners": corners, "corner_count": corner_count,
+        "owner": owner, "members": members,
+        "body": point_body[corners[:, 0]], "point_body": point_body,
+        "has_body_ids": body_ids is not None,
+        "point_node": point_node, "node_point": node_point,
+        "node_body": point_body[node_point], "point_element": point_element,
+        "n_elements": len(cells), "n_nodes": len(node_point),
+        "connectivity": connectivity,
+    }
+    if len(_TOPOLOGY_CACHE) > 1:
+        _TOPOLOGY_CACHE.clear()
+    _TOPOLOGY_CACHE[key] = topology
+    return topology
+
+
+# Quadratic tetrahedron (VTK node order: corners, then the edges (0,1),
+# (1,2), (0,2), (0,3), (1,3), (2,3)) and a degree-3 rule, exact for the
+# cubic det J of a P2 element.
+_P2_EDGES = ((0, 1), (1, 2), (0, 2), (0, 3), (1, 3), (2, 3))
+_DEGREE3_TET_RULE = (
+    ((0.25, 0.25, 0.25), -0.8),
+    ((0.5, 1 / 6, 1 / 6), 0.45), ((1 / 6, 0.5, 1 / 6), 0.45),
+    ((1 / 6, 1 / 6, 0.5), 0.45), ((1 / 6, 1 / 6, 1 / 6), 0.45))
+_HEX_REFERENCE = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+                           [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]],
+                          dtype=np.float64)
+
+
+def _tet_volumes(a, b, c, d):
+    return np.einsum("ij,ij->i", np.cross(b - a, c - a), d - a) / 6.0
+
+
+def _p2_tet_volumes(nodes):
+    """Exact volume of P2 tets from their 10 node positions (n, 10, 3)."""
+    gradients = np.array([[-1.0, -1.0, -1.0], [1.0, 0.0, 0.0],
+                          [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    volume = np.zeros(len(nodes))
+    for (xi, eta, zeta), weight in _DEGREE3_TET_RULE:
+        lam = (1.0 - xi - eta - zeta, xi, eta, zeta)
+        dN = np.zeros((10, 3))
+        for i in range(4):
+            dN[i] = (4.0 * lam[i] - 1.0) * gradients[i]
+        for k, (i, j) in enumerate(_P2_EDGES, 4):
+            dN[k] = 4.0 * (lam[j] * gradients[i] + lam[i] * gradients[j])
+        jacobian = np.einsum("nki,kj->nij", nodes, dN)
+        volume += weight / 6.0 * np.linalg.det(jacobian)
+    return volume
+
+
+def hex_volumes(nodes):
+    """Exact volume of trilinear hexes from their 8 corners (n, 8, 3) in
+    VTK / Gmsh order (2 x 2 x 2 Gauss points)."""
+    g = 0.5 / math.sqrt(3.0)
+    volume = np.zeros(len(nodes))
+    for u in (0.5 - g, 0.5 + g):
+        for v in (0.5 - g, 0.5 + g):
+            for w in (0.5 - g, 0.5 + g):
+                dN = np.empty((8, 3))
+                for k, (a, b, c) in enumerate(_HEX_REFERENCE):
+                    fu, fv, fw = (u if a else 1 - u), (v if b else 1 - v), \
+                        (w if c else 1 - w)
+                    su, sv, sw = (1 if a else -1), (1 if b else -1), \
+                        (1 if c else -1)
+                    dN[k] = (su * fv * fw, fu * sv * fw, fu * fv * sw)
+                jacobian = np.einsum("nki,kj->nij", nodes, dN)
+                volume += np.linalg.det(jacobian) / 8.0
+    return volume
+
+
+def element_volumes(topology, positions):
+    """Signed volume of every element with its output points at
+    `positions`: exact for straight and P2 tets and trilinear hexes;
+    P3/P4 tets as the sum of Read PVD's display sub-tets."""
+    positions = np.asarray(positions, dtype=np.float64)
+    volume = np.zeros(topology["n_elements"])
+    corners = topology["corners"]
+    sizes = topology["sizes"]
+    connectivity = topology["connectivity"]
+    starts = topology["starts"]
+    tets = ~topology["hex"]
+    linear = tets & (sizes == 4)
+    if linear.any():
+        c = corners[linear, :4]
+        volume[linear] = _tet_volumes(*(positions[c[:, i]] for i in range(4)))
+    quadratic = tets & (sizes == 10)
+    if quadratic.any():
+        nodes = connectivity[starts[quadratic][:, None] + np.arange(10)]
+        volume[quadratic] = _p2_tet_volumes(positions[nodes])
+    for size, table in ((20, TET20_SUBDIV), (35, TET35_SUBDIV)):
+        mask = tets & (sizes == size)
+        if not mask.any():
+            continue
+        nodes = connectivity[starts[mask][:, None] + np.arange(size)]
+        sub = nodes[:, table]                               # (n, s, 4)
+        volume[mask] = _tet_volumes(
+            *(positions[sub[:, :, i].ravel()] for i in range(4))).reshape(
+                len(nodes), -1).sum(axis=1)
+    other = tets & ~(linear | quadratic | (sizes == 20) | (sizes == 35))
+    if other.any():  # P5+: the corner tet
+        c = corners[other, :4]
+        volume[other] = _tet_volumes(*(positions[c[:, i]] for i in range(4)))
+    hexes = topology["hex"]
+    if hexes.any():
+        volume[hexes] = hex_volumes(positions[corners[hexes]])
+    return volume
+
+
+# ---- the run's meshes, element by element ---------------------------------
+
+def mesh_match(pvd_path, mesh, topology):
+    """Match the output elements to the run's mesh files, element by
+    element: which geometry and file element each output element is, and
+    which file node each output corner point is. Raises ExportError (with
+    the reason) when the output does not match the meshes of params.json.
+    """
+    params = run_params(pvd_path)
+    if params is None:
+        raise ExportError(
+            "This needs the run's input/params.json (written by the PolyFEM "
+            "node) next to the output folder.")
+    geometries = simulated_geometries(pvd_path, params)
+    if not geometries:
+        raise ExportError("params.json lists no simulated geometry.")
+    missing = [g for g in geometries if not os.path.isfile(g["path"])]
+    if missing:
+        raise ExportError(
+            "The run's mesh file is missing: "
+            + ", ".join(f"geometry {g['number']} ({g['path']})"
+                        for g in missing)
+            + ". The PolyFEM node keeps a copy in <run>/input/.")
+    key = (topology["key"], _file_key(os.path.join(
+        run_folder(pvd_path), "input", "params.json")),
+        tuple(_file_key(g["path"]) for g in geometries))
+    cached = _MATCH_CACHE.get(key)
+    if cached is not None:
+        return cached
+    points = np.asarray(mesh["points"], dtype=np.float64)
+    n_elements = topology["n_elements"]
+    total = 0
+    for geometry in geometries:
+        cells = _parsed_mesh(geometry["path"])["cells"]
+        total += sum(len(cells[family]["order"]) for family in ("tet", "hex")
+                     if family in cells)
+    if total != n_elements:
+        raise ExportError(
+            f"The result has {n_elements} elements and the run's meshes "
+            f"{total}: the result is a sampled visualization mesh (Output > "
+            "High Order Mesh off on the PolyFEM node, or a curved mesh), or "
+            "the meshes changed since the run.")
+    point_file_node = np.full(len(points), -1, dtype=np.int64)
+    point_geometry = np.zeros(len(points), dtype=np.int64)
+    element_geometry = np.zeros(n_elements, dtype=np.int64)
+    element_number = np.zeros(n_elements, dtype=np.int64)
+    start = 0
+    matched = []
+    for geometry in geometries:
+        number = geometry["number"]
+        parsed = _parsed_mesh(geometry["path"])
+        cells = parsed["cells"]
+        unsupported = [family for family in ("prism", "pyramid")
+                       if family in cells]
+        if unsupported:
+            raise ExportError(
+                f"Geometry {number} has {' and '.join(unsupported)} "
+                "elements; the export supports tetrahedra and hexahedra.")
+        families = [family for family in ("tet", "hex") if family in cells]
+        if not families:
+            raise ExportError(f"Geometry {number}'s mesh has no tetrahedra "
+                              "or hexahedra.")
+        curved = [family for family in families
+                  if cells[family]["num_nodes"] != _CORNERS[family]]
+        count = sum(len(cells[family]["order"]) for family in families)
+        is_hex = np.zeros(count, dtype=bool)
+        file_corners = np.full((count, 8), -1, dtype=np.int64)
+        for family in families:
+            order = cells[family]["order"]
+            if family == "hex":
+                is_hex[order] = True
+            file_corners[order, :_CORNERS[family]] = cells[family]["corners"]
+        entry = dict(geometry["entry"], _number=number)
+        A, b = polyfem_rest_transform(entry, parsed["points"])
+        # einsum, not @: Accelerate's matmul raises spurious divide-by-zero
+        # warnings on macOS (review P2-12)
+        rest = np.einsum("ij,nj->ni", A, np.asarray(
+            parsed["points"], dtype=np.float64)) + b
+        stop = start + count
+        if stop > n_elements or not np.array_equal(
+                topology["hex"][start:stop], is_hex):
+            raise ExportError(
+                f"The result's elements do not follow geometry {number}'s "
+                f"mesh ({os.path.basename(geometry['path'])}): the result is "
+                "a sampled visualization mesh (Output > High Order Mesh off, "
+                "or a curved mesh), or the mesh changed since the run.")
+        extent = float(np.linalg.norm(np.ptp(rest, axis=0))) or 1.0
+        tolerance = 1e-6 * extent
+        output_corners = topology["corners"][start:stop]
+        for hexes in (False, True):
+            local = np.flatnonzero(is_hex == hexes)
+            k = 8 if hexes else 4
+            for chunk in range(0, len(local), 20000):
+                rows = local[chunk:chunk + 20000]
+                out_points = output_corners[rows, :k]
+                file_nodes = file_corners[rows, :k]
+                distance = np.linalg.norm(
+                    points[out_points][:, :, None, :]
+                    - rest[file_nodes][:, None, :, :], axis=3)
+                nearest = distance.argmin(axis=2)
+                worst = float(np.take_along_axis(
+                    distance, nearest[:, :, None], axis=2).max())
+                if worst > tolerance or np.any(
+                        np.sort(nearest, axis=1)
+                        != np.arange(k)[None, :]):
+                    raise ExportError(
+                        f"The result's elements do not sit on geometry "
+                        f"{number}'s mesh nodes (off by {worst:.3g}): the "
+                        "result is a sampled visualization mesh (Output > "
+                        "High Order Mesh off), or the mesh file, its "
+                        "transform or the run changed since it was written.")
+                point_file_node[out_points.ravel()] = np.take_along_axis(
+                    file_nodes, nearest, axis=1).ravel()
+        owned = (topology["owner"] >= start) & (topology["owner"] < stop)
+        point_geometry[topology["members"][owned]] = number
+        element_geometry[start:stop] = number
+        element_number[start:stop] = np.arange(1, count + 1)
+        matched.append({"number": number, "path": geometry["path"],
+                        "entry": geometry["entry"], "parsed": parsed,
+                        "A": A, "b": b, "rest": rest, "start": start,
+                        "stop": stop, "is_hex": is_hex,
+                        "file_corners": file_corners, "curved": curved})
+        start = stop
+    if start != n_elements:
+        raise ExportError(
+            f"The result has {n_elements} elements and the run's meshes "
+            f"{start}: the result is a sampled visualization mesh (Output > "
+            "High Order Mesh off, or a curved mesh), or the meshes changed "
+            "since the run.")
+    # every copy of a node must be the same file node
+    corner_points = np.flatnonzero(point_file_node >= 0)
+    pairs = np.unique(np.column_stack((
+        topology["point_node"][corner_points],
+        point_file_node[corner_points])), axis=0)
+    if len(pairs) != len(np.unique(pairs[:, 0])):
+        raise ExportError("Copies of one result node match different mesh "
+                          "nodes; the result does not belong to these meshes.")
+    match = {"geometries": matched, "point_file_node": point_file_node,
+             "point_geometry": point_geometry,
+             "element_geometry": element_geometry,
+             "element_number": element_number}
+    if len(_MATCH_CACHE) > 1:
+        _MATCH_CACHE.clear()
+    _MATCH_CACHE[key] = match
+    return match
+
+
+# ---- Deformed Mesh ---------------------------------------------------------
+
+def export_mesh_step(node, count):
+    """The output step the Deformed Mesh export writes."""
+    if _menu_token(node, "export_mesh_step_mode") == "number":
+        step = int(node.evalParm("export_mesh_step"))
+        if step < 0 or step >= count:
+            raise ExportError(f"Step {step} does not exist: the run has steps "
+                              f"0 to {count - 1}.")
+        return step
+    return max(0, min(entry_index(node), count - 1))
+
+
+def export_mesh_step_text(node):
+    """Read-only line: the step Export Deformed Mesh writes, and its time."""
+    hou.frame()  # time-dependent, so it follows the playbar
+    times = _pvd_times(node)
+    if not times:
+        return "Load a PVD file."
+    try:
+        step = export_mesh_step(node, len(times))
+    except ExportError as exc:
+        return str(exc)
+    return f"Step {step} of {len(times) - 1}: t = {times[step]:.6g}"
+
+
+def export_geometry_menu(kwargs):
+    """Toggle menu: the run's simulated geometries."""
+    path = kwargs["node"].evalParm("PVD_file")
+    params = run_params(path) if path else None
+    if params is None:
+        return []
+    items = []
+    for geometry in simulated_geometries(path, params):
+        items.extend((str(geometry["number"]),
+                      f"Geometry {geometry['number']} "
+                      f"({os.path.basename(geometry['path'])})"))
+    return items
+
+
+def _solution_vectors(mesh):
+    for name in ("solution", "displacement"):
+        values = mesh["point_data"].get(name)
+        if values is not None:
+            values = np.asarray(values, dtype=np.float64).reshape(
+                len(values), -1)
+            if values.shape[1] >= 3:
+                return values[:, :3]
+    return None
+
+
+def _p2_curvature(geometry, topology, points, deformed):
+    """Largest distance of a deformed edge/face node from the straight
+    element through the deformed corners, as a fraction of the element's
+    mean edge length, and the element (file number) where it occurs."""
+    rows = np.arange(geometry["start"], geometry["stop"])
+    rows = rows[(~topology["hex"][rows]) & (topology["sizes"][rows] > 4)]
+    if not len(rows):
+        return None
+    worst, where = 0.0, 0
+    for chunk in range(0, len(rows), 20000):
+        part = rows[chunk:chunk + 20000]
+        for n in np.unique(topology["sizes"][part]):
+            sub = part[topology["sizes"][part] == n]
+            nodes = topology["connectivity"][
+                topology["starts"][sub][:, None] + np.arange(n)]
+            rest = points[nodes]
+            moved = deformed[nodes]
+            T = np.stack([rest[:, i] - rest[:, 0] for i in (1, 2, 3)], axis=2)
+            local = np.linalg.solve(T[:, None, :, :],
+                                    (rest[:, 4:] - rest[:, :1])[..., None])
+            Tm = np.stack([moved[:, i] - moved[:, 0] for i in (1, 2, 3)],
+                          axis=2)
+            straight = moved[:, :1] + np.einsum("nij,nkj->nki", Tm,
+                                                local[..., 0])
+            gap = np.linalg.norm(moved[:, 4:] - straight, axis=2).max(axis=1)
+            edges = np.mean([np.linalg.norm(moved[:, i] - moved[:, j],
+                                             axis=1)
+                             for i, j in _P2_EDGES], axis=0)
+            ratio = gap / np.maximum(edges, 1e-300)
+            k = int(np.argmax(ratio))
+            if ratio[k] > worst:
+                worst = float(ratio[k])
+                where = int(sub[k] - geometry["start"] + 1)
+    return worst, where
+
+
+def deformed_mesh_positions(geometry, match, topology, solution, coordinates):
+    """(positions of the mesh file's nodes, report) for one geometry."""
+    parsed = geometry["parsed"]
+    count = len(parsed["points"])
+    owned = (topology["owner"] >= geometry["start"]) \
+        & (topology["owner"] < geometry["stop"])
+    corner_points = topology["members"][owned]
+    corner_points = corner_points[match["point_file_node"][corner_points] >= 0]
+    file_nodes = match["point_file_node"][corner_points]
+    displacement = np.zeros((count, 3))
+    displacement[file_nodes] = solution[corner_points]
+    spread = float(np.abs(displacement[file_nodes]
+                          - solution[corner_points]).max()) \
+        if len(file_nodes) else 0.0
+    scale = float(np.abs(solution[corner_points]).max()) \
+        if len(file_nodes) else 0.0
+    if spread > 1e-9 * max(scale, 1e-300):
+        raise ExportError(
+            f"Geometry {geometry['number']}: copies of a node have different "
+            f"displacements (by {spread:.3g}); the mesh is not conforming.")
+    used = np.zeros(count, dtype=bool)
+    used[file_nodes] = True
+    rest = geometry["rest"]
+    deformed = rest + displacement
+    corners = geometry["file_corners"]
+    is_hex = geometry["is_hex"]
+    ratio = np.empty(len(corners))
+    for hexes in (False, True):
+        local = np.flatnonzero(is_hex == hexes)
+        if not len(local):
+            continue
+        if hexes:
+            before = hex_volumes(rest[corners[local]])
+            after = hex_volumes(deformed[corners[local]])
+        else:
+            c = corners[local, :4]
+            before = _tet_volumes(*(rest[c[:, i]] for i in range(4)))
+            after = _tet_volumes(*(deformed[c[:, i]] for i in range(4)))
+        ratio[local] = after / np.where(before == 0, np.nan, before)
+    bad = np.flatnonzero(~(ratio > 0))
+    if len(bad):
+        listed = ", ".join(str(int(i) + 1) for i in bad[:10])
+        more = f" and {len(bad) - 10} more" if len(bad) > 10 else ""
+        raise ExportError(
+            f"Geometry {geometry['number']}: {len(bad)} element(s) are "
+            f"inverted or flat in the deformed shape (elements {listed}"
+            f"{more} of {os.path.basename(geometry['path'])}); PolyFEM cannot "
+            "use such a mesh. Export an earlier step.")
+    if coordinates == "simulation":
+        positions = deformed
+    else:
+        positions = np.array(parsed["points"], dtype=np.float64)
+        pulled = np.linalg.solve(geometry["A"], (deformed - geometry["b"]).T).T
+        positions[used] = pulled[used]
+    report = {"nodes": int(used.sum()), "unused": int((~used).sum()),
+              "elements": len(corners),
+              "ratio_min": float(np.nanmin(ratio)),
+              "ratio_min_at": int(np.nanargmin(ratio)) + 1,
+              "ratio_max": float(np.nanmax(ratio)),
+              "ratio_max_at": int(np.nanargmax(ratio)) + 1}
+    return positions, report
+
+
+def export_deformed_mesh(node):
+    """Write one .msh per simulated geometry at the chosen step; returns
+    (paths written, report text)."""
+    pvd = node.evalParm("PVD_file")
+    if not pvd or not os.path.isfile(pvd):
+        raise ExportError("Load a PVD file first.")
+    entries = read_pvd(pvd)
+    if not entries:
+        raise ExportError("The PVD file lists no steps.")
+    step = export_mesh_step(node, len(entries))
+    mesh = volume_mesh(pvd, step)
+    topology = volume_topology(mesh)
+    match = mesh_match(pvd, mesh, topology)
+    solution = _solution_vectors(mesh)
+    if solution is None:
+        raise ExportError("This result has no displacement (the 'solution' "
+                          "field), so there is no deformed shape.")
+    chosen = {int(token) for token in
+              node.evalParm("export_mesh_geometries").split()
+              if token.isdigit()}
+    coordinates = _menu_token(node, "export_mesh_coordinates") or "mesh"
+    geometries = [g for g in match["geometries"]
+                  if not chosen or g["number"] in chosen]
+    if not geometries:
+        raise ExportError("None of the chosen geometries is in this run.")
+    curved = [g for g in geometries if g["curved"]]
+    if curved:
+        raise ExportError(
+            "Export Deformed Mesh writes linear elements and needs straight "
+            "(4-node tet / 8-node hex) mesh files; "
+            + ", ".join(f"geometry {g['number']} "
+                        f"({os.path.basename(g['path'])})" for g in curved)
+            + " has curved (higher-order) elements.")
+    results = []
+    points = np.asarray(mesh["points"], dtype=np.float64)
+    for geometry in geometries:  # check everything before writing anything
+        positions, report = deformed_mesh_positions(
+            geometry, match, topology, solution, coordinates)
+        curvature = _p2_curvature(geometry, topology, points,
+                                  points + solution)
+        results.append((geometry, positions, report, curvature))
+    folder = export_folder(node)
+    os.makedirs(folder, exist_ok=True)
+    width = max(3, len(str(len(entries) - 1)))
+    stems = [os.path.splitext(os.path.basename(g["path"]))[0]
+             for g, *_ in results]
+    lines = [f"Step {step} of {len(entries) - 1} (t = {entries[step][0]:.6g})"
+             f" written to {folder}"]
+    written = []
+    for (geometry, positions, report, curvature), stem in zip(results, stems):
+        if stems.count(stem) > 1:
+            stem = f"{stem}_geo{geometry['number']}"
+        extension = os.path.splitext(geometry["path"])[1] or ".msh"
+        # simulation coordinates get their own name: loading one in place of
+        # the other would apply the Transform twice (or not at all)
+        suffix = "_simulation" if coordinates == "simulation" else ""
+        path = os.path.join(
+            folder, f"{stem}_step{step:0{width}d}{suffix}{extension}")
+        write_moved_nodes(geometry["path"], positions, path)
+        written.append(path)
+        lines.append(
+            f"Geometry {geometry['number']}: {os.path.basename(path)} -- "
+            f"{report['nodes']} nodes moved, {report['elements']} elements, "
+            f"element volume ratio {report['ratio_min']:.4g} (element "
+            f"{report['ratio_min_at']}) to {report['ratio_max']:.4g} "
+            f"(element {report['ratio_max_at']}), none inverted.")
+        if report["unused"]:
+            lines.append(f"  {report['unused']} node(s) that no element uses "
+                         "keep their positions.")
+        if curvature is not None:
+            lines.append(
+                f"  Higher-order run: the deformed edges are curved, the "
+                f"exported elements are straight (largest gap "
+                f"{100 * curvature[0]:.3g} % of an edge, element "
+                f"{curvature[1]}).")
+    lines.append(
+        "Coordinates: those of the mesh file (the geometry's Transform puts "
+        "the shape where it was)." if coordinates != "simulation" else
+        "Coordinates: simulation (world); load it with no Transform.")
+    lines.append("The exported shape is a new rest shape: it carries no "
+                 "stress, strain or velocity.")
+    return written, "\n".join(lines)
+
+
+def export_mesh_button(kwargs):
+    """Export Deformed Mesh button."""
+    node = kwargs["node"]
+    try:
+        written, report = export_deformed_mesh(node)
+    except ExportError as exc:
+        report, written = f"Not exported: {exc}", []
+    except (OSError, MshParseError) as exc:
+        report, written = f"Not exported: {exc}", []
+    node.parm("export_mesh_report").set(report)
+    if written and hou.isUIAvailable():
+        hou.ui.setStatusMessage(
+            f"Deformed mesh written: {', '.join(map(os.path.basename, written))}",
+            hou.severityType.ImportantMessage)
+    elif not written:
+        _message(report)
+    return written
+
+
+# ---- units -----------------------------------------------------------------
+
+EXPORT_UNIT_SYSTEMS = (
+    ("auto", "Automatic (as the PolyFEM node recorded)"),
+    ("none", "Not Set (no unit labels)"),
+    ("m_kg_s", "m, kg, s (N, Pa)"),
+    ("mm_t_s", "mm, tonne, s (N, MPa)"),
+    ("mm_kg_s", "mm, kg, s (mN, kPa)"),
+    ("mm_g_s", "mm, g, s (uN, Pa)"),
+)
+_UNIT_SYSTEM_NAMES = {"m_kg_s": ("m", "kg", "s"), "mm_t_s": ("mm", "t", "s"),
+                      "mm_kg_s": ("mm", "kg", "s"), "mm_g_s": ("mm", "g", "s")}
+_LENGTH_SI = {"m": 1.0, "dm": 0.1, "cm": 1e-2, "mm": 1e-3, "um": 1e-6,
+              "µm": 1e-6, "micron": 1e-6, "nm": 1e-9, "km": 1e3,
+              "in": 0.0254, "ft": 0.3048}
+_MASS_SI = {"kg": 1.0, "g": 1e-3, "mg": 1e-6, "t": 1e3, "tonne": 1e3,
+            "Mg": 1e3, "lb": 0.45359237}
+_TIME_SI = {"s": 1.0, "ms": 1e-3, "us": 1e-6, "µs": 1e-6, "min": 60.0,
+            "h": 3600.0}
+EXPORT_LENGTH_UNITS = ("run", "m", "cm", "mm", "um")
+EXPORT_STRESS_UNITS = ("run", "Pa", "kPa", "MPa", "GPa")
+EXPORT_FORCE_UNITS = ("run", "N", "mN", "uN", "kN")
+EXPORT_TIME_UNITS = ("run", "s", "ms")
+_STRESS_SI = {"Pa": 1.0, "kPa": 1e3, "MPa": 1e6, "GPa": 1e9}
+_FORCE_SI = {"N": 1.0, "mN": 1e-3, "uN": 1e-6, "kN": 1e3}
+_UNIT_TEXT = {"um": "µm", "uN": "µN", "µs": "µs"}
+
+
+def run_units(node):
+    """((length, mass, time) names, why) of the run's unit system, or
+    (None, why) when it is not known."""
+    token = _menu_token(node, "export_units") or "auto"
+    if token == "none":
+        return None, "Units are off for this export: no unit labels."
+    if token in _UNIT_SYSTEM_NAMES:
+        return _UNIT_SYSTEM_NAMES[token], "chosen on this node"
+    path = node.evalParm("PVD_file")
+    params = run_params(path) if path else None
+    units = params.get("units") if params else None
+    if isinstance(units, dict) and units.get("length"):
+        names = (str(units.get("length", "m")), str(units.get("mass", "kg")),
+                 str(units.get("time", "s")))
+        if names[0] in _LENGTH_SI and names[1] in _MASS_SI \
+                and names[2] in _TIME_SI:
+            return names, "recorded by the PolyFEM node"
+        return None, (f"The PolyFEM node recorded units {', '.join(names)}, "
+                      "which this export does not know: choose the run's "
+                      "unit system.")
+    return None, ("The run did not record its units (the PolyFEM node's "
+                  "Units were off): choose the run's unit system to label "
+                  "and convert values.")
+
+
+def export_units_text(node):
+    """Read-only line: the run's unit system, as the export uses it."""
+    names, why = run_units(node)
+    if names is None:
+        return why
+    return f"Run: {', '.join(names)} ({why})."
+
+
+class _ExportUnits:
+    """Unit labels and conversion factors of one export."""
+
+    def __init__(self, node):
+        self.names, self.why = run_units(node)
+        self.known = self.names is not None
+        if not self.known:
+            return
+        length, mass, time = self.names
+        L, M, T = _LENGTH_SI[length], _MASS_SI[mass], _TIME_SI[time]
+        stress, force = M / (L * T * T), M * L / (T * T)
+        self.run = {"length": (L, length), "time": (T, time),
+                    "stress": (stress, self._named(stress, _STRESS_SI) or
+                               f"{mass}/({length}*{time}^2)"),
+                    "force": (force, self._named(force, _FORCE_SI) or
+                              f"{mass}*{length}/{time}^2")}
+        self.shown = {}
+        for kind, parm, table in (
+                ("length", "export_unit_length", _LENGTH_SI),
+                ("stress", "export_unit_stress", _STRESS_SI),
+                ("force", "export_unit_force", _FORCE_SI),
+                ("time", "export_unit_time", _TIME_SI)):
+            token = _menu_token(node, parm) or "run"
+            if token in table:
+                self.shown[kind] = (table[token], token)
+            else:
+                self.shown[kind] = self.run[kind]
+
+    @staticmethod
+    def _named(value, table):
+        for name, factor in table.items():
+            if abs(value / factor - 1.0) < 1e-9:
+                return name
+        return None
+
+    def ratio(self, kind):
+        return self.run[kind][0] / self.shown[kind][0]
+
+    def text(self, kind):
+        name = self.shown[kind][1]
+        return _UNIT_TEXT.get(name, name)
+
+    def convert(self, dimension):
+        """(factor, label) turning run values of a dimension into the
+        shown unit; label None = unknown unit, "" = dimensionless."""
+        if dimension == "none":
+            return 1.0, ""
+        if dimension is None or not self.known:
+            return 1.0, None
+        if dimension in ("length", "stress", "force", "time"):
+            return self.ratio(dimension), self.text(dimension)
+        if dimension == "volume":
+            return self.ratio("length") ** 3, f"{self.text('length')}³"
+        if dimension == "velocity":
+            return (self.ratio("length") / self.ratio("time"),
+                    f"{self.text('length')}/{self.text('time')}")
+        if dimension == "acceleration":
+            return (self.ratio("length") / self.ratio("time") ** 2,
+                    f"{self.text('length')}/{self.text('time')}²")
+        if dimension in ("stress2", "stress3"):
+            power = 2 if dimension == "stress2" else 3
+            return (self.ratio("stress") ** power,
+                    f"{self.text('stress')}{'²' if power == 2 else '³'}")
+        return 1.0, None
+
+    def describe(self):
+        if not self.known:
+            return f"Not set: {self.why}"
+        shown = ", ".join(f"{kind} {self.text(kind)}"
+                          for kind in ("length", "stress", "force", "time"))
+        return (f"Run: {', '.join(self.names)} ({self.why}); this workbook: "
+                f"{shown}.")
+
+
+# What each quantity is measured in (by its Houdini attribute name). Fields
+# not listed have an unknown unit: their headers carry none and they are
+# never converted.
+_STRESS_FIELDS = {
+    "von_mises", "von_mises_derived", "cauchy_mat", "cauchy_eigenvalues",
+    "cauchy_trace", "hydrostatic_stress", "deviatoric_stress",
+    "max_shear_stress", "pk1", "pk2", "pk2_eigenvalues",
+    "cauchy_stress_1", "cauchy_stress_2", "cauchy_stress_3",
+    "pk1_stress_1", "pk1_stress_2", "pk1_stress_3", "pk2_stress_1",
+    "pk2_stress_2", "pk2_stress_3", "cauchy_stess", "pk1_stess", "pk2_stess",
+    "E", "mu", "lambda", "k1", "c1", "c2", "c3", "d1"}
+_DIMENSIONLESS_FIELDS = {
+    "F_mat", "F_1", "F_2", "F_3", "J", "right_cauchy_green",
+    "right_cauchy_green_eigenvalues", "left_cauchy_green",
+    "left_cauchy_green_eigenvalues", "right_stretch", "left_stretch",
+    "principal_stretches", "green_lagrange_strain",
+    "green_lagrange_eigenvalues", "almansi_strain",
+    "almansi_strain_eigenvalues", "hencky_strain", "hencky_strain_eigenvalues",
+    "infinitesimal_strain", "infinitesimal_strain_eigenvalues",
+    "stress_triaxiality", "nu", "k2", "kappa", "discr"}
+
+
+def quantity_dimension(field):
+    """'length', 'stress', ... or 'none' (dimensionless) or None (unknown)."""
+    if field == "_volume":
+        return "volume"
+    if field.startswith("fiber_"):
+        return "none"
+    name = field[:-4] if field.endswith("_avg") else field
+    base = name.rsplit("_", 1)[-1] if "_" in name else name
+    if name in ("solution", "solution_mag", "displacement"):
+        return "length"
+    if name == "velocity":
+        return "velocity"
+    if name == "acceleration":
+        return "acceleration"
+    if name.endswith("_forces"):
+        return "force"
+    if name in _STRESS_FIELDS or base in _STRESS_FIELDS:
+        return "stress"
+    if name == "stress_J2":
+        return "stress2"
+    if name == "stress_J3":
+        return "stress3"
+    if name in _DIMENSIONLESS_FIELDS or base in _DIMENSIONLESS_FIELDS:
+        return "none"
+    return None
+
+
+# ---- quantities --------------------------------------------------------------
+
+# Short names for column headers (slide legends).
+_HEADER_NAMES = {
+    "von_mises": "von Mises stress", "von_mises_derived": "von Mises stress",
+    "solution": "displacement", "displacement": "displacement",
+    "solution_mag": "displacement magnitude", "velocity": "velocity",
+    "acceleration": "acceleration", "J": "volume ratio J",
+    "F_mat": "deformation gradient", "cauchy_mat": "Cauchy stress",
+    "cauchy_eigenvalues": "principal Cauchy stress",
+    "cauchy_trace": "Cauchy stress trace",
+    "hydrostatic_stress": "hydrostatic stress",
+    "deviatoric_stress": "deviatoric stress",
+    "max_shear_stress": "maximum shear stress",
+    "stress_triaxiality": "stress triaxiality", "stress_J2": "J2",
+    "stress_J3": "J3", "pk1": "1st Piola-Kirchhoff stress",
+    "pk2": "2nd Piola-Kirchhoff stress",
+    "pk2_eigenvalues": "principal 2nd Piola-Kirchhoff stress",
+    "principal_stretches": "principal stretch",
+    "right_cauchy_green": "right Cauchy-Green tensor",
+    "left_cauchy_green": "left Cauchy-Green tensor",
+    "right_cauchy_green_eigenvalues": "principal right Cauchy-Green",
+    "left_cauchy_green_eigenvalues": "principal left Cauchy-Green",
+    "right_stretch": "right stretch tensor",
+    "left_stretch": "left stretch tensor",
+    "green_lagrange_strain": "Green-Lagrange strain",
+    "green_lagrange_eigenvalues": "principal Green-Lagrange strain",
+    "almansi_strain": "Almansi strain",
+    "almansi_strain_eigenvalues": "principal Almansi strain",
+    "hencky_strain": "logarithmic strain",
+    "hencky_strain_eigenvalues": "principal logarithmic strain",
+    "infinitesimal_strain": "small strain",
+    "infinitesimal_strain_eigenvalues": "principal small strain",
+    "_volume": "volume",
+}
+_VALUE_NAMES = {
+    "magnitude": "magnitude", "x": "x", "y": "y", "z": "z", "xy": "xy",
+    "yz": "yz", "xz": "xz", "principal_max": "max principal",
+    "principal_middle": "mid principal", "principal_min": "min principal",
+    "trace": "trace", "determinant": "determinant",
+}
+_TENSOR_ENTRY_NAMES = {"x": "xx", "y": "yy", "z": "zz", "magnitude": "norm"}
+_NODAL_FIELDS = {"solution", "solution_mag", "displacement", "velocity",
+                 "acceleration"}
+_FIBER_KINDS = (("fiber_stretch", "Fiber Stretch |F a0|"),
+                ("fiber_isochoric_stretch", "Fiber Isochoric Stretch"),
+                ("fiber_I4", "Fiber I4 = |F a0|^2"))
+
+
+def _quantity_field(node, index):
+    field = node.evalParm(f"export_q_field{index}")
+    return field or node.evalParm("color_attrib")
+
+
+def _quantity_value(node, index):
+    if not node.evalParm(f"export_q_field{index}"):
+        return node.evalParm("color_reduction")
+    return node.evalParm(f"export_q_value{index}")
+
+
+def _fiber_menu_items(node):
+    path = node.evalParm("PVD_file")
+    if not path:
+        return []
+    try:
+        mesh = volume_mesh(path, entry_index(node))
+    except Exception:
+        return []
+    names = [_fiber_attrib(prefix, raw=True)
+             for prefix in _fiber_prefixes(mesh["point_data"])]
+    if not names:
+        names = _companion_family_names(path)
+    if not names or not all(f"F_{i}" in mesh["point_data"] for i in (1, 2, 3)):
+        return []
+    items = []
+    for name in names:
+        for kind, label in _FIBER_KINDS:
+            items.extend((f"{kind}:{name}", f"{label} ({_field_label(name)})"))
+    return items
+
+
+def export_field_menu(kwargs):
+    """Quantity menu: the Display tab's field, every color field, the
+    region's volume, and fiber stretches on fiber runs."""
+    node = kwargs["node"]
+    items = ["", "Same as the Display Tab"]
+    available = _volume_fields(node)
+    ordered = [name for name in FIELD_LABELS if name in available]
+    ordered.extend(sorted(name for name in available if name not in ordered))
+    for name in ordered:
+        items.extend((name, _field_label(name)))
+    items.extend(("_volume", "Region Volume"))
+    items.extend(_fiber_menu_items(node))
+    return items
+
+
+def _volume_fields(node):
+    """{field: components} of the Volume block on screen, derived fields
+    included (the export computes them whatever the Display tab shows)."""
+    return _available_fields_from_fields(
+        _frame_metadata(node).get("Volume", {}), True)
+
+
+def _field_components(node, field):
+    if field == "_volume" or field.startswith("fiber_"):
+        return 1
+    return _volume_fields(node).get(field, 0)
+
+
+def export_value_menu(kwargs):
+    """Value menu of a quantity: what Field Value To Display offers, plus
+    the off-diagonal entries of tensors."""
+    node = kwargs["node"]
+    index = kwargs["parm"].multiParmInstanceIndices()[0]
+    if not node.evalParm(f"export_q_field{index}"):
+        return ["", "Same as the Display Tab"]
+    field = _quantity_field(node, index)
+    components = _field_components(node, field)
+    if components == 1:
+        return ["auto", "Scalar Value"]
+    if components in (2, 3) and field in PRINCIPAL_VALUE_FIELDS:
+        entries = (("principal_max", "First Principal Value (Largest)"),
+                   ("principal_middle", "Second Principal Value"),
+                   ("principal_min", "Third Principal Value (Smallest)"),
+                   ("magnitude", "Principal-Value Magnitude"))
+    elif components in (2, 3):
+        entries = (("magnitude", "Vector Magnitude"), ("x", "X Component"),
+                   ("y", "Y Component"), ("z", "Z Component"))
+    elif components == 9:
+        entries = (("principal_max", "First Principal Value (Largest)"),
+                   ("principal_middle", "Second Principal Value"),
+                   ("principal_min", "Third Principal Value (Smallest)"),
+                   ("x", "XX Entry"), ("y", "YY Entry"), ("z", "ZZ Entry"),
+                   ("xy", "XY Entry"), ("yz", "YZ Entry"), ("xz", "XZ Entry"),
+                   ("magnitude", "Frobenius Norm"), ("trace", "Tensor Trace"),
+                   ("determinant", "Tensor Determinant"))
+    else:
+        return ["auto", "Not Available in This Frame"]
+    result = []
+    for token, label in entries:
+        result.extend((token, label))
+    return result
+
+
+def export_quantity_changed(kwargs):
+    """A new Field: keep the Value valid for it."""
+    node = kwargs["node"]
+    index = kwargs["parm"].multiParmInstanceIndices()[0]
+    value = node.parm(f"export_q_value{index}")
+    tokens = _menu_tokens(export_value_menu({"node": node, "parm": value}))
+    if value.evalAsString() not in tokens:
+        value.set(tokens[0] if tokens else "")
+
+
+def _export_reduce(values, token):
+    values = np.asarray(values, dtype=np.float64)
+    if values.ndim == 1:
+        return values
+    if token in ("xy", "yz", "xz"):
+        if values.ndim == 3 or values.shape[1] == 9:
+            matrices = values.reshape(-1, 3, 3)
+            i, j = {"xy": (0, 1), "yz": (1, 2), "xz": (0, 2)}[token]
+            return matrices[:, i, j]
+        return np.full(len(values), np.nan)
+    if not token or token == "auto":
+        token = "magnitude"
+    return _reduce_array(values, token)
+
+
+def _sub_mesh(mesh, rows):
+    """The point data of some output points only (derived fields of a small
+    region are computed on its own points)."""
+    point_data = {}
+    for name, values in mesh["point_data"].items():
+        values = np.asarray(values)
+        if len(values) > (int(rows.max()) if len(rows) else -1):
+            point_data[name] = values[rows]
+    return {"points": np.asarray(mesh["points"])[rows],
+            "point_data": point_data, "cell_data": {}, "cells": {}}
+
+
+def _fiber_point_values(mesh, field, rows, pvd_path):
+    kind, name = field.split(":", 1)
+    point_data = mesh["point_data"]
+    a0 = None
+    for prefix in _fiber_prefixes(point_data):
+        if _fiber_attrib(prefix, raw=True) == name:
+            a0 = np.stack([np.asarray(point_data[
+                f"{prefix}fiber_direction_{axis}"], dtype=np.float64).ravel()
+                for axis in "xyz"], axis=1)
+    if a0 is None:
+        for family, _, values in _companion_point_fibers(pvd_path, mesh):
+            if family == name:
+                a0 = np.asarray(values, dtype=np.float64)
+    if a0 is None or not all(f"F_{i}" in point_data for i in (1, 2, 3)):
+        return np.full(len(rows), np.nan)
+    a0 = a0[rows]
+    F = np.stack([np.asarray(point_data[f"F_{i}"], dtype=np.float64)[rows]
+                  for i in (1, 2, 3)], axis=2)
+    length = np.linalg.norm(a0, axis=1)
+    direction = np.divide(a0, length[:, None], out=np.zeros_like(a0),
+                          where=length[:, None] > 1e-12)
+    stretch = np.linalg.norm(np.einsum("nij,nj->ni", F, direction), axis=1)
+    stretch[length <= 1e-12] = np.nan
+    if kind == "fiber_I4":
+        return stretch ** 2
+    if kind == "fiber_isochoric_stretch":
+        J = np.abs(np.linalg.det(F))
+        return stretch / np.cbrt(np.maximum(J, 1e-300))
+    return stretch
+
+
+def _cell_field_raw(mesh, field):
+    for raw_name, by_family in mesh.get("cell_data", {}).items():
+        if _field_name(raw_name) == field:
+            return by_family
+    return None
+
+
+def point_or_element_values(mesh, topology, field, token, element_rows,
+                            node_rows, pvd_path):
+    """(values per element of element_rows, values per node of node_rows)
+    of one quantity at one step. An element's value is the mean over its
+    nodes in PolyFEM's output (exact for linear elements, whose fields are
+    constant); a node's value is the mean over its copies, one per element
+    (the nodal average Smooth Field shows). A cell field gives each element
+    its own value and each node the mean of its elements'."""
+    owner, members = topology["owner"], topology["members"]
+    point_node = topology["point_node"]
+    by_family = None if any(_field_name(n) == field
+                            for n in mesh["point_data"]) \
+        else _cell_field_raw(mesh, field)
+    element_values = node_values = None
+    if by_family is not None:
+        cell_values = np.full(len(mesh["cell_types"]), np.nan)
+        for family, values in by_family.items():
+            sources = mesh["cell_sources"].get(family)
+            if sources is None:
+                continue
+            reduced = _export_reduce(values, token)
+            cell_values[sources] = reduced
+        per_element = cell_values[topology["cells"]]
+        element_values = per_element[element_rows]
+        if len(node_rows):
+            total = np.bincount(point_node[members], weights=np.nan_to_num(
+                per_element[owner]), minlength=topology["n_nodes"])
+            count = np.bincount(point_node[members], weights=np.isfinite(
+                per_element[owner]).astype(float),
+                minlength=topology["n_nodes"])
+            node_values = np.divide(total, count, out=np.full_like(total,
+                                    np.nan), where=count > 0)[node_rows]
+        return element_values, node_values
+    needed = np.zeros(len(mesh["points"]), dtype=bool)
+    element_mask = np.zeros(topology["n_elements"], dtype=bool)
+    element_mask[element_rows] = True
+    in_elements = element_mask[owner]
+    needed[members[in_elements]] = True
+    node_mask = np.zeros(topology["n_nodes"], dtype=bool)
+    node_mask[node_rows] = True
+    fe = point_node >= 0
+    needed[fe] |= node_mask[point_node[fe]]
+    rows = np.flatnonzero(needed)
+    if field.startswith("fiber_"):
+        values = _fiber_point_values(mesh, field, rows, pvd_path)
+    else:
+        raw = _mesh_field(_sub_mesh(mesh, rows) if len(rows) < len(needed)
+                          else mesh, field)
+        if raw is None:
+            nothing = np.full(len(element_rows), np.nan)
+            return nothing, np.full(len(node_rows), np.nan)
+        values = _export_reduce(raw, token)
+    point_values = np.full(len(mesh["points"]), np.nan)
+    point_values[rows] = values
+    if len(element_rows):
+        weights = point_values[members[in_elements]]
+        total = np.bincount(owner[in_elements], weights=weights,
+                            minlength=topology["n_elements"])
+        count = np.bincount(owner[in_elements],
+                            minlength=topology["n_elements"])
+        element_values = (total / np.maximum(count, 1))[element_rows]
+    if len(node_rows):
+        points = np.flatnonzero(fe & needed)
+        total = np.bincount(point_node[points], weights=point_values[points],
+                            minlength=topology["n_nodes"])
+        count = np.bincount(point_node[points],
+                            minlength=topology["n_nodes"])
+        node_values = (total / np.maximum(count, 1))[node_rows]
+    return element_values, node_values
+
+
+# ---- regions -----------------------------------------------------------------
+
+EXPORT_REGION_KINDS = (
+    ("all", "Whole Model"), ("bodies", "Bodies / Subdomains"),
+    ("sideset", "Sideset"), ("box", "Box"), ("sphere", "Sphere"),
+    ("plane", "Half Space (side of a plane)"), ("element", "One Element"),
+    ("node", "One Node"))
+
+
+def _body_names(node):
+    """{body id: label} from the run's meshes: the PolyFEM node numbers the
+    subdomains of geometry g by its Gmsh physical groups (sorted tags,
+    untagged elements last) and gives them body id 1000 g + subdomain."""
+    path = node.evalParm("PVD_file")
+    params = run_params(path) if path else None
+    labels = {}
+    if params is None:
+        return labels
+    for geometry in simulated_geometries(path, params):
+        try:
+            parsed = _parsed_mesh(geometry["path"])
+        except (ExportError, OSError):
+            continue
+        tags = []
+        for family in ("tet", "hex"):
+            if family in parsed["cells"]:
+                tags.extend(int(t) for t in np.unique(
+                    parsed["cells"][family]["entity"]))
+        tags = sorted(set(tags), key=lambda tag: (tag <= 0, tag))
+        names = {tag: name for (dim, tag), name in
+                 parsed.get("physical_names", {}).items() if dim == 3}
+        for position, tag in enumerate(tags, 1):
+            body = 1000 * geometry["number"] + position
+            name = names.get(tag)
+            labels[body] = (f"Geometry {geometry['number']}, subdomain "
+                            f"{position}" + (f" '{name}'" if name else
+                                             (f" (group {tag})" if tag > 0
+                                              else "")))
+    return labels
+
+
+def _body_short_name(names, body):
+    """The Gmsh group name of a body when it has one, else 'Body 1002'."""
+    label = names.get(body, "")
+    if label.count("'") >= 2:
+        return label.split("'")[1]
+    return f"Body {body}"
+
+
+def export_body_menu(kwargs):
+    """Toggle menu: the bodies of the result, by name where known."""
+    node = kwargs["node"]
+    path = node.evalParm("PVD_file")
+    if not path:
+        return []
+    try:
+        mesh = volume_mesh(path, entry_index(node))
+    except Exception:
+        return []
+    body = mesh["point_data"].get("body_ids")
+    if body is None:
+        return []
+    names = _body_names(node)
+    items = []
+    for value in sorted({int(v) for v in np.unique(np.rint(np.asarray(
+            body, dtype=np.float64)))} - {0}):
+        items.extend((str(value), names.get(value, f"Body {value}")))
+    return items
+
+
+def export_sideset_menu(kwargs):
+    """The sidesets of the PolyFEM node's record (obstacles excluded)."""
+    try:
+        _, sets = _force_definitions(kwargs["node"])
+    except ForceCurveError:
+        return ["", "No Sidesets Recorded"]
+    items = []
+    for index, entry in enumerate(sets, 1):
+        if entry.get("kind") != "obstacle":
+            items.extend((str(index), entry.get("label", f"Set {index}")))
+    return items or ["", "No Sidesets Recorded"]
+
+
+def _short_sideset_label(entry, geometries):
+    if geometries <= 1:
+        return f"Sideset {entry.get('sideset', '?')}"
+    return f"Geometry {entry.get('geometry', '?')} sideset " \
+           f"{entry.get('sideset', '?')}"
+
+
+def _region_definition(node, index):
+    p = f"export_region_{{}}{index}"
+    kind = _menu_token(node, p.format("kind")) or "all"
+    return {
+        "index": index, "kind": kind,
+        "name": node.evalParm(p.format("name")).strip(),
+        "bodies": {int(t) for t in node.evalParm(p.format("bodies")).split()
+                   if t.lstrip("-").isdigit()},
+        "only": {int(t) for t in node.evalParm(p.format("only")).split()
+                 if t.lstrip("-").isdigit()},
+        "sideset": node.evalParm(p.format("sideset")),
+        "box": (np.asarray(node.evalParmTuple(p.format("box_min"))),
+                np.asarray(node.evalParmTuple(p.format("box_max")))),
+        "center": np.asarray(node.evalParmTuple(p.format("center"))),
+        "radius": float(node.evalParm(p.format("radius"))),
+        "point": np.asarray(node.evalParmTuple(p.format("point"))),
+        "normal": np.asarray(node.evalParmTuple(p.format("normal"))),
+        "geometry": int(node.evalParm(p.format("geometry"))),
+        "number": int(node.evalParm(p.format("number"))),
+    }
+
+
+def _identity(pvd_path, mesh, topology):
+    """Element and node numbers as the user knows them. For a run written
+    by the PolyFEM node: (geometry, element number in its .msh file) and
+    (geometry, .msh node tag); edge/face nodes of a P2+ run, which the mesh
+    file does not have, are numbered after the file's largest tag.
+    Otherwise PolyFEM's element order and a node count, geometry 0."""
+    try:
+        match = mesh_match(pvd_path, mesh, topology)
+    except ExportError as exc:
+        match, why = None, str(exc)
+    n_nodes = topology["n_nodes"]
+    if match is None:
+        geometry = np.where(topology["body"] >= 1000,
+                            topology["body"] // 1000, 0)
+        return {"element_geometry": geometry,
+                "element_number": np.arange(1, topology["n_elements"] + 1),
+                "node_geometry": np.where(topology["node_body"] >= 1000,
+                                          topology["node_body"] // 1000, 0),
+                "node_number": np.arange(1, n_nodes + 1), "match": None,
+                "scheme": ("Elements are numbered in PolyFEM's order and "
+                           "nodes by count (the run's mesh files could not "
+                           f"be matched: {why})")}
+    node_point = topology["node_point"]
+    node_geometry = match["point_geometry"][node_point]
+    file_node = match["point_file_node"][node_point]
+    node_number = np.zeros(n_nodes, dtype=np.int64)
+    for geometry in match["geometries"]:
+        tags = np.asarray(geometry["parsed"]["node_tags"], dtype=np.int64)
+        mine = node_geometry == geometry["number"]
+        corner = mine & (file_node >= 0)
+        node_number[corner] = tags[file_node[corner]]
+        extra = np.flatnonzero(mine & (file_node < 0))
+        node_number[extra] = int(tags.max()) + 1 + np.arange(len(extra))
+    return {"element_geometry": match["element_geometry"],
+            "element_number": match["element_number"],
+            "node_geometry": node_geometry, "node_number": node_number,
+            "match": match,
+            "scheme": ("Elements: their number in the geometry's .msh file "
+                       "(1 = the file's first volume element); nodes: their "
+                       ".msh node tag (edge and face nodes of higher-order "
+                       "elements, which the file does not have, follow the "
+                       "largest tag)")}
+
+
+def _rest_positions(mesh, topology):
+    points = np.asarray(mesh["points"], dtype=np.float64)
+    corners = topology["corners"]
+    count = topology["corner_count"]
+    total = np.zeros((topology["n_elements"], 3))
+    for corner in range(8):
+        mask = corner < count
+        total[mask] += points[corners[mask, corner]]
+    return total / count[:, None], points[topology["node_point"]]
+
+
+def _inside(kind, region, positions):
+    if kind == "box":
+        low, high = np.minimum(*region["box"]), np.maximum(*region["box"])
+        return np.all((positions >= low) & (positions <= high), axis=1)
+    if kind == "sphere":
+        return np.linalg.norm(positions - region["center"], axis=1) \
+            <= region["radius"]
+    normal = region["normal"]
+    if not np.linalg.norm(normal) > 0:
+        raise ExportError("A Half Space region needs a non-zero normal.")
+    return np.einsum("ij,j->i", positions - region["point"], normal) >= 0
+
+
+def region_members(node, region, mesh, topology, identity, pvd_path):
+    """(element rows, node rows, label, description) of one region."""
+    kind = region["kind"]
+    n_elements, n_nodes = topology["n_elements"], topology["n_nodes"]
+    elements = np.zeros(n_elements, dtype=bool)
+    nodes = np.zeros(n_nodes, dtype=bool)
+    centroids, node_positions = _rest_positions(mesh, topology)
+    point_node = topology["point_node"]
+    if kind == "all":
+        elements[:] = True
+        nodes[:] = True
+        label, description = "Model", "every element and node of the model"
+    elif kind == "bodies":
+        if not region["bodies"]:
+            raise ExportError(f"Region {region['index']}: choose at least one "
+                              "body.")
+        elements = np.isin(topology["body"], list(region["bodies"]))
+        nodes = np.isin(topology["node_body"], list(region["bodies"]))
+        names = _body_names(node)
+        chosen = sorted(region["bodies"])
+        label = " + ".join(_body_short_name(names, b) for b in chosen)
+        description = "bodies " + ", ".join(
+            f"{b} ({names.get(b, 'no name')})" for b in chosen)
+    elif kind == "sideset":
+        try:
+            record, sets = _force_definitions(node)
+        except ForceCurveError as exc:
+            raise ExportError(f"Region {region['index']}: {exc}")
+        try:
+            entry = sets[int(region["sideset"]) - 1]
+        except (ValueError, IndexError):
+            raise ExportError(f"Region {region['index']}: choose a sideset.")
+        geometries = len({e.get("geometry") for e in sets
+                          if e.get("kind") != "obstacle"})
+        label = _short_sideset_label(entry, geometries)
+        chosen = _force_nodes(_file_key(scene_record_path(pvd_path)), mesh,
+                              sets, [int(region["sideset"])])
+        members, looked_for, missing = chosen[int(region["sideset"])]
+        if missing:
+            raise ExportError(
+                f"Region {region['index']}: {missing} of the {looked_for} "
+                f"nodes of {entry.get('label')} are not in the result (the "
+                "mesh or the record changed since the run).")
+        nodes[point_node[members]] = True
+        # elements with a whole face on the sideset
+        corner_nodes = np.zeros(n_nodes, dtype=bool)
+        corner_nodes[point_node[members]] = True
+        faces = (np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]),
+                 np.array([[0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4],
+                           [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]]))
+        for hexes, table in ((False, faces[0]), (True, faces[1])):
+            rows = np.flatnonzero(topology["hex"] == hexes)
+            if not len(rows):
+                continue
+            corner_node = point_node[topology["corners"][rows][:, :8 if hexes
+                                                               else 4]]
+            on = corner_nodes[corner_node]                    # (n, k)
+            elements[rows] = np.any(np.all(on[:, table], axis=2), axis=1)
+        description = f"the sideset {entry.get('label')} (its nodes; the " \
+                      "elements with a face on it)"
+        if entry.get("kind") == "nodes":
+            elements[:] = np.isin(np.arange(n_elements),
+                                  topology["point_element"][members])
+            description = f"the point set {entry.get('label')} (its nodes; " \
+                          "the elements that contain them)"
+    elif kind in ("box", "sphere", "plane"):
+        elements = _inside(kind, region, centroids)
+        nodes = _inside(kind, region, node_positions)
+        label = {"box": "Box", "sphere": "Sphere", "plane": "Half space"}[kind]
+        if kind == "box":
+            low, high = np.minimum(*region["box"]), np.maximum(*region["box"])
+            description = (f"the box {_vector_text(low)} to "
+                           f"{_vector_text(high)} (element centroids and "
+                           "nodes in the rest shape)")
+        elif kind == "sphere":
+            description = (f"the sphere of radius {region['radius']:.6g} "
+                           f"around {_vector_text(region['center'])} (rest "
+                           "shape)")
+        else:
+            description = (f"the side of the plane through "
+                           f"{_vector_text(region['point'])} that "
+                           f"{_vector_text(region['normal'])} points to "
+                           "(rest shape)")
+    elif kind == "element":
+        hit = np.flatnonzero(
+            (identity["element_geometry"] == region["geometry"])
+            & (identity["element_number"] == region["number"]))
+        if not len(hit) and identity["match"] is None:
+            hit = np.flatnonzero(identity["element_number"]
+                                 == region["number"])
+        if not len(hit):
+            raise ExportError(f"Region {region['index']}: geometry "
+                              f"{region['geometry']} has no element "
+                              f"{region['number']}.")
+        elements[hit[0]] = True
+        # a nodal quantity of one element: the mean over its nodes
+        nodes[point_node[topology["members"][topology["owner"] == hit[0]]]] \
+            = True
+        label = f"Element {region['number']}"
+        description = (f"element {region['number']} of geometry "
+                       f"{region['geometry']}")
+    elif kind == "node":
+        hit = np.flatnonzero(
+            (identity["node_geometry"] == region["geometry"])
+            & (identity["node_number"] == region["number"]))
+        if not len(hit) and identity["match"] is None:
+            hit = np.flatnonzero(identity["node_number"] == region["number"])
+        if not len(hit):
+            raise ExportError(f"Region {region['index']}: geometry "
+                              f"{region['geometry']} has no node "
+                              f"{region['number']}.")
+        nodes[hit] = True  # one copy per body at an interface
+        # an element quantity at one node: the mean over the elements
+        # around it (the nodal average Smooth Field shows)
+        around = np.isin(point_node, hit)
+        elements[np.unique(topology["point_element"][around])] = True
+        label = f"Node {region['number']}"
+        description = (f"node {region['number']} of geometry "
+                       f"{region['geometry']}")
+    else:
+        raise ExportError(f"Region {region['index']}: unknown kind {kind}.")
+    if region["only"] and kind not in ("bodies", "element", "node"):
+        elements &= np.isin(topology["body"], list(region["only"]))
+        nodes &= np.isin(topology["node_body"], list(region["only"]))
+        description += " in bodies " + ", ".join(map(str,
+                                                     sorted(region["only"])))
+    return (np.flatnonzero(elements), np.flatnonzero(nodes),
+            region["name"] or label, description)
+
+
+def export_region_from_probe(kwargs):
+    """Set From Probe: the probed point's element, node or position."""
+    node = kwargs["node"]
+    index = kwargs["script_multiparm_index"]
+    point = int(node.evalParm("probe_point"))
+    output = node.node("output")
+    if point < 0 or output is None:
+        _message("Enable the probe (Probe tab) and click the result first.")
+        return
+    geo = output.geometry()
+    if point >= len(geo.points()):
+        _message("The probed point is not in the result on screen.")
+        return
+    rest_attrib = geo.findPointAttrib("rest")
+    probed = geo.point(point)
+    position = np.asarray(probed.attribValue(rest_attrib) if rest_attrib
+                          else probed.position(), dtype=np.float64)
+    body_attrib = geo.findPointAttrib("body_ids")
+    body = int(round(probed.attribValue(body_attrib))) if body_attrib else None
+    pvd = node.evalParm("PVD_file")
+    try:
+        mesh = volume_mesh(pvd, entry_index(node))
+        topology = volume_topology(mesh)
+        identity = _identity(pvd, mesh, topology)
+    except Exception as exc:
+        _message(f"Could not read the result: {exc}")
+        return
+    _, node_positions = _rest_positions(mesh, topology)
+    candidates = np.arange(topology["n_nodes"])
+    if body is not None and topology["has_body_ids"]:
+        candidates = candidates[topology["node_body"] == body]
+    if not len(candidates):
+        _message("The probed point is not on a simulated body.")
+        return
+    nearest = candidates[_nearest_rows(node_positions[candidates],
+                                       position[None, :])[0]]
+    p = f"export_region_{{}}{index}"
+    kind = _menu_token(node, p.format("kind"))
+    rest = node_positions[nearest]
+    if kind == "element":
+        # the element the probed copy belongs to (each element has its own
+        # copy of a node); the node's first element if the point numbers of
+        # the result on screen differ (bodies hidden, a clip)
+        if point < len(topology["point_node"]) \
+                and topology["point_node"][point] == nearest:
+            element = topology["point_element"][point]
+        else:
+            copies = np.flatnonzero(topology["point_node"] == nearest)
+            element = topology["point_element"][copies[0]]
+        node.setParms({p.format("geometry"): int(
+            identity["element_geometry"][element]),
+            p.format("number"): int(identity["element_number"][element])})
+    elif kind == "node":
+        node.setParms({p.format("geometry"): int(
+            identity["node_geometry"][nearest]),
+            p.format("number"): int(identity["node_number"][nearest])})
+    elif kind == "plane":
+        node.parmTuple(p.format("point")).set(tuple(float(v) for v in rest))
+    else:
+        if kind != "sphere":
+            node.parm(p.format("kind")).set("sphere")
+        node.parmTuple(p.format("center")).set(tuple(float(v) for v in rest))
+
+
+# ---- Data Over Time ------------------------------------------------------------
+
+_STATISTICS = (("max", "max"), ("min", "min"), ("mean", "mean"),
+               ("amean", "arithmetic mean"), ("integral", "integral"),
+               ("sum", "sum"), ("rms", "RMS"), ("std", "SD"),
+               ("count", "count"))
+_STATISTIC_DEFINITIONS = (
+    ("max / min", "largest / smallest value over the region's elements (or "
+     "nodes)"),
+    ("mean", "volume-weighted mean: sum of value x volume / sum of volumes "
+     "(the volume of each element, or the volume lumped to each node)"),
+    ("arithmetic mean", "plain mean over the elements (or nodes), whatever "
+     "their size"),
+    ("integral", "sum of value x volume over the region (unit: the value's "
+     "unit x volume)"),
+    ("sum", "plain sum over the elements (or nodes); over nodes, a nodal "
+     "force's sum is the resultant force"),
+    ("RMS", "root mean square over the elements (or nodes)"),
+    ("SD", "standard deviation over the elements (or nodes), population "
+     "formula"),
+    ("Pnn", "the nn-th percentile over the elements (or nodes), linear "
+     "interpolation"),
+    ("count", "number of elements (or nodes) with a value"),
+    ("value", "a region of one element or node has a single column"),
+)
+
+
+def _quantity_definition(node, index):
+    p = f"export_q_{{}}{index}"
+    field = _quantity_field(node, index)
+    token = _quantity_value(node, index)
+    basis = _menu_token(node, p.format("basis")) or "auto"
+    if basis == "auto":
+        name = field[:-4] if field.endswith("_avg") else field
+        nodal = name in _NODAL_FIELDS or name.endswith("_forces")
+        basis = "nodes" if nodal else "elements"
+    statistics = [key for key, _ in _STATISTICS
+                  if node.evalParm(p.format(key))]
+    percentiles = []
+    for text in node.evalParm(p.format("percentiles")).replace(
+            ",", " ").split():
+        try:
+            value = float(text)
+        except ValueError:
+            raise ExportError(f"Quantity {index}: '{text}' is not a "
+                              "percentile (0 to 100).")
+        if not 0 <= value <= 100:
+            raise ExportError(f"Quantity {index}: percentile {text} is not "
+                              "between 0 and 100.")
+        percentiles.append(value)
+    return {"index": index, "field": field, "value": token, "basis": basis,
+            "statistics": statistics, "percentiles": percentiles,
+            "where": bool(node.evalParm(p.format("where"))),
+            "volume": _menu_token(node, p.format("volume")) or "current",
+            "label": node.evalParm(p.format("label")).strip()}
+
+
+def _quantity_header(quantity, components):
+    """'von Mises stress', 'displacement magnitude', 'Cauchy stress xy'."""
+    if quantity["label"]:
+        return quantity["label"]
+    field, token = quantity["field"], quantity["value"]
+    name = _HEADER_NAMES.get(field[:-4] if field.endswith("_avg") else field)
+    if field.startswith("fiber_"):
+        kind, family = field.split(":", 1)
+        base = {"fiber_stretch": "fiber stretch",
+                "fiber_isochoric_stretch": "fiber isochoric stretch",
+                "fiber_I4": "fiber I4"}[kind]
+        name = f"{base} ({_field_label(family)})"
+    if name is None:
+        name = _display_name(field)
+    if components <= 1 or field == "_volume":
+        return name
+    if token in ("", "auto"):  # the Display tab's Automatic Value
+        token = "magnitude"
+    if components == 9 and token in _TENSOR_ENTRY_NAMES:
+        return f"{name} {_TENSOR_ENTRY_NAMES[token]}"
+    if field in PRINCIPAL_VALUE_FIELDS:
+        word = {"principal_max": "1st", "principal_middle": "2nd",
+                "principal_min": "3rd"}.get(token)
+        return f"{name} ({word})" if word else f"{name} magnitude"
+    if token.startswith("principal_"):  # "max principal Cauchy stress"
+        return f"{_VALUE_NAMES[token]} {name}"
+    suffix = _VALUE_NAMES.get(token or "magnitude", token)
+    return f"{name} {suffix}"
+
+
+def _statistics(values, weights, quantity):
+    """{statistic: value} over the region's items; NaN where undefined."""
+    finite = np.isfinite(values) & np.isfinite(weights)
+    v, w = values[finite], weights[finite]
+    out = {}
+    empty = not len(v)
+    if "max" in quantity["statistics"] or quantity["where"]:
+        out["max"] = np.nan if empty else float(v.max())
+        out["argmax"] = -1 if empty else int(np.flatnonzero(finite)[
+            int(np.argmax(v))])
+    if "min" in quantity["statistics"]:
+        out["min"] = np.nan if empty else float(v.min())
+    total = float(w.sum()) if len(w) else 0.0
+    if "mean" in quantity["statistics"]:
+        out["mean"] = float((v * w).sum() / total) if total else np.nan
+    if "amean" in quantity["statistics"]:
+        out["amean"] = np.nan if empty else float(v.mean())
+    if "integral" in quantity["statistics"]:
+        out["integral"] = np.nan if empty else float((v * w).sum())
+    if "sum" in quantity["statistics"]:
+        out["sum"] = np.nan if empty else float(v.sum())
+    if "rms" in quantity["statistics"]:
+        out["rms"] = np.nan if empty else float(np.sqrt(np.mean(v * v)))
+    if "std" in quantity["statistics"]:
+        out["std"] = np.nan if empty else float(v.std())
+    if "count" in quantity["statistics"]:
+        out["count"] = int(len(v))
+    for p in quantity["percentiles"]:
+        out[f"P{p:g}"] = np.nan if empty else float(np.percentile(v, p))
+    return out
+
+
+def _export_steps(node, count):
+    first = max(0, int(node.evalParm("export_step_first")))
+    last = int(node.evalParm("export_step_last"))
+    last = count - 1 if last < 0 else min(last, count - 1)
+    every = max(1, int(node.evalParm("export_step_every")))
+    steps = list(range(first, last + 1, every))
+    if not steps:
+        raise ExportError(f"No steps between {first} and {last}: the run has "
+                          f"steps 0 to {count - 1}.")
+    return steps
+
+
+class _NoProgress:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def updateLongProgress(self, *args):
+        pass
+
+
+def _progress(label):
+    if hou.isUIAvailable():
+        return hou.InterruptableOperation(
+            label, long_operation_name=label, open_interrupt_dialog=True)
+    return _NoProgress()
+
+
+def _manifest(pvd_path):
+    path = os.path.join(os.path.dirname(os.path.abspath(pvd_path)),
+                        "run-manifest.json")
+    try:
+        with open(path) as handle:
+            manifest = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return manifest if isinstance(manifest, dict) else None
+
+
+class _ForceColumns:
+    """The chosen force curves (Analysis > Force Curves) as columns, read
+    in the export's own pass over the steps."""
+
+    def __init__(self, node, mesh, pvd_path):
+        self.note = None
+        self.sets = []
+        self.values = []  # per step: {set: (reaction, contact, displacement)}
+        if not node.evalParm("export_forces"):
+            return
+        try:
+            _, definitions = _force_definitions(node)
+        except ForceCurveError as exc:
+            self.note = f"Force curves not included: {exc}"
+            return
+        chosen = {int(t) for t in node.evalParm("export_force_sets").split()
+                  if t.isdigit()}
+        self.sets = [i for i in range(1, len(definitions) + 1)
+                     if not chosen or i in chosen]
+        self.definitions = definitions
+        self.nodes = _force_nodes(_file_key(scene_record_path(pvd_path)),
+                                  mesh, definitions, self.sets)
+        self.quantities = [(name, label, dimension) for name, label, dimension
+                           in (("reaction", "reaction", "force"),
+                               ("contact", "contact force", "force"),
+                               ("displacement", "mean displacement",
+                                "length"))
+                           if node.evalParm(f"export_force_{name}")]
+        self.components = [axis for axis in ("x", "y", "z", "magnitude")
+                           if node.evalParm(f"export_force_{axis}")]
+        if not (self.sets and self.quantities and self.components):
+            self.note = ("Force curves: nothing chosen (sets, forces or "
+                         "components).")
+            self.sets = []
+
+    def add(self, mesh):
+        """One step (mesh None: the step could not be read)."""
+        if not self.sets:
+            return
+        if mesh is None:
+            self.values.append(None)
+            return
+        try:
+            self.values.append(_frame_set_values(mesh, self.nodes))
+        except ForceCurveError as exc:
+            self.note = f"Force curves not included: {exc}"
+            self.sets = []
+
+    def columns(self, units):
+        if not self.sets:
+            return []
+        geometries = len({e.get("geometry") for e in self.definitions
+                          if e.get("kind") != "obstacle"})
+        out = []
+        nothing = (np.full(3, np.nan),) * 3
+        for index in self.sets:
+            entry = self.definitions[index - 1]
+            name = (f"Obstacle {entry.get('geometry')}"
+                    if entry.get("kind") == "obstacle"
+                    else _short_sideset_label(entry, geometries))
+            for position, (_, label, dimension) in enumerate(
+                    self.quantities):
+                slot = ("reaction", "contact", "displacement").index(
+                    self.quantities[position][0])
+                factor, unit = units.convert(dimension)
+                vectors = np.array([(step or {}).get(index, nothing)[slot]
+                                    for step in self.values]) * factor
+                for axis in self.components:
+                    values = (np.linalg.norm(vectors, axis=1)
+                              if axis == "magnitude"
+                              else vectors[:, "xyz".index(axis)])
+                    out.append((f"{name}: {label} {axis}"
+                                + (f" ({unit})" if unit else ""), values))
+        return out
+
+
+def export_data(node, progress=None):
+    """Compute and write the Data Over Time workbook; returns a summary."""
+    import time as _time
+    started = _time.time()
+    pvd = node.evalParm("PVD_file")
+    if not pvd or not os.path.isfile(pvd):
+        raise ExportError("Load a PVD file first.")
+    entries = read_pvd(pvd)
+    if not entries:
+        raise ExportError("The PVD file lists no steps.")
+    steps = _export_steps(node, len(entries))
+    units = _ExportUnits(node)
+    region_count = int(node.evalParm("export_regions"))
+    quantity_count = int(node.evalParm("export_quantities"))
+    if quantity_count < 1:
+        raise ExportError("Add at least one quantity.")
+    quantities = [_quantity_definition(node, i)
+                  for i in range(1, quantity_count + 1)]
+    mesh = volume_mesh(pvd, steps[0])
+    topology = volume_topology(mesh)
+    identity = _identity(pvd, mesh, topology)
+    regions = []
+    definitions = [_region_definition(node, i)
+                   for i in range(1, region_count + 1)] or [
+        {"index": 1, "kind": "all", "name": "", "only": set()}]
+    for definition in definitions:
+        elements, nodes, label, description = region_members(
+            node, definition, mesh, topology, identity, pvd)
+        # One Element / One Node give one value: a node on an interface
+        # between two bodies has a copy in each (averaged)
+        regions.append({"elements": elements, "nodes": nodes,
+                        "label": label, "description": description,
+                        "kind": definition["kind"],
+                        "single": definition["kind"] in ("element", "node")})
+    seen = {}
+    for region in regions:  # unique labels: they head the columns
+        seen[region["label"]] = seen.get(region["label"], 0) + 1
+        if seen[region["label"]] > 1:
+            region["label"] = f"{region['label']} ({seen[region['label']]})"
+    components = {q["index"]: _field_components(node, q["field"])
+                  for q in quantities}
+    for q in quantities:
+        if not components[q["index"]]:
+            raise ExportError(
+                f"Quantity {q['index']}: '{q['field']}' is not in this "
+                "result (or not on the Volume block).")
+        if not q["statistics"] and not q["percentiles"] \
+                and q["field"] != "_volume":
+            raise ExportError(f"Quantity {q['index']}: choose at least one "
+                              "statistic.")
+    rest_points = np.asarray(mesh["points"], dtype=np.float64)
+    rest_volume = element_volumes(topology, rest_points)
+    sign = np.where(rest_volume < 0, -1.0, 1.0)
+    rest_volume = rest_volume * sign
+    owner, members = topology["owner"], topology["members"]
+    point_node = topology["point_node"]
+
+    def node_weights(volume):
+        share = (volume / topology["sizes"])[owner]
+        return np.bincount(point_node[members], weights=share,
+                           minlength=topology["n_nodes"])
+
+    rest_node_volume = node_weights(rest_volume)
+    per_item = bool(node.evalParm("export_per_item"))
+    item_mode = _menu_token(node, "export_per_item_steps") or "last"
+    if item_mode == "all":
+        item_steps = list(steps)
+    elif item_mode == "screen":
+        item_steps = [max(0, min(entry_index(node), len(entries) - 1))]
+    else:
+        item_steps = [steps[-1]]
+    need_current = any(q["volume"] == "current" for q in quantities)
+    items = {}       # quantity index -> {step: [values per region]}
+    records = []     # per step: {(region, quantity, key): value}
+    unreadable = []
+    forces = _ForceColumns(node, mesh, pvd)
+    mapping = time_mapping(node)
+    rows_time = []
+    total = len(steps)
+    with (progress or _progress("Exporting data over time")) as operation:
+        for position, step in enumerate(steps):
+            operation.updateLongProgress(
+                position / max(1, total),
+                f"Step {step} ({position + 1} of {total})")
+            time = entries[step][0]
+            rows_time.append((step, time, entry_frame(node, step)))
+            record = {}
+            records.append(record)
+            try:
+                frame_mesh = mesh if step == steps[0] \
+                    else volume_mesh(pvd, step)
+            except Exception as exc:  # noqa: BLE001 -- reported below
+                # e.g. the last step of a run that is still writing
+                unreadable.append((step, str(exc)))
+                forces.add(None)
+                continue
+            if (str(frame_mesh.get("topo_key")), len(frame_mesh["points"])) \
+                    != topology["key"]:
+                raise ExportError(
+                    f"The mesh changes at step {step} (a remeshing run): the "
+                    "export follows one mesh through the run.")
+            forces.add(frame_mesh)
+            current_volume = current_node_volume = None
+            if need_current:
+                solution = _solution_vectors(frame_mesh)
+                moved = rest_points if solution is None \
+                    else rest_points + solution
+                current_volume = element_volumes(topology, moved) * sign
+                current_node_volume = node_weights(current_volume)
+            for q in quantities:
+                volume = current_volume if q["volume"] == "current" \
+                    else rest_volume
+                node_volume = current_node_volume \
+                    if q["volume"] == "current" else rest_node_volume
+                if q["field"] == "_volume":
+                    for r, region in enumerate(regions):
+                        record[(r, q["index"], "volume")] = float(
+                            volume[region["elements"]].sum())
+                    continue
+                element_rows = np.unique(np.concatenate(
+                    [region["elements"] for region in regions])) \
+                    if q["basis"] == "elements" else np.zeros(0, np.int64)
+                node_rows = np.unique(np.concatenate(
+                    [region["nodes"] for region in regions])) \
+                    if q["basis"] == "nodes" else np.zeros(0, np.int64)
+                element_values, node_values = point_or_element_values(
+                    frame_mesh, topology, q["field"], q["value"],
+                    element_rows, node_rows, pvd)
+                if q["basis"] == "elements":
+                    lookup = np.full(topology["n_elements"], np.nan)
+                    lookup[element_rows] = element_values
+                    weight_of = volume
+                else:
+                    lookup = np.full(topology["n_nodes"], np.nan)
+                    lookup[node_rows] = node_values
+                    weight_of = node_volume
+                for r, region in enumerate(regions):
+                    rows = region[q["basis"]]
+                    values, weights = lookup[rows], weight_of[rows]
+                    if region["single"]:
+                        finite = values[np.isfinite(values)]
+                        record[(r, q["index"], "value")] = \
+                            float(finite.mean()) if len(finite) else np.nan
+                    else:
+                        for key, value in _statistics(values, weights,
+                                                      q).items():
+                            record[(r, q["index"], key)] = value
+                    if per_item and step in item_steps:
+                        items.setdefault(q["index"], {}).setdefault(
+                            step, []).append(values)
+    if len(unreadable) == len(steps):
+        raise ExportError("None of the chosen steps could be read.")
+    keys = []
+    for record in records:
+        keys.extend(key for key in record if key not in keys)
+    columns = {key: [record.get(key, np.nan) for record in records]
+               for key in keys}
+    # ---- columns --------------------------------------------------------
+    header_units = {}
+    for q in quantities:
+        dimension = quantity_dimension(q["field"])
+        header_units[q["index"]] = units.convert(dimension)
+    tfactor, tunit = units.convert("time")
+    data_header = ["Step", "Time" + (f" ({tunit})" if tunit else ""),
+                   "Frame"]
+    data_columns = []
+    for r, region in enumerate(regions):
+        for q in quantities:
+            name = _quantity_header(q, components[q["index"]])
+            factor, unit = header_units[q["index"]]
+            if q["field"] == "_volume":
+                vfactor, vunit = units.convert("volume")
+                header = f"{region['label']}: {name}" + (
+                    " (rest)" if q["volume"] == "rest" else "") + (
+                    f" ({vunit})" if vunit else "")
+                data_columns.append((header, np.asarray(columns[(
+                    r, q["index"], "volume")]) * vfactor))
+                continue
+            single = (r, q["index"], "value") in columns
+            keys = ["value"] if single else (
+                [key for key, _ in _STATISTICS if key in q["statistics"]]
+                + [f"P{p:g}" for p in q["percentiles"]])
+            for key in keys:
+                values = np.asarray(columns[(r, q["index"], key)],
+                                    dtype=np.float64)
+                label = dict(_STATISTICS).get(key, key)
+                if key == "count":
+                    unit_text = ""
+                    values_out = values
+                elif key == "integral":
+                    vfactor, vunit = units.convert("volume")
+                    values_out = values * factor * vfactor
+                    unit_text = "" if unit is None else (
+                        f"{unit}*{vunit}" if unit else vunit)
+                else:
+                    values_out = values * factor
+                    unit_text = unit or ""
+                header = f"{region['label']}: {name}" + (
+                    "" if single else f", {label}") + (
+                    f" ({unit_text})" if unit_text else "")
+                data_columns.append((header, values_out))
+            if q["where"] and not single:
+                where = np.asarray(columns[(r, q["index"], "argmax")],
+                                   dtype=np.float64)
+                where = np.where(np.isfinite(where), where, -1).astype(
+                    np.int64)
+                rows = region[q["basis"]]
+                lfactor, lunit = units.convert("length")
+                centroids, node_positions = _rest_positions(mesh, topology)
+                positions = centroids if q["basis"] == "elements" \
+                    else node_positions
+                numbers = identity["element_number"] \
+                    if q["basis"] == "elements" else identity["node_number"]
+                picked = np.where(where >= 0, rows[np.maximum(where, 0)], -1)
+                word = "element" if q["basis"] == "elements" else "node"
+                data_columns.append((
+                    f"{region['label']}: {name}, max at {word}",
+                    np.where(picked >= 0, numbers[np.maximum(picked, 0)],
+                             np.nan)))
+                for axis, label in enumerate("xyz"):
+                    data_columns.append((
+                        f"{region['label']}: {name}, max at {label}" + (
+                            f" ({lunit})" if lunit else ""),
+                        np.where(picked >= 0, positions[np.maximum(
+                            picked, 0), axis] * lfactor, np.nan)))
+    data_columns.extend(forces.columns(units))
+    force_note = forces.note
+    # ---- workbook -----------------------------------------------------------
+    path = node.evalParm("export_data_file").strip()
+    if not path:
+        stem = os.path.splitext(os.path.basename(pvd))[0]
+        path = os.path.join(export_folder(node), f"{stem}_data.xlsx")
+    path = os.path.abspath(os.path.expanduser(path))
+    if not path.lower().endswith(".xlsx"):
+        path += ".xlsx"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    book = XlsxWorkbook()
+    headers = data_header + [header for header, _ in data_columns]
+
+    def data_rows():
+        yield headers
+        for position, (step, time, frame) in enumerate(rows_time):
+            yield [step, time * tfactor, frame] + [
+                values[position] for _, values in data_columns]
+
+    widths = [6, 12, 8] + [min(60, max(12, len(h) * 0.9))
+                           for h, _ in data_columns]
+    book.add_sheet("Data", data_rows(), widths=widths)
+    if per_item:
+        lfactor, lunit = units.convert("length")
+        centroids, node_positions = _rest_positions(mesh, topology)
+        for q in quantities:
+            if q["field"] == "_volume":
+                continue
+            word = "Element" if q["basis"] == "elements" else "Node"
+            factor, unit = header_units[q["index"]]
+            positions = centroids if word == "Element" else node_positions
+            numbers = identity["element_number"] if word == "Element" \
+                else identity["node_number"]
+            geometry = identity["element_geometry"] if word == "Element" \
+                else identity["node_geometry"]
+            bodies = topology["body"] if word == "Element" \
+                else topology["node_body"]
+            count = sum(len(region[q["basis"]]) for region in regions)
+            if count + 1 > XLSX_MAX_ROWS:
+                raise ExportError(
+                    f"Per {word.lower()} values: {count:,} rows do not fit "
+                    f"in an Excel sheet ({XLSX_MAX_ROWS:,}); choose a smaller "
+                    "region or turn this off.")
+            name = _quantity_header(q, components[q["index"]])
+            header = ["Region", "Geometry", word, "Body"] + [
+                f"{axis} ({lunit})" if lunit else axis for axis in "xyz"] + [
+                f"Step {step}: t = {entries[step][0] * tfactor:.6g}" + (
+                    f" {tunit}" if tunit else "") for step in item_steps]
+            by_step = items.get(q["index"], {})
+
+            def item_rows(q=q, header=header, by_step=by_step,
+                          positions=positions, numbers=numbers,
+                          geometry=geometry, bodies=bodies, factor=factor):
+                yield header
+                for r, region in enumerate(regions):
+                    rows = region[q["basis"]]
+                    stacked = [by_step[step][r] * factor
+                               for step in item_steps if step in by_step]
+                    for k, row in enumerate(rows):
+                        yield ([region["label"], int(geometry[row]),
+                                int(numbers[row]), int(bodies[row])]
+                               + list(positions[row] * lfactor)
+                               + [values[k] for values in stacked])
+
+            book.add_sheet(f"{name} per {word.lower()}", item_rows(),
+                           widths=[14, 9, 10, 8, 12, 12, 12]
+                           + [16] * len(item_steps))
+    about = _about_rows(node, pvd, entries, steps, regions, quantities,
+                        components, units, identity, force_note, mapping)
+    book.add_sheet("About", about, widths=[30, 110], header_rows=0)
+    try:
+        written = book.save(path, title=f"PolyFEM results: {pvd}",
+                            creator="Read PVD 1.0")
+    except XlsxLimitError as exc:
+        raise ExportError(f"The table does not fit in Excel: {exc}.")
+    except PermissionError:
+        raise ExportError(f"Could not write {path}: is it open in Excel?")
+    seconds = _time.time() - started
+    lines = [f"Wrote {path}",
+             f"Data: {len(steps)} steps x {len(data_columns)} series "
+             f"({seconds:.1f} s)."]
+    for region in regions:
+        lines.append(f"{region['label']}: {len(region['elements'])} "
+                     f"elements, {len(region['nodes'])} nodes.")
+    if force_note:
+        lines.append(force_note)
+    if unreadable:
+        lines.append(
+            f"Step(s) {', '.join(str(step) for step, _ in unreadable)} could "
+            f"not be read (empty cells; a run still writing?): "
+            f"{unreadable[0][1]}")
+    if not units.known:
+        lines.append(f"No unit labels: {units.why}")
+    return {"path": path, "steps": steps, "headers": headers,
+            "columns": data_columns, "rows": rows_time, "regions": regions,
+            "sheets": written, "status": "\n".join(lines)}
+
+
+def _about_rows(node, pvd, entries, steps, regions, quantities, components,
+                units, identity, force_note, mapping):
+    import datetime
+    manifest = _manifest(pvd) or {}
+    build = (manifest.get("build") or {}).get("sources") or {}
+    commit = (build.get("polyfem") or {}).get("commit", "")
+    input_file = ((manifest.get("input") or {}).get("file") or {})
+    completion = manifest.get("completion") or {}
+    rows = [["Read PVD export: data over time"], [],
+            ["PVD file", pvd],
+            ["Run folder", run_folder(pvd)],
+            ["Run id", manifest.get("run_id", "(no run-manifest.json)")],
+            ["Run status", completion.get("status", "")],
+            ["PolyFEM commit", commit],
+            ["Input params.json sha256", input_file.get("sha256", "")],
+            ["Houdini scene", hou.hipFile.path()],
+            ["Exported", datetime.datetime.now().astimezone().isoformat(
+                timespec="seconds")],
+            ["Exported by", f"Read PVD 1.0, Houdini "
+                            f"{hou.applicationVersionString()}"],
+            [],
+            ["Steps", f"{len(steps)} of the run's {len(entries)} output "
+                      f"steps: {steps[0]} to {steps[-1]}"
+                      + (f", every {steps[1] - steps[0]}"
+                         if len(steps) > 1 else "")],
+            ["Time", "simulation time of each output step (the PVD time)"],
+            ["Frame", "the Houdini frame that shows the step ("
+             + ("Time Mapping: simulation time" if mapping is not None
+                else "one frame per output step") + ")"],
+            ["Units", units.describe()],
+            [],
+            ["Regions", "fixed on the rest shape: the same elements and "
+                        "nodes at every step"]]
+    for region in regions:
+        rows.append([region["label"],
+                     f"{region['description']}: {len(region['elements'])} "
+                     f"elements, {len(region['nodes'])} nodes"])
+    rows.append([])
+    rows.append(["Quantities", ""])
+    for q in quantities:
+        name = _quantity_header(q, components[q["index"]])
+        source = "the region's volume" if q["field"] == "_volume" else (
+            f"field {_display_name(q['field'])}"
+            + (f", value {q['value']}" if components[q["index"]] > 1 else "")
+            + f", per {q['basis'][:-1]}")
+        rows.append([name, source + f"; volumes: {q['volume']} (" + (
+            "deformed, at each step" if q["volume"] == "current"
+            else "undeformed") + ")"])
+    rows.append([])
+    rows.append(["Element value", "the mean of the element's nodal values "
+                 "in PolyFEM's output (exact for linear elements, whose "
+                 "fields are constant)"])
+    rows.append(["Node value", "the mean of the node's copies, one per "
+                 "element (the nodal average Smooth Field shows)"])
+    rows.append(["Numbering", identity["scheme"]])
+    for name, text in _STATISTIC_DEFINITIONS:
+        rows.append([name, text])
+    rows.append(["Empty cell", "no value at that step (e.g. the field is "
+                 "missing in that step's file)"])
+    if force_note:
+        rows.append(["Force curves", force_note])
+    elif node.evalParm("export_forces"):
+        rows.append(["Force curves", "reaction: the force the prescribed "
+                     "displacement (or an obstacle's motion) applies to the "
+                     "body there; contact force: contact + friction; mean "
+                     "displacement of the set's nodes (Analysis > Force "
+                     "Curves)"])
+    return rows
+
+
+def export_data_button(kwargs):
+    """Export Spreadsheet button."""
+    node = kwargs["node"]
+    try:
+        summary = export_data(node)
+        status = summary["status"]
+    except ExportError as exc:
+        summary, status = None, f"Not exported: {exc}"
+    except hou.OperationInterrupted:
+        summary, status = None, "Cancelled."
+    except OSError as exc:
+        summary, status = None, f"Not exported: {exc}"
+    node.parm("export_data_status").set(status)
+    if summary is None and not status.startswith("Cancelled"):
+        _message(status)
+    elif summary is not None and hou.isUIAvailable():
+        hou.ui.setStatusMessage(f"Data written to {summary['path']}",
+                                hou.severityType.ImportantMessage)
+    return summary
+
+
+def open_export_data(kwargs):
+    """Open Spreadsheet button (exports first when there is no file)."""
+    node = kwargs["node"]
+    path = node.evalParm("export_data_file").strip()
+    if not path and node.evalParm("PVD_file"):
+        stem = os.path.splitext(os.path.basename(node.evalParm("PVD_file")))[0]
+        path = os.path.join(export_folder(node), f"{stem}_data.xlsx")
+    if not path or not os.path.isfile(path):
+        summary = export_data_button(kwargs)
+        if summary is None:
+            return
+        path = summary["path"]
+    _open_with_system(path)

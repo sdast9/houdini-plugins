@@ -388,8 +388,14 @@ def _mesh_from_arrays(points, connectivity, offsets, types, point_data,
         cells[f].tobytes() for f in sorted(cells)) + str(len(points)).encode()
     topo_key = hash(topo)
 
+    # The file's own cells as well: every node of every cell (cells above
+    # keep corners or sub-tets only), and the cell each row of cells[family]
+    # came from. Read PVD's exports use them for element and node identity.
     return {"points": points, "cells": cells, "point_data": point_data,
-            "cell_data": cell_data, "topo_key": topo_key}
+            "cell_data": cell_data, "topo_key": topo_key,
+            "cell_types": types, "cell_starts": starts,
+            "cell_sizes": sizes, "cell_connectivity": connectivity,
+            "cell_sources": cell_sources}
 
 
 def read_vtu(path):
@@ -482,7 +488,10 @@ def read_hdf(path):
 def _mesh_nbytes(mesh):
     """Approximate memory held by one parsed mesh dict."""
     total = getattr(mesh.get("points"), "nbytes", 0)
-    for group in ("cells", "point_data"):
+    for name in ("cell_types", "cell_starts", "cell_sizes",
+                 "cell_connectivity"):
+        total += getattr(mesh.get(name), "nbytes", 0)
+    for group in ("cells", "point_data", "cell_sources"):
         total += sum(getattr(v, "nbytes", 0) for v in mesh.get(group, {}).values())
     for by_family in mesh.get("cell_data", {}).values():
         total += sum(getattr(v, "nbytes", 0) for v in by_family.values())

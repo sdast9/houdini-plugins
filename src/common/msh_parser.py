@@ -9,12 +9,18 @@ read_msh(path) returns a dict:
     node_tags       (N,)   int64   original gmsh node tags (msh_pt_id)
     cells           {family: {"corners": (M, k) int64 point INDICES,
                               "entity":  (M,)  int32 physical tag (0 if none),
-                              "num_nodes": int nodes per element in the file}}
+                              "num_nodes": int nodes per element in the file,
+                              "order":   (M,)  int64 position among the file's
+                                         elements of the same dimension}}
                     families: tet, hex, tri, quad, line, point, prism, pyramid
     physical_names  {(dim, tag): name}
+
+write_moved_nodes(path, positions, out_path) copies a mesh file with only its
+node coordinates replaced (Read PVD's deformed mesh export).
 """
 
 import io
+import os
 import struct
 
 import numpy as np
@@ -149,17 +155,37 @@ def _tag_index_map(node_tags):
     return lookup
 
 
+FAMILY_DIMENSION = {
+    "point": 0, "line": 1, "tri": 2, "quad": 2,
+    "tet": 3, "hex": 3, "prism": 3, "pyramid": 3,
+}
+
+
 def _accumulate_cells(cells, family, num_nodes, corners, entity):
     slot = cells.setdefault(
         family, {"corners": [], "entity": [], "num_nodes": num_nodes})
     slot["corners"].append(corners)
     slot["entity"].append(entity)
     slot["num_nodes"] = max(slot["num_nodes"], num_nodes)
+    # Blocks in file order (key None), so every element's position among
+    # the elements of its dimension can be recovered: PolyFEM reads a mesh's
+    # elements in that order, whatever their family.
+    cells.setdefault(None, []).append((family, len(entity)))
 
 
 def _finalize_cells(cells, lookup):
     out = {}
+    seen = {}
+    orders = {}
+    for family, count in cells.get(None, ()):
+        dim = FAMILY_DIMENSION[family]
+        start = seen.get(dim, 0)
+        orders.setdefault(family, []).append(
+            np.arange(start, start + count, dtype=np.int64))
+        seen[dim] = start + count
     for family, slot in cells.items():
+        if family is None:
+            continue
         corners_tags = np.vstack(slot["corners"]).astype(np.int64)
         corners = lookup(corners_tags.ravel()).reshape(corners_tags.shape)
         entity = np.concatenate(slot["entity"]).astype(np.int32)
@@ -167,6 +193,8 @@ def _finalize_cells(cells, lookup):
             "corners": corners,
             "entity": entity,
             "num_nodes": slot["num_nodes"],
+            # position among the file's elements of the same dimension
+            "order": np.concatenate(orders[family]),
         }
     return out
 
@@ -289,7 +317,8 @@ def _read_v22_ascii(data, sections):
         corners = block[:, 3 + ntags:3 + ntags + n_corners]
         _accumulate_cells(cells, family, n_nodes, corners, phys)
         p += run * stride
-    total = sum(sum(len(e) for e in c["entity"]) for c in cells.values())
+    total = sum(sum(len(e) for e in c["entity"])
+                for family, c in cells.items() if family is not None)
     if total != num_elems:
         raise MshParseError(
             f"Parsed {total} elements, header declared {num_elems}")
@@ -414,6 +443,130 @@ def read_msh(path):
         "cells": _finalize_cells(cells, lookup),
         "physical_names": physical_names,
     }
+
+
+# ----------------------------------------------------------------------------
+# A copy of a mesh with its nodes moved (Read PVD's deformed mesh export)
+# ----------------------------------------------------------------------------
+
+def _coordinate_text(xyz):
+    # repr of a Python float is the shortest text that reads back exactly
+    return " ".join(repr(float(value)) for value in xyz).encode("ascii")
+
+
+def _moved_nodes_v22_ascii(body, positions):
+    tok = body.split()
+    count = int(tok[0])
+    if count != len(positions) or len(tok) < 1 + 4 * count:
+        raise MshParseError(
+            f"$Nodes lists {count} nodes, {len(positions)} positions given")
+    lines = [tok[0]]
+    for row in range(count):
+        lines.append(tok[1 + 4 * row] + b" " + _coordinate_text(positions[row]))
+    return b"\n".join(lines) + b"\n"
+
+
+def _moved_nodes_v41_ascii(body, positions):
+    tok = body.split()
+    blocks, total = int(tok[0]), int(tok[1])
+    if total != len(positions):
+        raise MshParseError(
+            f"$Nodes lists {total} nodes, {len(positions)} positions given")
+    lines = [b" ".join(tok[:4])]
+    p, row = 4, 0
+    for _ in range(blocks):
+        count = int(tok[p + 3])
+        if int(tok[p + 2]):
+            raise MshParseError("parametric node coordinates are not "
+                                "supported")
+        lines.append(b" ".join(tok[p:p + 4]))
+        p += 4
+        lines.extend(tok[p:p + count])                      # node tags
+        p += count + 3 * count
+        lines.extend(_coordinate_text(xyz)
+                     for xyz in positions[row:row + count])
+        row += count
+    if row != total:
+        raise MshParseError("$Nodes blocks do not add up to the node count")
+    return b"\n".join(lines) + b"\n"
+
+
+def _moved_nodes_v22_binary(data, span, fmt_span, positions):
+    fmt_body = data[fmt_span[0]:fmt_span[1]]
+    nl = fmt_body.find(b"\n")
+    probe = fmt_body[nl + 1:nl + 5]
+    endian = "<" if np.frombuffer(probe, "<i4")[0] == 1 else ">"
+    nl = data.find(b"\n", span[0])
+    count = int(data[span[0]:nl])
+    if count != len(positions):
+        raise MshParseError(
+            f"$Nodes lists {count} nodes, {len(positions)} positions given")
+    out = bytearray(data)
+    base = nl + 1
+    coordinates = np.ascontiguousarray(positions, dtype=endian + "f8")
+    for row in range(count):
+        offset = base + 28 * row + 4          # int32 tag, then 3 float64
+        out[offset:offset + 24] = coordinates[row].tobytes()
+    return bytes(out)
+
+
+def _moved_nodes_v41_binary(data, span, positions):
+    p = span[0]
+    blocks, total = (int(v) for v in np.frombuffer(data, "<u8", 2, p))
+    if total != len(positions):
+        raise MshParseError(
+            f"$Nodes lists {total} nodes, {len(positions)} positions given")
+    p += 32
+    out = bytearray(data)
+    coordinates = np.ascontiguousarray(positions, dtype="<f8")
+    row = 0
+    for _ in range(blocks):
+        parametric = int(np.frombuffer(data, "<i4", 1, p + 8)[0])
+        count = int(np.frombuffer(data, "<u8", 1, p + 12)[0])
+        if parametric:
+            raise MshParseError("parametric node coordinates are not "
+                                "supported")
+        p += 20 + 8 * count
+        out[p:p + 24 * count] = coordinates[row:row + count].tobytes()
+        p += 24 * count
+        row += count
+    if row != total:
+        raise MshParseError("$Nodes blocks do not add up to the node count")
+    return bytes(out)
+
+
+def write_moved_nodes(path, positions, out_path):
+    """Copy the mesh file `path` to `out_path` with every node moved to
+    `positions` ((N, 3), in the order of the file's $Nodes section, which is
+    read_msh's order). Everything else -- node tags, elements, physical
+    groups and names, entities, the version and encoding -- is copied as it
+    is; an ASCII $Nodes section is rewritten in the standard layout."""
+    with open(path, "rb") as handle:
+        data = handle.read()
+    sections = _find_sections(data)
+    if "MeshFormat" not in sections or "Nodes" not in sections:
+        raise MshParseError("Not a Gmsh MSH file with nodes")
+    fmt = data[slice(*sections["MeshFormat"])].split()
+    version, binary = float(fmt[0]), int(fmt[1]) == 1
+    positions = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    if not np.isfinite(positions).all():
+        raise MshParseError("node positions must be finite numbers")
+    span = sections["Nodes"]
+    if binary:
+        result = (_moved_nodes_v41_binary(data, span, positions)
+                  if version >= 4.0 else
+                  _moved_nodes_v22_binary(data, span,
+                                          sections["MeshFormat"], positions))
+    else:
+        body = data[span[0]:span[1]]
+        body = (_moved_nodes_v41_ascii(body, positions) if version >= 4.0
+                else _moved_nodes_v22_ascii(body, positions))
+        result = data[:span[0]] + body + data[span[1]:]
+    temporary = out_path + ".tmp"
+    with open(temporary, "wb") as handle:
+        handle.write(result)
+    os.replace(temporary, out_path)
+    return out_path
 
 
 if __name__ == "__main__":
