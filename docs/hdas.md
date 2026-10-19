@@ -30,6 +30,7 @@ Tests (headless, also exercise the real PolyFEM binary):
 hython tests/test_polyfem_hda.py         # end-to-end: scene -> json -> sim -> pvd
 hython tests/test_sideset_conditions.py  # every sideset condition reaches PolyFEM
 hython tests/test_check_setup.py         # Check Setup, confirmed against the solver
+hython tests/test_improved_max.py        # Remove Duplicate Contacts: export, refusal, run
 hython tests/test_run_feedback.py        # Run Status, Stop, Open Results, paths
 hython tests/test_subdomains_reload.py   # physical groups, reload, Duplicate
 hython tests/test_display_chain.py       # cost of a transform edit at 384k tets
@@ -374,6 +375,35 @@ Targets the current build's strict-validated schema — the old fork keys
    viewport overlay legend, and scene gnomon; try both Auto Range buttons;
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
+
+### Remove Duplicate Contacts (Improved Max) (2026-10-18)
+
+* **What it does.** A new toggle on Contact ▸ IPC, off by default and
+  Semi-Implicit only. It turns on IPC's improved max operator under the
+  semi-implicit barrier. That removes the duplicate vertex–vertex term
+  standard IPC adds where a surface point sits on (or within dhat of) a
+  vertex of the other surface.
+* **Why.** On meshes whose surface nodes line up across an interface, that
+  term pushes node pairs apart sideways and shows up as spurious sliding.
+  This was the MPM study's WP3C-1A-03; see the PolyFEM record
+  `docs/improved-max-signed-parents-20261018.md`.
+* **Needs:**
+  * PolyFEM `sdast9/polyfem` `a54509955` or later; an older binary refuses
+    the operator at start-up.
+  * Coefficient Identity = Parent Candidate (the default). Check Setup and
+    the exporter refuse Built Stencil by name.
+* **Area Weighted under Semi-Implicit** now exports area weighting only,
+  with the physical barrier off; PolyFEM refused the full convergent
+  defaults in this mode. Adaptive and Fixed exports are unchanged: Area
+  Weighted there is the full convergent formulation, which already includes
+  the operator.
+* **Status: experimental.** It was verified in 2D frictionless tests, and
+  the HDA test runs it end to end on a 3D cube-on-slab with about 90 active
+  contacts. 3D accuracy and friction are not yet validated.
+* **Tests:** `test_improved_max.py` covers export in every mode, the
+  refusal, the import round trip and a real run. Every test now honours a
+  `POLYFEM_BIN` environment variable to use a binary other than
+  `../polyfem/build/PolyFEM_bin`.
 
 ### Read PVD export: deformed mesh and data over time (2026-10-03)
 

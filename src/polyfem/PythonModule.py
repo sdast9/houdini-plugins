@@ -4677,6 +4677,7 @@ def build_contact(parent, data):
         "use_convergent_formulation": bool(area_weighted),
         "use_gcp_formulation": bool(parent.evalParm("gcp_enable")),
         "adhesion": adhesion}
+    data["contact"].update(convergent_flags(parent, area_weighted))
     if parent.evalParm("gcp_enable"):
         # Read only by the smooth (GCP) contact form; the IPC barrier form
         # never sees them, so the file carries them only when they apply.
@@ -4685,6 +4686,38 @@ def build_contact(parent, data):
             "alpha_t": parent.evalParm("alpha_t"),
             "use_adaptive_dhat": bool(parent.evalParm("adapt_dhat")),
             "min_distance_ratio": parent.evalParm("min_dist_ratio")})
+
+
+IMPROVED_MAX_STENCIL_ERROR = (
+    "Remove Duplicate Contacts (Improved Max) needs Coefficient Identity = "
+    "Parent Candidate (Contact tab, Semi-Implicit Options): only the parent "
+    "law gives the duplicate-removal terms their own stiffness; PolyFEM "
+    "refuses the Built Stencil identity with it.")
+
+
+def convergent_flags(parent, area_weighted):
+    """The convergent-formulation switches of the IPC barrier form.
+
+    Adaptive and Fixed modes keep the historical export (use_convergent_
+    formulation alone: PolyFEM's defaults then turn on area weighting, the
+    improved max operator and the physical barrier). Semi-Implicit mode does
+    not support the physical barrier, so it writes every switch: area
+    weighting from Area Weighted, the improved max operator from Remove
+    Duplicate Contacts (the signed parent law), the physical barrier off.
+    GCP does not use the barrier form; nothing extra is written for it.
+    """
+    if parent.evalParm("gcp_enable") or parent.evalParm("barrier_mode") != 0:
+        return {}
+    improved_max = bool(parent.evalParm("improved_max"))
+    if not area_weighted and not improved_max:
+        return {}
+    if improved_max and \
+            _menu_token(parent, "si_coefficient_identity") == "stencil":
+        raise hou.NodeError(IMPROVED_MAX_STENCIL_ERROR)
+    return {"use_convergent_formulation": True,
+            "use_area_weighting": bool(area_weighted),
+            "use_improved_max_operator": improved_max,
+            "use_physical_barrier": False}
 
 
 def obstacle_displacement_entry(parent, geo, motion):
@@ -6185,6 +6218,18 @@ def check_setup(parent, purpose="check"):
         method = _menu_token(parent, "solver_nl")
         if method != "Newton":
             warnings.append(NON_NEWTON_CONTACT_WARNING.format(method=method))
+        if parent.evalParm("barrier_mode") == 0 \
+                and not parent.evalParm("gcp_enable") \
+                and parent.evalParm("improved_max"):
+            if _menu_token(parent, "si_coefficient_identity") == "stencil":
+                errors.append(IMPROVED_MAX_STENCIL_ERROR)
+            else:
+                notes.append(
+                    "Remove Duplicate Contacts (Improved Max) is on: "
+                    "experimental, verified in 2D frictionless tests only "
+                    "(3D and friction not yet validated). It needs a PolyFEM "
+                    "built from sdast9/polyfem a54509955 or later; an older "
+                    "binary refuses it at start-up.")
     try:
         _check_composite_consistency(parent)
     except hou.Error as exc:
@@ -8302,6 +8347,19 @@ def _restore_contact(parent, data):
             ("use_adaptive_dhat", "adapt_dhat")):
         if key in contact:
             parms[parm] = contact[key]
+    # Semi-implicit exports write every convergent switch (convergent_flags):
+    # Area Weighted and Remove Duplicate Contacts follow them. Anything else
+    # (Adaptive/Fixed, or no convergent formulation) leaves duplicate removal
+    # off, as the toggle only applies to Semi-Implicit mode.
+    solver_contact = data.get("solver", {}).get("contact", {}) \
+        if isinstance(data.get("solver"), dict) else {}
+    semi_implicit = not isinstance(solver_contact, dict) or \
+        solver_contact.get("barrier_stiffness", "semi_implicit") == "semi_implicit"
+    convergent = bool(contact.get("use_convergent_formulation", False))
+    if semi_implicit and convergent and "use_area_weighting" in contact:
+        parms["area_weighted"] = bool(contact["use_area_weighting"])
+    parms["improved_max"] = semi_implicit and convergent and \
+        bool(contact.get("use_improved_max_operator", False))
     adhesion = contact.get("adhesion")
     if isinstance(adhesion, dict):
         for key, parm in (

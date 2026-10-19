@@ -40,7 +40,9 @@ import hou
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT = os.path.dirname(BASE)
-POLYFEM_BIN = os.path.join(ROOT, "polyfem", "build", "PolyFEM_bin")
+# POLYFEM_BIN overrides the sibling build (a binary other than the shared one).
+POLYFEM_BIN = os.environ.get(
+    "POLYFEM_BIN", os.path.join(ROOT, "polyfem", "build", "PolyFEM_bin"))
 TYPE = "stevenabramowitch::dev::PolyFEM::2.0"
 READER = "readPVD::1.0"
 sys.path.insert(0, os.path.join(BASE, "src", "common"))

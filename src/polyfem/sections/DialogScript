@@ -3125,7 +3125,16 @@
                 type    toggle
                 default { "0" }
                 disablewhen "{ enable == 0 }"
-                help    "Use the convergent (area-weighted) IPC formulation, where each contact is weighted by the surface area it represents so results converge under mesh refinement. Required for remeshing (turned on automatically then). The semi-implicit mode has been validated with this off."
+                help    "Use the convergent (area-weighted) IPC formulation, where each contact is weighted by the surface area it represents so results converge under mesh refinement. Required for remeshing (turned on automatically then). Adaptive and Fixed modes get the full convergent formulation (area weighting, duplicate removal and the physical barrier). Semi-Implicit mode gets area weighting only (it does not support the physical barrier; duplicate removal is the separate toggle below); the semi-implicit mode has been validated with this off."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "improved_max"
+                label   "Remove Duplicate Contacts (Improved Max)"
+                type    toggle
+                default { "0" }
+                disablewhen "{ enable == 0 } { barrier_mode != semi_implicit } { gcp_enable == 1 }"
+                help    "Semi-Implicit mode only, experimental. Standard IPC counts a point that sits on (or within dhat of) a vertex of the other surface twice: once against each neighbouring edge or face, plus a vertex-vertex term whose push has a sideways part. On meshes whose surface nodes line up across an interface (matching or regularly refined meshes) that duplicate term pushes the node pairs apart tangentially and shows up as spurious sliding. This toggle turns on IPC's improved max operator, which subtracts the duplicate, with each term keeping its own per-contact stiffness (the signed parent law; needs Coefficient Identity = Parent Candidate). Verified in 2D frictionless tests; 3D seams and friction are not yet validated, so it is off by default. In Adaptive and Fixed modes the operator is already part of the convergent formulation above."
                 parmtag { "script_callback_language" "python" }
             }
         }
