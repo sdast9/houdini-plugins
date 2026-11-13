@@ -33,6 +33,7 @@ hython tests/test_check_setup.py         # Check Setup, confirmed against the so
 hython tests/test_improved_max.py        # Remove Duplicate Contacts: export, refusal, run
 hython tests/test_run_feedback.py        # Run Status, Stop, Open Results, paths
 hython tests/test_subdomains_reload.py   # physical groups, reload, Duplicate
+hython tests/test_stale_settings.py      # nothing outlives a removed mesh, sideset or condition
 hython tests/test_display_chain.py       # cost of a transform edit at 384k tets
 hython tests/test_readpvd_first_look.py  # first look, output defaults, HDF5
 hython tests/test_help_cards.py          # help cards parse
@@ -375,6 +376,71 @@ Targets the current build's strict-validated schema — the old fork keys
    viewport overlay legend, and scene gnomon; try both Auto Range buttons;
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
+
+### Settings that outlived what they belonged to (2026-11-13)
+
+Removing a sideset or a condition with its own buttons always worked: the
+group nodes, selection files, `params.json` and both records are rebuilt
+without it. A review found the other ways out, where sidesets, conditions or
+whole subdomains stayed behind or came back
+(`tests/test_stale_settings.py`):
+
+* **Emptying the Mesh File field kept subdomains 2 onwards.** An empty (or
+  unsupported) path removed the geometry's nodes but none of its parameters,
+  and the next mesh was a first load, which reset only subdomain 1's sideset
+  and initial-condition counts. Subdomains 2+ kept their sidesets, conditions
+  and initial conditions, and their picked face numbers were applied to the
+  new mesh as they were: out of range was an error, in range constrained
+  other faces without a word. A first load now starts every subdomain but the
+  first from the defaults (subdomain 1 keeps its material, as before, and
+  loses its sidesets and initial conditions, as before). The same holds after
+  a mesh copy that failed and after a mesh with more than 999 groups.
+  Emptying the field now says what happened instead of "Only .msh is
+  supported".
+* **A removed condition came back.** Every rebuild of the display chain
+  (Apply Subdomain Change, Restore Mesh Subdomains, a reload, Duplicate
+  Geometry) recreated the sideset group nodes, and a "new" group node on a
+  sideset with no condition and an empty selection was given the default
+  zero Dirichlet. Only adding a sideset does that now.
+* **Restore Mesh Subdomains kept the subdomains it had added.** The element
+  reassignments went, the subdomains Apply Subdomain Change created for them
+  stayed (empty, with their material, sidesets and conditions; the subdomain
+  count is not shown, so they could not be removed), and a sideset with a
+  condition on one refused every export. They are removed with their
+  settings, as a reload already did.
+* **Obstacle on and off again moved settings between subdomains.** A reload
+  matches subdomains by physical group, and in an obstacle chain it read the
+  MSH Reader's `Entity` (the raw tag, +1 with untagged elements) as the
+  subdomain number: with tags 2 and 3 the first subdomain took the second's
+  material, sidesets and conditions and the second was reset; with untagged
+  elements and tag 1 the two swapped. An obstacle chain is now matched by the
+  sorted physical groups, which is how its subdomains were numbered. Tags
+  1..N were never affected. Element reassignments are still lost when a
+  geometry becomes an obstacle.
+* **Clear All kept part of geometry 1.** Its transform was reset by setting
+  values, which leaves channels in place: a keyframed obstacle left its
+  animation to whatever was loaded or imported into geometry 1 next (Import
+  starts with Clear All). The channels are deleted first, and the obstacle
+  displacement, initial conditions and Enabled are reset too. The material of
+  geometry 1's first subdomain is still kept.
+* **A mesh regenerated over its staged copy was "the same file".** The
+  reload hashed the staged file at reload time, so a mesh written straight
+  over `input/<name>.msh` was compared with itself: picks were not followed
+  to their faces and element reassignments were re-applied to the new mesh.
+  The digest is now remembered on the node when the mesh is loaded (user data
+  `polyfem_mesh_digest_<geo>`); scenes saved before fall back to the file
+  once.
+* **Selection tokens other than `N` and `N-M` were left out of the export.**
+  A stepped range (`0-10:2`, `0-6:2,3`: what a regular selection is compacted
+  to) or a group name was dropped, so the exported sideset was smaller than
+  the one shown. Stepped ranges are now expanded as Houdini reads them (the
+  test compares with `globPrims`), and anything else in a picked selection
+  is refused by name.
+
+Left as it is, pending a decision: a geometry with **Enabled** off still has
+its sidesets resolved and its conditions and materials written (PolyFEM skips
+the mesh, and Import restores them), while Check Setup skips it, so a broken
+sideset on a disabled geometry stops Write after Check Setup passed.
 
 ### Remove Duplicate Contacts (Improved Max) (2026-10-18)
 

@@ -262,16 +262,66 @@ if (k < 0) {{
     return subdomain + alpha
 
 
+# The element numbers of a Houdini group pattern as the viewport writes it:
+# "7", "5-8", and the stepped ranges a regular selection is compacted to,
+# "0-10:2" (every 2nd) and "0-10:2,3" (the first 2 of every 3).
+_GROUP_TOKEN_RE = re.compile(r"(\d+)(?:-(\d+)(?::(\d+)(?:,(\d+))?)?)?")
+
+
+def _group_tokens(group_input):
+    """Whitespace-separated tokens; a comma inside a stepped range belongs
+    to it ("0-10:2,3"), any other comma separates."""
+    tokens = []
+    for chunk in str(group_input).split():
+        parts = [part for part in chunk.split(",") if part]
+        index = 0
+        while index < len(parts):
+            token = parts[index]
+            if re.fullmatch(r"\d+-\d+:\d+", token) \
+                    and index + 1 < len(parts) and parts[index + 1].isdigit():
+                token += "," + parts[index + 1]
+                index += 1
+            tokens.append(token)
+            index += 1
+    return tokens
+
+
+def _expand_group_token(token):
+    """The numbers one token selects, or None when it is not understood."""
+    m = _GROUP_TOKEN_RE.fullmatch(token)
+    if m is None:
+        return None
+    first = int(m.group(1))
+    if m.group(2) is None:
+        return [first]
+    last = int(m.group(2))
+    if m.group(3) is None:
+        return range(first, last + 1)
+    if m.group(4) is None:
+        step = int(m.group(3))
+        return range(first, last + 1, step) if step > 0 else None
+    keep, step = int(m.group(3)), int(m.group(4))
+    if step <= 0:
+        return None
+    return [n for n in range(first, last + 1) if (n - first) % step < keep]
+
+
 def expand_group_str(group_input):
-    """'0 2 5-8' -> [0, 2, 5, 6, 7, 8] (Houdini group pattern subset)."""
+    """'0 2 5-8 10-20:5' -> [0, 2, 5, 6, 7, 8, 10, 15, 20] (the numeric part
+    of Houdini's group syntax; see unsupported_group_tokens for the rest)."""
     out = []
-    for tokenized in str(group_input).replace(",", " ").split():
-        m = re.fullmatch(r"(\d+)-(\d+)", tokenized)
-        if m:
-            out.extend(range(int(m.group(1)), int(m.group(2)) + 1))
-        elif tokenized.isdigit():
-            out.append(int(tokenized))
+    for token in _group_tokens(group_input):
+        numbers = _expand_group_token(token)
+        if numbers is not None:
+            out.extend(numbers)
     return out
+
+
+def unsupported_group_tokens(group_input):
+    """The tokens of a pattern expand_group_str cannot turn into numbers
+    (group names, !, ^, @attribute, ...), which it leaves out."""
+    return [token for token in _group_tokens(group_input)
+            if _expand_group_token(token) is None]
 
 
 def list_to_space_str(numbers):
@@ -586,6 +636,16 @@ def create_geo_nodes(kwargs):
         parent.parm("file_location" + geo_number).revertToDefaults()
         return
 
+    if not path_parm.strip():
+        # The field was emptied: the geometry has no mesh any more. Its
+        # subdomains are reset when the next mesh is loaded (a first load,
+        # see _apply_subdomains).
+        destroy_geo_nodes(parent, geo_number)
+        _status(f"Geometry {geo_number}: mesh removed. Its sidesets, "
+                "conditions and extra subdomains are cleared when the next "
+                "mesh is loaded.")
+        return
+
     root, extension = os.path.splitext(path_parm)
     extension = extension.lower()
     non_msh = extension in (".obj", ".stl", ".ply")
@@ -619,7 +679,10 @@ def create_geo_nodes(kwargs):
     except (OSError, hou.Error) as e:
         _message(f"Could not copy mesh into working dir: {e}")
         return
-    digest = _file_digest(dst) if previous else None
+    # Remembered on the node: a reload compares the new file with the one
+    # that was loaded, which may since have been overwritten in place.
+    digest = _file_digest(dst)
+    parent.setUserData(_mesh_digest_key(geo_number), digest)
     dst = portable_path(parent, dst)
     parent.setParms({f"file_location{geo_number}": dst})
 
@@ -1005,6 +1068,11 @@ def _retag_chain(parent, geo):
     return list(reversed(chain))
 
 
+def _mesh_digest_key(geo):
+    """User data holding the digest of geometry `geo`'s mesh as loaded."""
+    return f"polyfem_mesh_digest_{int(geo)}"
+
+
 def _capture_previous_mesh(parent, geo):
     """Everything a reload of geometry `geo` needs from the chain it
     replaces: the mesh file's digest, the subdomain number of every physical
@@ -1019,8 +1087,17 @@ def _capture_previous_mesh(parent, geo):
         if reader is not None else None
     staged = path_parm.eval() if path_parm is not None else ""
     volumes = snapshot_instances(parent, (int(geo),), level=2)
+    # The digest taken when the mesh was loaded. Hashing the staged file now
+    # compares a mesh regenerated over its staged copy with itself, so the
+    # reload saw "the same file" and kept picks and element reassignments
+    # that name the old mesh. Scenes saved before the digest was remembered
+    # fall back to the file.
+    loaded_digest = parent.userData(_mesh_digest_key(geo))
+    if not loaded_digest:
+        loaded_digest = _file_digest(staged) if os.path.isfile(staged) \
+            else None
     previous = {
-        "digest": _file_digest(staged) if os.path.isfile(staged) else None,
+        "digest": loaded_digest,
         "num_vols": num_vols,
         "volumes": {vol: volumes.get(vol, [])
                     for vol in range(1, num_vols + 1)},
@@ -1034,7 +1111,25 @@ def _capture_previous_mesh(parent, geo):
         geo_data = stage.geometry() if stage is not None else None
     except hou.Error:
         geo_data = None
-    if geo_data is not None and geo_data.findPrimAttrib("Entity") \
+    if parent.node(f"subdomains_{geo}") is None \
+            and parent.node(f"surface_{geo}") is None:
+        # An obstacle chain (no subdomain stage, no body surface): the
+        # reader's Entity is the raw physical tag there, not a subdomain
+        # number, so reading it as one handed subdomains each other's
+        # settings when Obstacle was turned off again (tags 2 and 3: the
+        # first took the second's, the second was reset). The subdomain
+        # parameters were left as they were while it was an obstacle, and
+        # they follow the sorted physical groups.
+        try:
+            if geo_data is not None \
+                    and geo_data.findPrimAttrib("Entity") is not None:
+                groups = physical_groups(geo_data)
+                previous["number_of_tag"] = {
+                    int(tag): number
+                    for number, tag in enumerate(groups["tags"], 1)}
+        except hou.Error:
+            pass
+    elif geo_data is not None and geo_data.findPrimAttrib("Entity") \
             is not None and geo_data.findPrimAttrib("msh_physical_tag") \
             is not None:
         entity = np.frombuffer(geo_data.primIntAttribValuesAsString("Entity"),
@@ -1056,6 +1151,13 @@ def _apply_subdomains(parent, geo, groups, previous, digest):
     geo = str(geo)
     count = len(groups["tags"])
     if previous is None:
+        # A first load has no previous mesh to match subdomains against. The
+        # geometry can still hold subdomains of a mesh that is gone (the Mesh
+        # File field was emptied, or a load failed after the old chain was
+        # removed): their sidesets name faces of that mesh, so they must not
+        # be carried onto this one. Dropping to one subdomain removes them;
+        # the subdomains added back are new instances with default settings.
+        parent.setParms({f"num_volumes{geo}": 1})
         parent.setParms({f"num_volumes{geo}": count,
                          f"sideset_selection{geo}_1": 0,
                          f"initial_conditions{geo}_1": 0})
@@ -1236,10 +1338,12 @@ def create_geo_tree(kwargs):
 
     # clear_geo_tree destroys the sideset group nodes with the rest of the
     # display chain; rebuild them so viewport reselection keeps working
-    # after subdomain edits.
+    # after subdomain edits. The sidesets themselves are not new: one whose
+    # conditions were removed must not get the default condition back.
     for vol in range(1, parent.evalParm(f"num_volumes{geo_number}") + 1):
         if parent.parm(f"sideset_selection{geo_number}_{vol}") is not None:
-            _rebuild_group_chain(parent, geo_number, str(vol))
+            _rebuild_group_chain(parent, geo_number, str(vol),
+                                 default_condition=False)
     parent.layoutChildren()
 
 
@@ -1300,15 +1404,26 @@ def clear_all_geos(kwargs):
     for item in parent.children():
         if item.name() not in _PROTECTED_NODES:
             item.destroy()
+    # Geometry 1 is the one entry that stays, so it is emptied by hand.
+    # Setting a value does not remove a channel: an animated transform (a
+    # moving obstacle) kept its keyframes here and moved whatever was loaded
+    # or imported into geometry 1 next, so the channels go first.
+    for parm in _transform_parms(parent, 1):
+        if parm.keyframes():
+            parm.deleteAllKeyframes()
     parent.setParms({
         "geo_int": 1, "num_geos": 1, "num_volumes1": 1,
-        "sideset_selection1_1": 0, "file_location1": "", "is_obstacle1": 0,
+        "sideset_selection1_1": 0, "initial_conditions1_1": 0,
+        "file_location1": "", "is_obstacle1": 0, "is_enabled1": 1,
         "xform_t__1x": 0, "xform_t__1y": 0, "xform_t__1z": 0,
         "xform_r__1x": 0, "xform_r__1y": 0, "xform_r__1z": 0,
         "xform_s__1x": 1, "xform_s__1y": 1, "xform_s__1z": 1,
         "tpivot_1x": 0, "tpivot_1y": 0, "tpivot_1z": 0,
         "rpivot_1x": 0, "rpivot_1y": 0, "rpivot_1z": 0,
         "subdomain_number_1": 1, "elements_1": ""})
+    disp = parent.parm("obstacle_disp1")
+    if disp is not None:
+        disp.revertToDefaults()
     if hou.isUIAvailable():
         sv = hou.ui.curDesktop().paneTabOfType(hou.paneTabType.SceneViewer)
         if sv:
@@ -1401,6 +1516,26 @@ def revert_entities(kwargs):
     elements = parent.node("elements_" + geo_number)
     if branch is not None and elements is not None:
         branch.setInput(0, elements)
+        # The subdomains Apply Subdomain Change added beyond the mesh's own
+        # are empty again. They used to stay, with their material, sidesets
+        # and conditions (and no way to remove them: the subdomain count is
+        # not shown), and a sideset left on one refused every export.
+        try:
+            entity = np.frombuffer(
+                branch.geometry().primIntAttribValuesAsString("Entity"),
+                dtype=np.int32)
+            mask = _volume_mask(branch.geometry())
+            if mask is not None:
+                entity = entity[mask]
+            own = int(entity.max()) if len(entity) else 0
+        except hou.Error:
+            own = 0
+        num_vols = parent.evalParm(f"num_volumes{geo_number}")
+        if 1 <= own < num_vols:
+            parent.setParms({f"num_volumes{geo_number}": own})
+            _status(f"Geometry {geo_number}: the {num_vols - own} "
+                    "subdomain(s) added by Apply Subdomain Change were "
+                    "removed with their settings.")
     fetch_elements(kwargs)
     clear_geo_tree(parent, geo_number)
     create_geo_tree(kwargs)
@@ -2546,6 +2681,22 @@ def resolve_sidesets(parent, geo, num_vols):
         """("nodes" | "faces", the sideset's points or faces)."""
         vol_faces = np.flatnonzero(entity == vol)
         name = f"geo {geo} subdomain {vol} sideset {j}"
+        if text != "*" and not is_native_selection(text):
+            # An explicit pick is exported as the numbers it lists. Anything
+            # else in the pattern used to be left out without a word, which
+            # wrote a smaller sideset than the one shown in the viewport.
+            unknown = unsupported_group_tokens(text)
+            if unknown:
+                shown = ", ".join(repr(token) for token in unknown[:5])
+                raise hou.NodeError(
+                    f"Sideset {j} of geo {geo}/vol {vol}: the selection "
+                    f"contains {shown}"
+                    f"{', ...' if len(unknown) > 5 else ''}, which is not a "
+                    f"list of {'point' if grouptype == 1 else 'face'} "
+                    f"numbers (such as 0 2 5-8 or 0-10:2). Pick the "
+                    f"{'points' if grouptype == 1 else 'faces'} again in "
+                    f"the viewport, or type * or an axis/box/sphere/plane "
+                    f"selection.")
         if grouptype == 1:  # nodes
             loads = [c for c in conditions if c["type"] != 0]
             if loads:
