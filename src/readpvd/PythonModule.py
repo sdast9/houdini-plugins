@@ -798,6 +798,18 @@ def entry_index(node, frame=None):
     return max(0, bisect.bisect_right(times, t + tolerance) - 1)
 
 
+def frame_step(node, frame):
+    """The output step Houdini frame `frame` shows, clamped to the run.
+
+    Frame parameters (Reference Frame, Topology Frame) go through this, so
+    on the Simulation Time mapping they mean the frame, not a step number
+    (review 2026-11-14, item 5)."""
+    count = len(_pvd_times(node))
+    if not count:
+        return 0
+    return max(0, min(entry_index(node, frame), count - 1))
+
+
 def entry_frame(node, index):
     """The first Houdini frame showing PVD step `index`."""
     mapping = time_mapping(node)
@@ -1572,9 +1584,10 @@ def cook_reference_comparison(node):
     if components > 1:
         current = current.reshape(-1, components)
     current = _reduce_array(current, _menu_token(asset, "color_reduction"))
+    reference_frame = asset.evalParm("reference_frame")
+    reference_step = frame_step(asset, reference_frame)
     try:
-        blocks = load_frame(asset.evalParm("PVD_file"),
-                            asset.evalParm("reference_frame"))
+        blocks = load_frame(asset.evalParm("PVD_file"), reference_step)
         reference_mesh = blocks.get(_source_block_token(asset))
         reference = _mesh_field(reference_mesh, field) \
             if reference_mesh is not None else None
@@ -1605,9 +1618,11 @@ def cook_reference_comparison(node):
     geo.setPointFloatAttribValues(
         "reference_comparison",
         np.ascontiguousarray(delta, dtype=np.float64).tolist())
+    times = _pvd_times(asset)
+    when = (f" (step {reference_step}, t = {times[reference_step]:.6g})"
+            if reference_step < len(times) else "")
     asset.parm("reference_status").set(
-        f"Comparing {field} with frame {asset.evalParm('reference_frame')} "
-        f"using {mode}.")
+        f"Comparing {field} with frame {reference_frame}{when} using {mode}.")
 
 
 def cook_field_smoothing(node):
@@ -1637,21 +1652,99 @@ def cook_field_smoothing(node):
                 _nodal_average(values, groups))
 
 
+def _result_row(geo, point_id):
+    """Index in `geo` of the point whose readpvd_point is `point_id`, or -1.
+
+    Without a body filter the id is the point number (checked first); hidden
+    bodies renumber the points, and then the id is looked up."""
+    count = geo.intrinsicValue("pointcount")
+    if point_id < 0:
+        return -1
+    if geo.findPointAttrib("readpvd_point") is None:
+        return point_id if point_id < count else -1
+    if point_id < count \
+            and geo.point(point_id).attribValue("readpvd_point") == point_id:
+        return point_id
+    ids = np.frombuffer(geo.pointIntAttribValuesAsString("readpvd_point"),
+                        dtype=np.int32)
+    hit = np.flatnonzero(ids == point_id)
+    return int(hit[0]) if len(hit) else -1
+
+
+def _probe_geometry(node):
+    """The result before clipping, where probed points keep their ids."""
+    result = node.node("OUT_result")
+    return result.geometry() if result is not None else None
+
+
+def probe_pick(node, output_point):
+    """Probe the vertex picked in the viewport (output point number).
+
+    The displayed geometry is clipped and sliced, which renumbers its points
+    from frame to frame as the deformed body moves through the plane, and
+    adds cut points that are no vertex of the model. The probe keeps the
+    vertex's readpvd_point id instead: the picked point's own id when it is
+    a model vertex, else the nearest model vertex of the same body in the
+    undeformed shape."""
+    output = node.node("output")
+    result = _probe_geometry(node)
+    if output is None or result is None:
+        return ""
+    shown = output.geometry()
+    if output_point < 0 or output_point >= len(shown.points()):
+        return ""
+    picked = shown.point(output_point)
+    rest_attrib = shown.findPointAttrib("rest")
+    rest = np.asarray(picked.attribValue(rest_attrib) if rest_attrib
+                      else picked.position(), dtype=np.float64)
+    id_attrib = shown.findPointAttrib("readpvd_point")
+    candidate = int(picked.attribValue(id_attrib)) if id_attrib \
+        else output_point
+    rests = np.frombuffer(result.pointFloatAttribValuesAsString("rest"),
+                          dtype=np.float32).reshape(-1, 3).astype(np.float64) \
+        if result.findPointAttrib("rest") is not None else np.asarray(
+            [p.position() for p in result.points()], dtype=np.float64)
+    if not len(rests):
+        return ""
+    scale = max(1.0, float(np.abs(rests).max()))
+    row = _result_row(result, candidate)
+    if row < 0 or np.abs(rests[row] - rest).max() > 1e-6 * scale:
+        # a cut point of the clip (or an id the clip interpolated)
+        mask = np.ones(len(rests), dtype=bool)
+        body_attrib = shown.findPointAttrib("body_ids")
+        if body_attrib is not None \
+                and result.findPointAttrib("body_ids") is not None:
+            bodies = np.rint(np.frombuffer(
+                result.pointFloatAttribValuesAsString("body_ids"),
+                dtype=np.float32))
+            same = bodies == round(float(picked.attribValue(body_attrib)))
+            if same.any():
+                mask = same
+        rows = np.flatnonzero(mask)
+        delta = rests[rows] - rest
+        row = int(rows[np.argmin(np.einsum("ij,ij->i", delta, delta))])
+        candidate = int(result.point(row).attribValue("readpvd_point")) \
+            if result.findPointAttrib("readpvd_point") is not None else row
+    return probe_point(node, candidate)
+
+
 def probe_readout(node, point_number):
     """Current position and readout text for a probed point.
 
-    Reads from the final displayed geometry, so calling it again after the
-    frame changes returns the point's *new* position and field values. Pure:
-    it writes no parameters, so it is safe to call every viewport redraw.
+    `point_number` is the vertex's readpvd_point id (its point number in the
+    result before clipping). Reads from that geometry, so calling it again
+    after the frame changes returns the vertex's *new* position and field
+    values, whatever a clip does to the displayed point numbers. Pure: it
+    writes no parameters, so it is safe to call every viewport redraw.
     Returns (position, text) or (None, "") if the point is unavailable.
     """
-    output = node.node("output")
-    if output is None:
+    geo = _probe_geometry(node)
+    if geo is None:
         return None, ""
-    geo = output.geometry()
-    if point_number < 0 or point_number >= len(geo.points()):
+    row = _result_row(geo, int(point_number))
+    if row < 0:
         return None, ""
-    point = geo.point(point_number)
+    point = geo.point(row)
     position = point.position()
     lines = [f"Point {point_number}",
              "Position: " + ", ".join(f"{value:.6g}" for value in position)]
@@ -1702,7 +1795,8 @@ def _reference_reduced(node, path, block, field, reduction):
     if not node.evalParm("reference_enable"):
         return None
     try:
-        blocks = load_frame(path, node.evalParm("reference_frame"))
+        blocks = load_frame(path, frame_step(
+            node, node.evalParm("reference_frame")))
         mesh = blocks.get(block) or next(iter(blocks.values()), None)
         return _scan_reduced(node, mesh, field, reduction) \
             if mesh is not None else None
@@ -1821,7 +1915,7 @@ def _scan_key(node, path):
             _menu_token(node, "color_reduction"),
             bool(node.evalParm("smooth_field")), _source_block_token(node),
             bool(node.evalParm("reference_enable")),
-            int(node.evalParm("reference_frame")),
+            frame_step(node, node.evalParm("reference_frame")),
             _menu_token(node, "reference_mode"),
             node.evalParm("visible_bodies").strip())
 
@@ -2012,11 +2106,22 @@ def cook_multi_blocks(node):
             mesh, block_name, slug, colors, values, components))
 
 
-def legend_values(node):
-    count = max(2, int(node.evalParm("legend_ticks")))
+def legend_tick_values(node, count=None):
+    """Tick values from the bottom of the bar to the top, spaced the way the
+    colors are mapped: evenly on the Linear scale, by equal factors on the
+    Logarithmic one (1, 10, 100 -- not 1, 50.5, 100)."""
+    count = max(2, int(node.evalParm("legend_ticks")) if count is None
+                else int(count))
     low = float(node.evalParm("color_min"))
     high = float(node.evalParm("color_max"))
-    return np.linspace(high, low, count)
+    if _menu_token(node, "color_scale") == "log10" and low > 0 and high > 0:
+        return np.geomspace(low, high, count)
+    return np.linspace(low, high, count)
+
+
+def legend_values(node):
+    """Tick values from the top of the bar to the bottom."""
+    return legend_tick_values(node)[::-1]
 
 
 def legend_title_text(node):
@@ -2120,6 +2225,7 @@ def cook_scene_legend(node):
     notation = _menu_token(asset, "legend_number_format")
     low = float(asset.evalParm("color_min"))
     high = float(asset.evalParm("color_max"))
+    ticks = legend_tick_values(asset, n_ticks)
     # Tick labels sized to the available spacing so they never overlap.
     label_size = min(0.055, 0.62 / (n_ticks - 1))
     label_x = width + _LEGEND_TICK_LEN + _LEGEND_LABEL_GAP
@@ -2128,7 +2234,7 @@ def cook_scene_legend(node):
         y = fraction
         _line(geo, (width, y, 0), (width + _LEGEND_TICK_LEN, y, 0),
               tick_color, group)
-        value = low + fraction * (high - low)
+        value = float(ticks[i])
         label = _font_geometry(
             _format_number(value, digits, notation), label_size,
             0, 2, (label_x, y), tick_color)  # left, middle
@@ -2289,13 +2395,19 @@ def cook_topology(node):
     if asset.evalParm("remesh_mode"):
         frame_index = entry_index(asset)
     else:
-        frame_index = asset.evalParm("topo_frame")
+        frame_index = frame_step(asset, asset.evalParm("topo_frame"))
 
     blocks = load_frame(pvd_path, frame_index)
     mesh = _block_for(asset, blocks)
 
     points = mesh["points"]
     geo.createPoints(points.tolist())
+    # A point id that survives the body filter and the clip (which renumber
+    # points), so the probe follows its vertex (review 2026-11-14, item 4).
+    geo.addAttrib(hou.attribType.Point, "readpvd_point", 0,
+                  create_local_variable=False)
+    geo.setPointIntAttribValuesFromString(
+        "readpvd_point", np.arange(len(points), dtype=np.int32).tobytes())
 
     # Coincidence groups: PolyFEM writes a discontinuous mesh (per-element
     # duplicated vertices), so a physical vertex appears as several points.
@@ -2346,8 +2458,14 @@ def cook_frame(node):
     if not pvd_path:
         return
 
-    blocks = load_frame(pvd_path, entry_index(asset))
+    step = entry_index(asset)
+    blocks = load_frame(pvd_path, step)
     mesh = _block_for(asset, blocks)
+    # What this frame was made from, so Refresh can tell a cached frame whose
+    # files were rewritten (a rerun into the same folder) or that showed a
+    # step the run had not reached yet (review 2026-11-14, items 1 and 2).
+    _COOKED_FRAMES.setdefault(asset.sessionId(), {})[
+        float(node.evalParm("frame"))] = _frame_signature(pvd_path, step)
 
     if str(mesh["topo_key"]) != geo.attribValue("topo_key"):
         if asset.evalParm("remesh_mode"):
@@ -2487,15 +2605,73 @@ def cook_frame(node):
 # =============================================================================
 
 
+# Houdini frame -> _frame_signature of the data cook_frame read for it, per
+# asset instance: the frames the cooked-frame cache (cache1) may hold.
+_COOKED_FRAMES = {}
+
+
+def _frame_signature(pvd_path, step):
+    """(step shown, identity of every file it is read from) of one step.
+
+    The step is clamped the way load_frame clamps it, so a frame past the
+    end of a running simulation records the step it really showed."""
+    try:
+        entries = read_pvd(pvd_path)
+    except Exception:
+        return None
+    if not entries:
+        return None
+    step = max(0, min(int(step), len(entries) - 1))
+    paths = [entries[step][1]]
+    try:
+        paths.extend(_frame_block_paths(pvd_path, step).values())
+    except Exception:
+        pass
+    keys = []
+    for path in paths:
+        try:
+            keys.append(_file_key(path))
+        except OSError:
+            keys.append(None)
+    return step, tuple(keys)
+
+
+def stale_cooked_frames(node):
+    """Houdini frames whose cooked data no longer matches the files on disk:
+    their step's files were rewritten, or the frame now shows another step
+    (the run reached it, or the scene record changed)."""
+    path = node.evalParm("PVD_file")
+    cooked = _COOKED_FRAMES.get(node.sessionId(), {})
+    stale = []
+    for frame, signature in sorted(cooked.items()):
+        try:
+            step = entry_index(node, frame)
+        except Exception:
+            step = None
+        if step is None or _frame_signature(path, step) != signature:
+            stale.append(frame)
+    return stale
+
+
+def _bump_data_epoch(node):
+    """Make the topology and frame stages read their files again."""
+    epoch = node.parm("data_epoch")
+    if epoch is not None:
+        epoch.set(epoch.eval() + 1)
+
+
 def refresh(kwargs=None, force_clear_cache=False):
     """Pick up new timesteps of the SAME simulation.
 
     Every disk cache (parsed pvd/vtu, field info, sequence metadata, frame
     scans) is keyed on (path, mtime, size), so files a running sim rewrites
     invalidate themselves and unchanged steps keep hitting the cache -- no
-    wholesale clearing here, and neither the cooked-frame cache (cache1)
-    nor the current frame position is touched. Only a PVD file change
-    (start) resets those.
+    wholesale clearing here, and the current frame position is never
+    touched. The cooked-frame cache (cache1) is kept as long as every frame
+    it may hold still shows the same step from the same files; a frame made
+    from rewritten files (a rerun into the same folder) or from a step the
+    run had not reached yet empties it, since the Cache SOP cannot drop
+    single frames. Only a PVD file change (start) resets everything.
     """
     node = hou.pwd() if kwargs is None else kwargs["node"]
     pvd_path = node.evalParm("PVD_file")
@@ -2509,6 +2685,15 @@ def refresh(kwargs=None, force_clear_cache=False):
     if not entries:
         _message("Empty .pvd collection")
         return
+    stale = stale_cooked_frames(node)
+    if stale:
+        force_clear_cache = True
+        _bump_data_epoch(node)
+        if hou.isUIAvailable():
+            hou.ui.setStatusMessage(
+                f"Read PVD: {len(stale)} cached frame(s) no longer match the "
+                "result files (rerun or new steps); the cache was cleared.",
+                hou.severityType.Message)
     if hou.isUIAvailable():
         first, last = playbar_range(node)
         hou.playbar.setUseIntegerFrames(True)
@@ -2571,6 +2756,7 @@ def clear_cache(kwargs=None):
     cache_node = node.node("cache1")
     if cache_node is not None:
         cache_node.parm("clear").pressButton()
+    _COOKED_FRAMES.pop(node.sessionId(), None)
     _CACHE_CLEARED.add(node.sessionId())
     _CACHE_CONTENTS.pop(node.sessionId(), None)
     # Cache Status reads this counter, so it updates the moment the button is
@@ -5309,16 +5495,16 @@ def export_region_from_probe(kwargs):
     node = kwargs["node"]
     index = kwargs["script_multiparm_index"]
     point = int(node.evalParm("probe_point"))
-    output = node.node("output")
-    if point < 0 or output is None:
+    geo = _probe_geometry(node)
+    if point < 0 or geo is None:
         _message("Enable the probe (Probe tab) and click the result first.")
         return
-    geo = output.geometry()
-    if point >= len(geo.points()):
+    row = _result_row(geo, point)
+    if row < 0:
         _message("The probed point is not in the result on screen.")
         return
     rest_attrib = geo.findPointAttrib("rest")
-    probed = geo.point(point)
+    probed = geo.point(row)
     position = np.asarray(probed.attribValue(rest_attrib) if rest_attrib
                           else probed.position(), dtype=np.float64)
     body_attrib = geo.findPointAttrib("body_ids")
@@ -5682,30 +5868,43 @@ def export_data(node, progress=None):
     forces = _ForceColumns(node, mesh, pvd)
     mapping = time_mapping(node)
     rows_time = []
-    total = len(steps)
+    # The per element / node sheet may want a step the table does not list
+    # (Step on Screen outside First/Last/Every): read it too, for that sheet
+    # only (review 2026-11-14, item 7).
+    table_steps = set(steps)
+    read_steps = sorted(table_steps | set(item_steps)) if per_item \
+        else list(steps)
+    item_unreadable = []
+    total = len(read_steps)
     with (progress or _progress("Exporting data over time")) as operation:
-        for position, step in enumerate(steps):
+        for position, step in enumerate(read_steps):
             operation.updateLongProgress(
                 position / max(1, total),
                 f"Step {step} ({position + 1} of {total})")
+            in_table = step in table_steps
             time = entries[step][0]
-            rows_time.append((step, time, entry_frame(node, step)))
-            record = {}
-            records.append(record)
+            record = {}  # a step outside the table fills a throwaway record
+            if in_table:
+                rows_time.append((step, time, entry_frame(node, step)))
+                records.append(record)
             try:
                 frame_mesh = mesh if step == steps[0] \
                     else volume_mesh(pvd, step)
             except Exception as exc:  # noqa: BLE001 -- reported below
                 # e.g. the last step of a run that is still writing
-                unreadable.append((step, str(exc)))
-                forces.add(None)
+                if in_table:
+                    unreadable.append((step, str(exc)))
+                    forces.add(None)
+                else:
+                    item_unreadable.append((step, str(exc)))
                 continue
             if (str(frame_mesh.get("topo_key")), len(frame_mesh["points"])) \
                     != topology["key"]:
                 raise ExportError(
                     f"The mesh changes at step {step} (a remeshing run): the "
                     "export follows one mesh through the run.")
-            forces.add(frame_mesh)
+            if in_table:
+                forces.add(frame_mesh)
             current_volume = current_node_volume = None
             if need_current:
                 solution = _solution_vectors(frame_mesh)
@@ -5886,8 +6085,10 @@ def export_data(node, progress=None):
                 yield header
                 for r, region in enumerate(regions):
                     rows = region[q["basis"]]
-                    stacked = [by_step[step][r] * factor
-                               for step in item_steps if step in by_step]
+                    # an unreadable step keeps its column, empty
+                    stacked = [by_step[step][r] * factor if step in by_step
+                               else np.full(len(rows), np.nan)
+                               for step in item_steps]
                     for k, row in enumerate(rows):
                         yield ([region["label"], int(geometry[row]),
                                 int(numbers[row]), int(bodies[row])]
@@ -5921,6 +6122,11 @@ def export_data(node, progress=None):
             f"Step(s) {', '.join(str(step) for step, _ in unreadable)} could "
             f"not be read (empty cells; a run still writing?): "
             f"{unreadable[0][1]}")
+    if item_unreadable:
+        lines.append(
+            f"Per element / node sheet: step(s) "
+            f"{', '.join(str(step) for step, _ in item_unreadable)} could not "
+            f"be read (empty column): {item_unreadable[0][1]}")
     if not units.known:
         lines.append(f"No unit labels: {units.why}")
     return {"path": path, "steps": steps, "headers": headers,

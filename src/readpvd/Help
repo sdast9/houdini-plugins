@@ -28,7 +28,7 @@ Every parameter has a tooltip: hover over its label for details.
 
 # Set __PVD File__ (or press __Open Results__ on the PolyFEM node).
 # Scrub the playbar. __Refresh / Set Playbar__ picks up the steps of a run
-  that is still going.
+  that is still going, and a run written again into the same folder.
 # __Display tab__: choose the __Color Field__ and __Field Value To Display__
   (a component, magnitude, principal value ...). __Auto Range: All Frames__
   finds the range over the whole run.

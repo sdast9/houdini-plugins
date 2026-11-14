@@ -118,9 +118,10 @@ class State:
         hit = intersector.position
         point = min(prim.points(),
                     key=lambda candidate: (candidate.position() - hit).length())
-        # Store the point number; onDraw redraws the marker from the live
-        # geometry each frame so it follows the point as the mesh deforms.
-        self.node.hdaModule().probe_point(self.node, point.number())
+        # Store the vertex (its id survives clipping); onDraw redraws the
+        # marker from the live geometry each frame so it follows the vertex
+        # as the mesh deforms.
+        self.node.hdaModule().probe_pick(self.node, point.number())
         return True
 
     def _layout(self):

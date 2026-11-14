@@ -35,12 +35,14 @@ H5PY_WHEELS = {
 TOPO_SOP_CODE = """\
 node = hou.pwd()
 node.evalParm("pvdpath"); node.evalParm("topoframe")  # cook dependencies
+node.evalParm("dataepoch")
 node.parent().hdaModule().cook_topology(node)
 """
 
 FRAME_SOP_CODE = """\
 node = hou.pwd()
 node.evalParm("pvdpath"); node.evalParm("frame")  # cook dependencies
+node.evalParm("dataepoch")
 node.parent().hdaModule().cook_frame(node)
 """
 
@@ -397,9 +399,13 @@ if (present) {
         else if (reduction == "principal_max"
                  || reduction == "principal_middle"
                  || reduction == "principal_min") {
+            // Principal values of the symmetric part, as the numpy mirror
+            // (_reduce_array: Auto Range, export) computes them:
+            // diagonalizesymmetric reads only part of a non-symmetric F or
+            // P (review 2026-11-14, item 6).
             vector evals = {0, 0, 0};
             matrix3 evecs = 0;
-            sorted_eigen(m, evals, evecs);
+            sorted_eigen(0.5 * (m + transpose(m)), evals, evecs);
             int component = reduction == "principal_max" ? 0
                 : reduction == "principal_middle" ? 1 : 2;
             value = getcomp(evals, component);
@@ -1312,9 +1318,10 @@ def _parms():
     main.addParmTemplate(hou.IntParmTemplate(
         "topo_frame", "Topology Frame", 1, default_value=(0,),
         help="When Remeshing Mode is off, the mesh connectivity is read once "
-             "from this frame and reused for every other frame (only "
-             "positions and fields change). Leave at 0 unless the first "
-             "frame is missing or damaged."))
+             "from the time step this Houdini frame shows (through Time "
+             "Mapping, like the playbar) and reused for every other frame "
+             "(only positions and fields change). Leave at 0 (the first "
+             "step) unless that step is missing or damaged."))
     main.addParmTemplate(hou.ToggleParmTemplate(
         "cache", "Cache Frames", default_value=True,
         script_callback="hou.phm().toggle_cache(kwargs)",
@@ -1367,6 +1374,12 @@ def _parms():
              "refreshes immediately.")
     cache_epoch.hide(True)
     main.addParmTemplate(cache_epoch)
+    data_epoch = hou.IntParmTemplate(
+        "data_epoch", "data_epoch", 1, default_value=(0,),
+        help="Internal, hidden: counts Refreshes that found rewritten result "
+             "files, so the topology and frame stages read them again.")
+    data_epoch.hide(True)
+    main.addParmTemplate(data_epoch)
     main.addParmTemplate(hou.ButtonParmTemplate(
         "clear_cache", "Clear Cache",
         script_callback="hou.phm().clear_cache(kwargs)",
@@ -1429,7 +1442,9 @@ def _parms():
         help="A color can only show one number per point, so vector and "
              "tensor fields must be reduced: magnitude or a component for "
              "vectors; von Mises-style norm, a diagonal entry, a principal "
-             "value (principal values are ordered maximum to minimum), trace "
+             "value (principal values are ordered maximum to minimum; for a "
+             "non-symmetric tensor such as the deformation gradient or the "
+             "1st Piola-Kirchhoff stress, those of its symmetric part), trace "
              "or determinant for tensors. "
              "Only reductions that make sense for the chosen field are "
              "listed.")
@@ -1821,8 +1836,11 @@ def _parms():
              "more work while this is on."))
     compare.addParmTemplate(hou.IntParmTemplate(
         "reference_frame", "Reference Frame", 1, default_value=(0,), min=0,
-        help="Houdini frame to compare against (0 is usually the undeformed "
-             "start). The mesh must have the same points in both frames."))
+        help="Houdini frame to compare against: the time step that frame "
+             "shows (through Time Mapping, like the playbar) is the "
+             "reference; the status line names the step. 0 shows the first "
+             "step, usually the undeformed start. The mesh must have the same "
+             "points in both frames."))
     compare.addParmTemplate(hou.MenuParmTemplate(
         "reference_mode", "Comparison Value",
         ("difference", "absolute", "percent"),
@@ -1850,8 +1868,10 @@ def _parms():
              "in the viewport); the probe works while that state is active."))
     probe.addParmTemplate(hou.IntParmTemplate(
         "probe_point", "Probed Point Number", 1, default_value=(-1,), min=-1,
-        help="Point number of the last probed vertex (-1 = none). The marker "
-             "follows this point as frames change; you can also type a point "
+        help="The last probed vertex (-1 = none): its point number in the "
+             "result before clipping (the point number in the loaded block's "
+             "result file). The marker follows this vertex as frames change, "
+             "also while a clip or slice is active; you can also type a "
              "number to probe it directly."))
     probe.addParmTemplate(hou.StringParmTemplate(
         "probe_readout", "Probe Readout", 1,
@@ -2072,10 +2092,13 @@ def build(out_dir):
     # An expression (not a callback editing the node) keeps instances locked.
     # Python short-circuits, so hou.frame() -- and with it time dependence --
     # is only reached in Remeshing Mode (an Hscript if() evaluates both).
+    # Topology Frame is a Houdini frame, read through the time mapping like
+    # the playbar (review 2026-11-14, item 5).
     topo.parm("topoframe").setExpression(
         "hou.pwd().parent().hdaModule().entry_index(hou.pwd().parent()) "
         "if hou.pwd().parent().evalParm('remesh_mode') "
-        "else hou.pwd().parent().evalParm('topo_frame')",
+        "else hou.pwd().parent().hdaModule().frame_step(hou.pwd().parent(), "
+        "hou.pwd().parent().evalParm('topo_frame'))",
         hou.exprLanguage.Python)
 
     prims = wrangle("build_prims", 0, BUILD_PRIMS_VEX, topo)
@@ -2094,6 +2117,11 @@ def build(out_dir):
     frame.addSpareParmTuple(hou.FloatParmTemplate("frame", "frame", 1))
     frame.parm("frame").setExpression("$F", hou.exprLanguage.Hscript)
     frame.setNextInput(surf_switch)
+    # Refresh bumps data_epoch when result files were rewritten in place.
+    for stage in (topo, frame):
+        stage.addSpareParmTuple(hou.IntParmTemplate("dataepoch", "dataepoch", 1))
+        stage.parm("dataepoch").setExpression('ch("../data_epoch")',
+                                              hou.exprLanguage.Hscript)
 
     # Cache only what comes from disk: topology, P, and the imported
     # PVD/companion attributes (~1 GB per frame at 2.4M points). Everything

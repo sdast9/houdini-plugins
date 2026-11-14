@@ -301,9 +301,14 @@ Targets the current build's strict-validated schema — the old fork keys
   values, displacement, body/sideset IDs, principal values, block names, and
   reference comparison values. The probe picks the primary result only (it
   ignores glyphs and other decorations), so it always reports real field data
-  at the clicked vertex, and the marker follows that vertex as frames advance.
+  at the clicked vertex, and the marker follows that vertex as frames advance
+  -- also while a clip or slice renumbers the displayed points (the probe keeps
+  the vertex's `readpvd_point` id; a click on a cut point takes the nearest
+  vertex).
 * Reference-frame comparison supports current-minus-reference, absolute
-  difference, and percentage change. Interactive clipping planes and thin
+  difference, and percentage change. *Reference Frame* and *Topology Frame*
+  are Houdini frames: the step they show goes through *Time Mapping*, like the
+  playbar. Interactive clipping planes and thin
   slices expose internal colored sections; glyphs are merged after the clip so
   they are never cut.
 * *Auto Range: All Frames* scans the selected displayed value over the PVD
@@ -341,7 +346,10 @@ Targets the current build's strict-validated schema — the old fork keys
   default. *Cache Status* shows the frames held, their memory and how many fit
   (Clear Cache resets it; the frame on screen is re-cached from memory right
   away), and *Memory* shows Houdini's and the system's used/available memory.
-  *Refresh / Set Playbar* never clears the cache.
+  *Refresh / Set Playbar* keeps the cache while every cached frame still shows
+  the same step from the same files; when a run was written again into the
+  same folder, or a frame cached past the end of a running simulation now
+  shows a newer step, it clears the cache and the frames are read again.
   The cache callbacks never unlock the asset instance; instances saved by
   older versions are unlocked and keep their old internals until *Match
   Current Definition*.
@@ -376,6 +384,21 @@ Targets the current build's strict-validated schema — the old fork keys
    viewport overlay legend, and scene gnomon; try both Auto Range buttons;
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
+
+### Read PVD review fixes (2026-11-14)
+
+A review of Read PVD 1.0 found seven defects, each reproduced before the fix;
+`tests/test_readpvd_review_fixes.py` checks every one.
+
+| # | What was wrong | Now |
+| --- | --- | --- |
+| 1 | After a run was written again into the same folder, *Refresh* kept the old run on every frame already viewed (with *Cache Frames* on) | Each cached frame records the step and file identities it was read from; *Refresh* clears the cache when any differ, and the topology and frame stages read again |
+| 2 | A frame viewed past the end of a running simulation kept showing the last step after *Refresh* brought its step in | Same record: the frame now shows a different step, so the cache is cleared |
+| 3 | On the logarithmic color scale the legend ticks were spaced linearly (1, 50.5, 100 for colors at 1, 10, 100) | Ticks by equal factors on the log scale, in the scene and overlay legends |
+| 4 | The probe stored a point number of the clipped display, which a clip renumbers as the deformed body moves through the plane, so it jumped to another vertex | Points carry a `readpvd_point` id from the topology stage; the probe stores it and reads from the result before clipping; a click on a cut point takes the nearest vertex of the same body |
+| 5 | *Reference Frame* (and *Topology Frame*) were used as step numbers, though labelled and documented as Houdini frames; on the Simulation Time mapping frame 25 compared with step 25 | Both go through *Time Mapping*; the status line names the step and its time |
+| 6 | Principal values of a non-symmetric tensor (deformation gradient) differed by up to 8 % between the viewport (VEX read part of the matrix) and *Auto Range* / the export (numpy, symmetric part) | The viewport takes the symmetric part too; they agree to float precision |
+| 7 | The per element / node sheet with *Step on Screen* outside the exported steps had a header and an empty column | That step is read for the sheet only; an unreadable step keeps an empty column and a note |
 
 ### Settings that outlived what they belonged to (2026-11-13)
 
