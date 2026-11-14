@@ -272,6 +272,46 @@ def check_other_findings(root):
     return scene
 
 
+def check_value_ranges(root):
+    """Values PolyFEM hangs on (2026-11-14 review): Skip Frames below 1 (the
+    solver stalls before the first step and keeps allocating memory) and a
+    CCD tolerance of 0 (the collision check never finishes); a negative
+    friction coefficient and dhat <= 0 go with them. Their minimums are
+    strict, and Houdini clamps a strict range wherever the value comes from
+    (typed, set from Python, an expression, or a scene saved with the old
+    soft range), so none of them can reach params.json. The solver is not
+    run on the old values: two of them never finish."""
+    scene = Scene(root, "ranges")
+    scene.sideset("axis:-z:0.01", 0, "[0, 0, 0]")
+    node = scene.node
+    node.setParms({"enable": 1})
+    for name, low, bad, key in (
+            ("skip_frame", 1, -1, ("output", "paraview", "skip_frame")),
+            ("CCD_tolerance", 1e-12, 0.0,
+             ("solver", "contact", "CCD", "tolerance")),
+            ("cof", 0.0, -0.3, ("contact", "friction_coefficient")),
+            ("dhat", 1e-12, 0.0, ("contact", "dhat"))):
+        parm = node.parm(name)
+        template = parm.parmTemplate()
+        assert template.minIsStrict() and template.minValue() == low, \
+            (name, template.minValue(), template.minIsStrict())
+        parm.set(bad)
+        assert parm.eval() == low, (name, "set", parm.eval())
+        parm.setExpression(repr(bad), hou.exprLanguage.Hscript)
+        assert parm.eval() == low, (name, "expression", parm.eval())
+        import json
+        with open(scene.mod.build_params(node)) as handle:
+            value = json.load(handle)
+        for part in key:
+            value = value[part]
+        assert value == low, (name, value)
+        parm.deleteAllKeyframes()
+        parm.revertToDefaults()
+    print("PASS: Skip Frames, CCD tolerance, friction and dhat have strict "
+          "minimums; lower values (set, expression) are clamped before "
+          "they reach params.json")
+
+
 def check_disabled_geometry(root):
     """A disabled geometry is skipped by PolyFEM but still exported by
     Write. Before 2026-11-14 Check Setup skipped it entirely, so what Write
@@ -394,6 +434,7 @@ def main():
     root = tempfile.mkdtemp(prefix="polyfem_check_setup_")
     check_cases_against_solver(root)
     scene = check_other_findings(root)
+    check_value_ranges(root)
     check_disabled_geometry(root)
     check_gate(scene)
     print("workdir:", root)

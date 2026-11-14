@@ -2801,7 +2801,7 @@
                 type    log
                 default { "0.001" }
                 disablewhen "{ enable == 0 }"
-                range   { 1e-12 10 }
+                range   { 1e-12! 10 }
                 help    "Barrier activation distance (length units): surfaces closer than dhat start repelling each other, so they always stay at least a fraction of dhat apart. Use about 1e-3 of your model size (Calc Min Edge shows the smallest mesh edge as a guide); much smaller values make contact harder to solve, much larger ones leave a visible gap."
                 parmtag { "script_callback_language" "python" }
             }
@@ -3207,7 +3207,7 @@
                 type    float
                 default { "0" }
                 disablewhen "{ enable == 0 }"
-                range   { 0 1 }
+                range   { 0! 1 }
                 help    "Coefficient of friction between all surfaces (0 = frictionless, 0.3-0.5 typical for dry contact, ~1 for rubber). The same value applies to every contact pair."
                 parmtag { "script_callback_language" "python" }
             }
@@ -3349,8 +3349,8 @@
                 type    float
                 default { "1e-06" }
                 disablewhen "{ enable == 0 }"
-                range   { 0 10 }
-                help    "Accuracy of continuous collision detection when computing how far a step may move before surfaces would touch. Smaller = more accurate but slower; 1e-6 is standard."
+                range   { 1e-12! 10 }
+                help    "Accuracy of continuous collision detection when computing how far a step may move before surfaces would touch. Smaller = more accurate but slower; 1e-6 is standard. Must be greater than 0 (at 0 the collision check never finishes)."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -4629,8 +4629,8 @@
                 label   "Skip Frames"
                 type    integer
                 default { "1" }
-                range   { 0 10 }
-                help    "Write every Nth time step to the ParaView output (1 = every step, 2 = every other step). Reduces output size for long runs."
+                range   { 1! 10 }
+                help    "Write every Nth time step to the ParaView output (1 = every step, 2 = every other step; at least 1). Reduces output size for long runs."
                 parmtag { "script_callback_language" "python" }
             }
             groupcollapsible {

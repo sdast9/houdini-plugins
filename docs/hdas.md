@@ -385,6 +385,23 @@ Targets the current build's strict-validated schema — the old fork keys
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
 
+### PolyFEM node review fixes (2026-11-14)
+
+A review of the PolyFEM 2.0 node found these, each reproduced before the
+fix; `tests/test_material_file_staging.py` and `check_value_ranges` in
+`tests/test_check_setup.py` cover them (the staging test fails on the
+previous sources).
+
+| What was wrong | Now |
+| --- | --- |
+| A fiber or dispersion file was staged as `input/<its name>`, so `bodyA/dirs.vtk` and `bodyB/dirs.vtk` became one file and geometry 1 was exported with geometry 2's fibers, without a warning | Staging never replaces a different file another mesh or material file parameter uses; a clashing name gets `_<parameter>` appended (`dirs_fib_file2_1.vtk`); the same file chosen twice is shared |
+| A user file named `fibers.vtk` (or `pe_kappa_1_1.txt`) took the name of a file *Write* creates: the first *Write* replaced it, then every *Write* and *Check Setup* failed with "VECTORS 'FIB_DIR1' not found" | Those names are never used for staging. A scene saved before, or a run imported before, that points at them has the file copied aside at the next *Write*. A file already replaced is reported by name, with what to do |
+| *Skip Frames* 0 or below made PolyFEM stall before the first step while allocating memory (3.4 GB in 2 s); *CCD Tolerance* 0 made the collision check never finish; a negative friction coefficient ran | Strict minimums: *Skip Frames* 1, *CCD Tolerance* and *dhat* 1e-12, friction 0. Houdini clamps typed values, expressions and values in scenes saved before, so a lower value cannot reach `params.json` |
+
+Not changed here: PolyFEM rounds the step count up when End Time / dt is
+a hair above a whole number in floating point (End Time 0.14, dt 0.02 runs
+8 steps to t = 0.16); that is in the solver (`State.cpp`).
+
 ### Read PVD review fixes (2026-11-14)
 
 A review of Read PVD 1.0 found seven defects, each reproduced before the fix;

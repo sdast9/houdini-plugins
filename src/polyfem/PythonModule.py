@@ -504,30 +504,118 @@ def portable_path(parent, path):
     return raw.rstrip("/\\") + "/" + relative
 
 
-def _stage_material_file(parent, source, label="material file"):
+# Files Write itself creates in input/ (rewritten at every Write). A material
+# file staged under one of these names would be overwritten by the export.
+_EXPORT_FILE_RE = re.compile(
+    r"^(fibers\.vtk|params\.json|hda_sidesets\.json|hda_scene\.json"
+    r"|pe_[a-z]+_\d+_\d+(_\d+)?\.txt|volumes\d+\.txt"
+    r"|surface_sidesets\d+_(tri|quad)\.txt|point_sidesets\d+\.txt)$",
+    re.IGNORECASE)
+# The per-element material file parameters (fiber files, dispersion files).
+_MATERIAL_FILE_PARM_RE = re.compile(r"^(fam_)?(fib|kappa)_file\d+_\d+(_\d+)?$")
+
+
+def _export_writes(name):
+    """Whether Write creates a file of this name in input/."""
+    return bool(_EXPORT_FILE_RE.match(name))
+
+
+def _material_file_parms(parent):
+    return [parm for parm in parent.parms()
+            if _MATERIAL_FILE_PARM_RE.match(parm.name())]
+
+
+def _held_input_files(parent, input_dir, exclude_parm=None):
+    """{normcased path: path} of the files in input_dir that the node's
+    meshes and material-file parameters (except `exclude_parm`) point at."""
+    held = {}
+    for path in _staged_meshes(parent, input_dir):
+        held[os.path.normcase(path)] = path
+    for parm in _material_file_parms(parent):
+        if parm.name() == exclude_parm:
+            continue
+        value = parm.eval().strip()
+        if not value:
+            continue
+        path = os.path.normpath(os.path.abspath(value))
+        if os.path.dirname(path) == input_dir:
+            held[os.path.normcase(path)] = path
+    return held
+
+
+def _stage_material_file(parent, source, label="material file",
+                         parm_name=None):
     """Copy a user-selected material data file into ``working_dir/input``.
 
     PolyFEM resolves material file references relative to params.json.  Keeping
     the UI parameter pointed at the staged copy makes the viewport preview and
     the solver consume the exact same file, and makes the input folder portable.
+
+    The copy never takes a name that Write creates itself (fibers.vtk, the
+    pe_*.txt dispersion files, ...), which the next Write would overwrite,
+    and never replaces a different file that another mesh or material file
+    parameter of the node uses: two files of the same name from different
+    folders used to become one input file, so one body was simulated with
+    the other's fibers. Such a name gets _<parameter name> appended instead.
+    `parm_name` is the parameter the file is staged for.
     """
-    source = os.path.abspath(hou.text.expandString(source))
+    source = os.path.normpath(os.path.abspath(hou.text.expandString(source)))
     if not os.path.isfile(source):
         raise hou.NodeError(f"{label} not found: {source}")
     working_dir = parent.evalParm("working_dir")
     if not working_dir:
         raise hou.NodeError(
             f"Choose a working directory before selecting a {label}.")
-    input_dir = os.path.join(working_dir, "input")
+    input_dir = os.path.normpath(os.path.abspath(
+        os.path.join(working_dir, "input")))
     os.makedirs(input_dir, exist_ok=True)
-    destination = os.path.join(input_dir, os.path.basename(source))
-    if os.path.abspath(source) != os.path.abspath(destination):
-        try:
-            shutil.copy2(source, destination)
-        except OSError as exc:
-            raise hou.NodeError(
-                f"Could not copy {label} into the input folder: {exc}")
-    return destination
+    if os.path.dirname(source) == input_dir \
+            and not _export_writes(os.path.basename(source)):
+        return source
+    held = _held_input_files(parent, input_dir, exclude_parm=parm_name)
+    stem, extension = os.path.splitext(os.path.basename(source))
+    tag = parm_name or "file"
+    names = [stem + extension, f"{stem}_{tag}{extension}"] + [
+        f"{stem}_{tag}_{number}{extension}" for number in range(2, 100)]
+    for name in names:
+        if _export_writes(name):
+            continue
+        target = os.path.join(input_dir, name)
+        same = os.path.isfile(target) and _same_file(target, source)
+        if os.path.normcase(target) in held and not same:
+            continue  # another input's different file has this name
+        if not same:
+            try:
+                shutil.copy2(source, target)
+            except OSError as exc:
+                raise hou.NodeError(
+                    f"Could not copy {label} into the input folder: {exc}")
+        return target
+    raise hou.NodeError(
+        f"No free file name for {stem}{extension} in {input_dir}")
+
+
+def _restage_export_named_files(parent, input_dir):
+    """Move material files off names that Write is about to overwrite.
+
+    Scenes saved before 2026-11-14 (and runs imported then) can point a fiber
+    or dispersion file parameter at input/fibers.vtk or input/pe_*.txt, which
+    the export rewrites. Copy each such file to a free name first and point
+    the parameter at the copy, so the file read is still the one meant.
+    """
+    input_dir = os.path.normpath(os.path.abspath(input_dir))
+    for parm in _material_file_parms(parent):
+        value = parm.eval().strip()
+        if not value:
+            continue
+        path = os.path.normpath(os.path.abspath(value))
+        if os.path.dirname(path) != input_dir \
+                or not _export_writes(os.path.basename(path)) \
+                or not os.path.isfile(path):
+            continue
+        staged = _stage_material_file(parent, path, "material file",
+                                      parm.name())
+        parm.set(portable_path(parent, staged))
 
 
 def _same_file(first, second):
@@ -601,7 +689,7 @@ def material_file_changed(kwargs):
                 staged = _stage_material_file(
                     parent, source,
                     "fiber file" if "fib_file" in parm.name()
-                    else "per-element scalar file")
+                    else "per-element scalar file", parm.name())
             except hou.NodeError as exc:
                 _message(str(exc))
                 return
@@ -3469,7 +3557,19 @@ def _read_element_file(path, count, components, field, label, parent=None,
     if not os.path.isfile(path):
         raise hou.NodeError(f"{label}: file not found: {path}")
     if components == 3 and path.lower().endswith(".vtk"):
-        values = read_cell_vectors_legacy_vtk(path, field or "FIB_DIR1")
+        try:
+            values = read_cell_vectors_legacy_vtk(path, field or "FIB_DIR1")
+        except hou.NodeError:
+            if os.path.basename(path).lower() != FIBER_FILE \
+                    or os.path.basename(os.path.dirname(
+                        os.path.normpath(path))) != "input":
+                raise
+            raise hou.NodeError(
+                f"{label}: array '{field or 'FIB_DIR1'}' is not in {path}. "
+                f"input/{FIBER_FILE} is the file Write creates for the "
+                "solver, and an earlier Write replaced the fiber file that "
+                "was staged under that name. Pick your original fiber file "
+                "again (it is now staged under a name Write never uses).")
     else:
         text = open(path).read()
         delimiter = "," if ("," in text and ".vtk" not in path.lower()) else None
@@ -4138,6 +4238,7 @@ def export_per_element_materials(parent, input_dir, output_dir=None):
     constant directions). ReadPVD uses it only when the VTU does not contain
     PolyFEM material fields.
     """
+    _restage_export_named_files(parent, input_dir)
     table, total = global_element_table(parent)
     if not total:
         return
@@ -8227,7 +8328,8 @@ def _import_scalar(parent, geo, vol, fam, name, value, params_dir,
     if os.path.isfile(source_path):
         try:
             source_path = _stage_material_file(
-                parent, source_path, f"{name} per-element file")
+                parent, source_path, f"{name} per-element file",
+                _parm_name(geo, vol, fam, f"{name}_file"))
         except hou.NodeError as exc:
             if warnings is not None:
                 warnings.append(str(exc))
@@ -8252,7 +8354,8 @@ def _import_fiber_direction(parent, geo, vol, fam, value, params_dir,
             params_dir, relative)
         try:
             source_path = _stage_material_file(
-                parent, source_path, "fiber file")
+                parent, source_path, "fiber file",
+                _parm_name(geo, vol, fam, "fib_file"))
         except hou.NodeError as exc:
             if warnings is not None:
                 warnings.append(str(exc))
