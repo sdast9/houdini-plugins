@@ -1980,7 +1980,13 @@ def simulation_steps(parent):
             raise hou.NodeError(
                 f"The Time tab does not define a run: End Time ({tend:g}) "
                 f"must be after Start Time ({t0:g}) and dt ({dt:g}) above 0.")
-        steps = int(math.ceil((tend - t0) / dt))
+        # PolyFEM's rule (State.cpp, sdast9/polyfem 2026-11-14): a whole
+        # number of steps up to roundoff is that number, not one more past
+        # End Time ((0.14 - 0) / 0.02 = 7.000000000000001 is 7 steps).
+        ratio = (tend - t0) / dt
+        nearest = round(ratio)
+        steps = int(nearest) if abs(ratio - nearest) <= 1e-12 * max(
+            1.0, nearest) else int(math.ceil(ratio))
     elif has_tend and has_steps:
         if not (steps >= 1 and tend > t0):
             raise hou.NodeError(
@@ -5898,12 +5904,205 @@ def write_scene_record(parent, input_dir, data, plans, motions):
                 "order": int(parent.evalParm(f"mainOrder{geo}_{vol}")) + 1,
                 "vertices": positions[used].tolist(),
                 "faces": index.tolist()})
+    record["materials"] = _material_ui_records(parent, input_dir, data)
     path = os.path.join(input_dir, SCENE_RECORD_FILE)
     temporary = path + ".tmp"
     with open(temporary, "w") as handle:
         json.dump(record, handle)
     os.replace(temporary, path)
     return record
+
+
+# =============================================================================
+# Fiber settings in the scene record (2026-11-14)
+#
+# params.json holds what PolyFEM reads: a symmetric +/-theta family as two
+# expanded models with their own direction arrays, and every per-element
+# source (attribute, cylindrical, curve) as a file reference. Import alone can
+# only rebuild those as file-based families, which give the same material but
+# lose the settings that made them (mirror, half angle, axis, source). The
+# scene record keeps each fiber subdomain's Material settings; Import puts
+# them back only when they reproduce the imported material block and the
+# per-element values in its files exactly, and otherwise keeps the file-based
+# families.
+# =============================================================================
+
+
+def _ui_value(parm):
+    """A parameter's value in the form setParms takes back."""
+    kind = parm.parmTemplate().type()
+    if kind == hou.parmTemplateType.Menu:
+        return parm.evalAsString()
+    if kind == hou.parmTemplateType.String:
+        return parm.unexpandedString()
+    return parm.eval()
+
+
+def _material_ui_parms(parent, geo, vol):
+    """{name: value} of every setting in one subdomain's Material folder,
+    fiber families included (their count under num_fiber_families<g>_<v>)."""
+    folder = parent.parmTemplateGroup().find("material#_#")
+    values = {}
+    skip = (hou.parmTemplateType.Separator, hou.parmTemplateType.Label,
+            hou.parmTemplateType.Button)
+
+    def visit(templates):
+        for template in templates:
+            if template.type() == hou.parmTemplateType.Folder:
+                if template.name() != "num_fiber_families#_#":
+                    visit(template.parmTemplates())
+                continue
+            if template.type() in skip:
+                continue
+            name = template.name().replace("#", str(geo), 1) \
+                .replace("#", str(vol), 1)
+            tuple_parm = parent.parmTuple(name)
+            if tuple_parm is None:
+                continue
+            for parm in tuple_parm:
+                values[parm.name()] = _ui_value(parm)
+
+    if folder is not None:
+        visit(folder.parmTemplates())
+    count = parent.parm(f"num_fiber_families{geo}_{vol}")
+    if count is not None:
+        values[count.name()] = count.eval()
+        for parm in count.multiParmInstances():
+            if parm.parmTemplate().type() not in skip:
+                values[parm.name()] = _ui_value(parm)
+    return values
+
+
+def _apply_material_ui(parent, geo, vol, values):
+    count = f"num_fiber_families{geo}_{vol}"
+    if count in values and parent.parm(count) is not None:
+        parent.parm(count).set(values[count])
+    parent.setParms({name: value for name, value in values.items()
+                     if name != count and parent.parm(name) is not None})
+
+
+def _material_file_refs(material):
+    """Names of the per-element files one material block reads."""
+    found = set()
+
+    def walk(value):
+        if isinstance(value, dict):
+            if value.get("type") == "per_element_file" \
+                    and isinstance(value.get("path"), str):
+                found.add(value["path"])
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+        elif isinstance(value, str) and _export_writes(value) \
+                and value.lower().endswith(".txt"):
+            found.add(value)
+
+    walk(material)
+    return sorted(found)
+
+
+def _material_ui_records(parent, input_dir, data):
+    """{material id: {"material", "files", "parms"}} of every enabled
+    simulated subdomain with a fiber or composite material."""
+    by_id = {entry.get("id"): entry for entry in data.get("materials", [])
+             if isinstance(entry, dict)}
+    records = {}
+    for geo in range(1, parent.evalParm("num_geos") + 1):
+        if parent.parm(f"is_obstacle{geo}").eval() \
+                or not parent.parm(f"is_enabled{geo}").eval() \
+                or parent.node(f"geo_{geo}") is None:
+            continue
+        for vol in range(1, parent.evalParm(f"num_volumes{geo}") + 1):
+            token = material_token(parent, geo, vol)
+            material = by_id.get(vol_id(geo, vol))
+            if material is None or (token != "MaterialSum"
+                                    and token not in FIBER_MODELS):
+                continue
+            files = {}
+            for name in _material_file_refs(material):
+                path = os.path.join(input_dir, name)
+                if os.path.isfile(path):
+                    files[name] = _file_digest(path)
+            records[str(vol_id(geo, vol))] = {
+                "material": material, "files": files,
+                "parms": _material_ui_parms(parent, geo, vol)}
+    return records
+
+
+def _material_ui_reproduces(parent, geo, vol, material, params_dir):
+    """Whether the subdomain's settings give exactly `material` and the
+    per-element values in its files."""
+    built = json.loads(json.dumps(build_material(parent, geo, vol)))
+    if built != material:
+        return False
+    fields, count = per_element_data(parent, geo)
+    table, total = global_element_table(parent)
+    offset = next((start for index, start, _ in table
+                   if int(index) == int(geo)), None)
+    if offset is None:
+        return False
+    for fam, model in material_families(parent, geo, vol):
+        for side in mirror_sides(parent, geo, vol, fam):
+            values = fields.get(fiber_attrib(vol, fam, side))
+            if values is None:
+                continue
+            stored = read_cell_vectors_legacy_vtk(
+                os.path.join(params_dir, FIBER_FILE),
+                fiber_field(geo, vol, fam, side))
+            if len(stored) != total or not np.allclose(
+                    values, stored[offset:offset + count], rtol=0,
+                    atol=1e-8):
+                return False
+        kappa = fields.get(scalar_attrib("kappa", vol, fam))
+        if kappa is not None:
+            stored = np.loadtxt(os.path.join(
+                params_dir, per_element_scalar_file(geo, vol, fam, "kappa")),
+                ndmin=1)
+            if len(stored) != total or not np.allclose(
+                    kappa, stored[offset:offset + count], rtol=1e-8,
+                    atol=0):
+                return False
+    return True
+
+
+def _restore_material_ui(parent, scene, materials, params_dir, warnings):
+    """Import: put recorded fiber settings back where they reproduce the
+    imported material exactly (see the section comment)."""
+    records = (scene or {}).get("materials")
+    if not isinstance(records, dict):
+        return
+    for material in materials:
+        if not isinstance(material, dict):
+            continue
+        entry = records.get(str(material.get("id")))
+        if not isinstance(entry, dict) or entry.get("material") != material:
+            continue
+        geo, vol = divmod(int(material["id"]), 1000)
+        if parent.parm(f"materials{geo}_{vol}") is None:
+            continue
+        files = entry.get("files") or {}
+        if any(not os.path.isfile(os.path.join(params_dir, name))
+               or _file_digest(os.path.join(params_dir, name)) != digest
+               for name, digest in files.items()):
+            continue
+        imported = _material_ui_parms(parent, geo, vol)
+        try:
+            _apply_material_ui(parent, geo, vol, entry.get("parms") or {})
+            restored = _material_ui_reproduces(parent, geo, vol, material,
+                                               params_dir)
+        except (hou.Error, OSError, ValueError, TypeError, KeyError):
+            restored = False
+        if not restored:
+            _apply_material_ui(parent, geo, vol, imported)
+            warnings.append(
+                f"Geometry {geo} subdomain {vol}: its fiber settings as "
+                "entered (sources, symmetric +/-theta families) no longer "
+                "reproduce the run's fibers here (for example a SOP or file "
+                "they read is missing or changed), so its families are "
+                "imported as per-element files, which give the same "
+                "material.")
 
 
 def load_scene_record(input_dir):
@@ -6787,6 +6986,7 @@ _RUN_RECORD = ".polyfem_run.json"
 _EXIT_STATUS_FILE = ".polyfem_exit_status"
 _LAUNCHER_PID_FILE = ".polyfem_launcher_pid"
 _TERMINAL_LOG = "terminal_log.txt"
+_CONSOLE_LOG = "console_log.txt"
 _POLL_SECONDS = 1.0
 _STEP_RE = re.compile(r"\b(\d+)/(\d+)\s+t=([-+0-9.eE]+)")
 _STOPPED_RE = re.compile(r"PolyFEM stopped: (.*)")
@@ -7233,7 +7433,14 @@ def run_background(kwargs):
                                            "output"))
     _clear_run_files(output)
     log_path = os.path.join(output, "log.txt")
-    log_file = open(log_path, "w")
+    capture_path = log_path
+    if parent.evalParm("write_log"):
+        # Save Log makes PolyFEM write log.txt itself; capturing the console
+        # into the same file wrote every line twice. The console (which also
+        # holds anything printed outside PolyFEM's logger) goes to its own
+        # file, and Run Status follows PolyFEM's log.
+        capture_path = os.path.join(output, _CONSOLE_LOG)
+    log_file = open(capture_path, "w")
     options = {}
     if platform.system() == "Windows":
         options["creationflags"] = getattr(
@@ -8430,8 +8637,9 @@ def _import_composite(parent, geo, vol, models, params_dir, warnings=None):
     if penalty and parent.parm(f"vp_k{geo}_{vol}") is not None:
         parent.setParms({f"vp_k{geo}_{vol}": penalty.get("k", 1e8)})
     for index, model in enumerate(families, start=1):
-        # A symmetric pair round-trips as two independent families: the
-        # expanded stack is what PolyFEM sees, so this is value-exact.
+        # A symmetric pair comes in as two independent families: the
+        # expanded stack is what PolyFEM sees, so this is value-exact. The
+        # scene record puts the pair back when it can (_restore_material_ui).
         parent.setParms({f"fam_mirror{geo}_{vol}_{index}": 0})
         _import_fiber_model(
             parent, geo, vol, index, model, params_dir, warnings)
@@ -8978,6 +9186,12 @@ def _restore_solver(parent, data, legacy, warnings):
         if isinstance(al_nonlinear, dict) \
                 and "max_iterations" in al_nonlinear:
             parms["al_max_iterations"] = al_nonlinear["max_iterations"]
+        else:
+            # Without its own budget the AL phase uses the nonlinear one
+            # (build_solver writes it only when they differ); the node's
+            # earlier value must not survive the import.
+            parms["al_max_iterations"] = parms.get(
+                "max_iterations", parent.evalParm("max_iterations"))
 
     advanced = solver.get("advanced", {})
     if isinstance(advanced, dict):
@@ -9484,6 +9698,7 @@ def read_params(kwargs):
                 parent, geo, vol, None, m, params_dir, warnings)
         else:
             _import_isotropic(parent, geo, vol, m)
+    _restore_material_ui(parent, scene, materials, params_dir, warnings)
 
     _restore_time(parent, data)
     _restore_timeline(parent, scene)

@@ -130,6 +130,40 @@ def check_background(root):
     return node
 
 
+def check_save_log(root):
+    """Save Log with Run in Background: PolyFEM writes log.txt itself, and
+    the console capture used to go into the same file, so every line was
+    there twice (2026-11-14 review). Now log.txt is PolyFEM's own log, once,
+    and the console goes to console_log.txt; Run Status still follows the
+    run, also with Quiet on (an empty console)."""
+    for quiet in (0, 1):
+        work = os.path.join(root, f"save_log_quiet{quiet}")
+        node = scene(work, f"save_log_quiet{quiet}")
+        node.setParms({"write_log": 1, "log_quiet": quiet})
+        module = node.hdaModule()
+        assert module.run_background({"node": node}) is not None
+        status = wait(module, node)
+        assert status.startswith("Completed in") and "2 time steps" in status, \
+            (quiet, status)
+        lines = open(os.path.join(work, "output", "log.txt")).read() \
+            .splitlines()
+        steps = [line for line in lines if "/2  t=" in line]
+        assert len(steps) == 2, (quiet, steps)
+        # PolyFEM's own file logs every level (identical trace lines in one
+        # millisecond are real); its info lines are the console's, once.
+        info = [line for line in lines if "] [info] " in line]
+        assert len(set(info)) == len(info), (quiet, "repeated info lines")
+        console = os.path.join(work, "output", "console_log.txt")
+        assert os.path.isfile(console), quiet
+        shown = [line for line in open(console).read().splitlines()
+                 if "] [info] " in line]
+        assert shown == ([] if quiet else info), (quiet, len(shown), len(info))
+        assert module.log_path_for(node) == os.path.join(
+            work, "output", "log.txt"), module.log_path_for(node)
+    print("PASS: Save Log with Run in Background writes each log line once "
+          "(console in console_log.txt), with and without Quiet")
+
+
 def check_stop_and_refusal(root):
     node = scene(os.path.join(root, "long"), "long", steps=2000)
     module = node.hdaModule()
@@ -298,6 +332,7 @@ def main():
     node = check_background(root)
     check_meanings(node.hdaModule())
     check_results_and_log(root, node)
+    check_save_log(root)
     check_stop_and_refusal(root)
     check_terminal_script(root)
     check_hip_paths(root)

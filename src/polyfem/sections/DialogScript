@@ -4564,7 +4564,7 @@
                 label   "Save Log"
                 type    toggle
                 default { "0" }
-                help    "Also write the log to <working_dir>/output/log.txt (always on for background runs)."
+                help    "Also write the log to <working_dir>/output/log.txt. Run in Background writes log.txt anyway; with Save Log on, log.txt is PolyFEM's own log and the console output goes to output/console_log.txt."
                 parmtag { "filechooser_mode" "write" }
                 parmtag { "script_callback_language" "python" }
             }

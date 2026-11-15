@@ -398,9 +398,15 @@ previous sources).
 | A user file named `fibers.vtk` (or `pe_kappa_1_1.txt`) took the name of a file *Write* creates: the first *Write* replaced it, then every *Write* and *Check Setup* failed with "VECTORS 'FIB_DIR1' not found" | Those names are never used for staging. A scene saved before, or a run imported before, that points at them has the file copied aside at the next *Write*. A file already replaced is reported by name, with what to do |
 | *Skip Frames* 0 or below made PolyFEM stall before the first step while allocating memory (3.4 GB in 2 s); *CCD Tolerance* 0 made the collision check never finish; a negative friction coefficient ran | Strict minimums: *Skip Frames* 1, *CCD Tolerance* and *dhat* 1e-12, friction 0. Houdini clamps typed values, expressions and values in scenes saved before, so a lower value cannot reach `params.json` |
 
-Not changed here: PolyFEM rounds the step count up when End Time / dt is
-a hair above a whole number in floating point (End Time 0.14, dt 0.02 runs
-8 steps to t = 0.16); that is in the solver (`State.cpp`).
+Follow-ups the same day (`tests/test_review_followups.py`, `check_save_log`
+in `tests/test_run_feedback.py`; each fails on the previous sources):
+
+| What was wrong | Now |
+| --- | --- |
+| End Time 0.14 with dt 0.02 ran 8 steps to t = 0.16: (0.14 − 0) / 0.02 is 7.000000000000001 in floating point and PolyFEM rounded it up | PolyFEM (sdast9/polyfem, `State.cpp`) takes a ratio that is a whole number up to roundoff (1e-12 relative) as that number; a real remainder still adds a step. The Time tab readout counts the same way. Needs a PolyFEM build from 2026-11-14 or later; an older one still runs the extra step |
+| *Save Log* with *Run in Background* wrote every line of `output/log.txt` twice (PolyFEM's own log and the console capture shared the file) | `log.txt` is PolyFEM's own log; the console goes to `output/console_log.txt`. *Run Status* and *Open Log* follow `log.txt`, also with *Quiet* on |
+| *Import* left *Max Iterations (AL Phase)* at the node's earlier value when the file had no AL budget of its own (it then uses the nonlinear one) | Set to the imported *Max Iterations* |
+| *Import* brought a symmetric ±θ fiber family back as two file-based families, and a cylindrical, curve or attribute source as a file (same material, settings lost) | *Write* keeps each fiber subdomain's Material settings in `input/hda_scene.json`; *Import* restores them when they reproduce the imported material block and the per-element values in its files exactly, and otherwise keeps the file-based families with a note (for example when a SOP they read is gone) |
 
 ### Read PVD review fixes (2026-11-14)
 
