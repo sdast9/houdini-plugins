@@ -70,6 +70,12 @@ hython tests/test_readpvd_materials.py   # material fields + fiber visualization
 * Higher-order meshes keep every node as a point (mid-edge nodes are loose
   points): point numbers follow the file's nodes, which the PolyFEM node
   relies on.
+* Orientation (2026-11-15): tetrahedra are built as Gmsh corners
+  `[1,2,3,0]`, positive by Houdini's convention (`measuredvolume` > 0);
+  before, `[1,3,2,0]` made every tet inside out. Read PVD builds its tets the
+  same way (its supplementary blocks also built hexahedra twisted), boundary
+  faces point outward, and the PolyFEM node's surface keeps its face
+  numbering, so sideset picks saved in scenes keep their faces.
 * numpy bulk point creation + compiled VEX prim construction. The highest
   supported mesh dimension is emitted as the primary topology: tet/hex,
   tri/quad, or line.

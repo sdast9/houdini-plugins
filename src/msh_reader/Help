@@ -20,7 +20,8 @@ first group (the one PolyFEM assigns), with a warning. MSH 2.2 writes such an
 element once per group; the PolyFEM node refuses that file, since PolyFEM
 reads every copy and stops on the duplicate: save it as MSH 4.1. MSH 4.0 is not read. A
 higher-order mesh keeps all its nodes as points, so mid-edge nodes appear as
-loose points.
+loose points. Tetrahedra are positively oriented by Houdini's convention
+(`measuredvolume` > 0).
 
 == Attributes ==
 

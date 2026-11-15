@@ -83,7 +83,10 @@ def main():
     reader.cook(force=True)
     geo = reader.geometry()
     assert len(geo.prims()) == 2
-    assert point_tags(geo.prim(0)) == (2, 4, 3, 1)
+    # Gmsh corners [1,2,3,0]: positive by Houdini's convention (2026-11-15;
+    # [1,3,2,0], inside out, before)
+    assert point_tags(geo.prim(0)) == (2, 3, 4, 1)
+    assert geo.prim(0).intrinsicValue("measuredvolume") > 0
     assert geo.prim(0).attribValue("Entity") == 4
     assert geo.prim(0).attribValue("ElementNum") == 0
     assert geo.prim(0).attribValue("is_volume") == 1

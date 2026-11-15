@@ -79,7 +79,12 @@ if (vcount == 8) {
         }
     }
 } else if (vcount == 4) {
-    for (int f = 0; f < 4; f++) {
+    // Faces in the order 0,2,1,3: the MSH Reader builds tets as Gmsh corners
+    // [1,2,3,0] (positive) since 2026-11-15, [1,3,2,0] (inside out) before;
+    // this order emits the same faces in the same order as before, so the
+    // surface prim numbers saved in sideset picks keep their faces.
+    int tet_faces[] = array(0, 2, 1, 3);
+    foreach (int f; tet_faces) {
         if (tet_adjacent(0, @primnum, f) == -1) {
             int pts[]; int ids[];
             for (int j = 0; j < 3; j++) {

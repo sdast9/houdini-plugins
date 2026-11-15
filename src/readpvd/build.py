@@ -87,7 +87,8 @@ BUILD_PRIMS_VEX = """\
 int tet[] = detail(0, "tet_conn");
 int tet_bits[] = detail(0, "tet_face_bits");
 for (int i = 0; i < len(tet); i += 4) {
-    int prim = addprim(0, "tet", tet[i+1], tet[i+3], tet[i+2], tet[i]);
+    // Gmsh/VTK corners [1,2,3,0]: positive by Houdini's convention
+    int prim = addprim(0, "tet", tet[i+1], tet[i+2], tet[i+3], tet[i]);
     setprimattrib(0, "source_cell_index", prim, i / 4);
     setprimattrib(0, "source_cell_family", prim, "tet");
     if (len(tet_bits))
@@ -144,7 +145,12 @@ if (vcount == 8) {
     }
     removeprim(0, @primnum, 0);
 } else if (vcount == 4 && primintrinsic(0, "typename", @primnum) == "Tetrahedron") {
-    for (int f = 0, mask = 1; f < 4; f++, mask *= 2) {
+    // faces 0,2,1,3: the same faces in the same order as the tet order
+    // [1,3,2,0] used before 2026-11-15 gave (see build_prims)
+    int tet_faces[] = array(0, 2, 1, 3);
+    int face_mask[] = array(1, 2, 4, 8);     // bit f of readpvd_face_bits
+    foreach (int f; tet_faces) {
+        int mask = face_mask[f];
         int pts[];
         for (int j = 0; j < 3; j++)
             append(pts, primpoint(0, @primnum, tet_faceindex(f, j)));

@@ -1844,7 +1844,7 @@ def _coincidence_groups(points, body=None):
 # build_prims vertex order of each volume prim, indexed by Houdini's
 # tet_faceindex / hex_faceindex tables.
 _FACE_TABLES = {
-    "tet": (np.array([1, 3, 2, 0]),
+    "tet": (np.array([1, 2, 3, 0]),
             np.array([[1, 2, 3], [0, 3, 2], [0, 1, 3], [0, 2, 1]])),
     "hex": (np.array([0, 1, 3, 2, 4, 5, 7, 6]),
             np.array([[0, 4, 6, 2], [1, 3, 7, 5], [0, 1, 5, 4],
@@ -2032,14 +2032,17 @@ def _build_block_geometry(mesh, block_name, slug, colors, values, components):
     point_group = block.createPointGroup(f"readpvd_block_{slug}")
     point_group.add(points)
     for family, connectivity in mesh["cells"].items():
+        # VTK corners into Houdini's vertex order, as build_prims does
+        # (_FACE_TABLES): positive tets, untwisted hexes
         if family == "tet":
             for indices in connectivity:
                 prim_group.add(block.createTetrahedronInPlace(
-                    *(points[int(i)] for i in indices)))
+                    *(points[int(indices[k])] for k in (1, 2, 3, 0))))
         elif family == "hex":
             for indices in connectivity:
                 prim_group.add(block.createHexahedronInPlace(
-                    *(points[int(i)] for i in indices)))
+                    *(points[int(indices[k])]
+                      for k in (0, 1, 3, 2, 4, 5, 7, 6))))
         elif family == "line":
             for indices in connectivity:
                 prim = block.createPolygon(is_closed=False)
