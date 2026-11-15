@@ -3301,10 +3301,10 @@
                 name    "adhesion_epsa"
                 label   "Adhesion Slip Velocity (epsa)"
                 type    log
-                default { "1" }
+                default { "0.001" }
                 disablewhen "{ adhesion_enable == 0 }"
                 range   { 1e-06! 1 }
-                help    "Smoothing velocity for tangential adhesion, like epsv for friction: slower sliding is treated as stuck with a smooth transition."
+                help    "Smoothing velocity for tangential adhesion (length per time), like epsv for friction: slower sliding is treated as stuck with a smooth transition. Default 0.001, PolyFEM's own default and the same as epsv."
                 parmtag { "script_callback_language" "python" }
             }
             parm {

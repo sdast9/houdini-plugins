@@ -89,6 +89,18 @@ def check_al_iterations(root):
           "has no AL budget of its own")
 
 
+def check_adhesion_slip_default(root):
+    """Adhesion Slip Velocity defaulted to 1.0 against PolyFEM's 0.001 (and
+    epsv's 0.001); user decision 2026-11-15: 0.001."""
+    node, _, _ = scene(root, "adhesion")
+    template = node.parm("adhesion_epsa").parmTemplate()
+    assert template.defaultValue()[0] == 0.001, template.defaultValue()
+    node.setParms({"enable": 1, "adhesion_enable": 1})
+    written = params(node)["contact"]["adhesion"]
+    assert written["epsa"] == 0.001, written
+    print("PASS: Adhesion Slip Velocity defaults to 0.001, PolyFEM's default")
+
+
 def fiber_scene(root, label):
     node, mod, work = scene(root, label)
     node.setParms({"materials1_1": mod.MATERIAL_TOKENS.index("MaterialSum"),
@@ -156,6 +168,7 @@ def main():
     root = tempfile.mkdtemp(prefix="polyfem_review_followups_")
     check_step_count(root)
     check_al_iterations(root)
+    check_adhesion_slip_default(root)
     check_fiber_settings(root)
     print("workdir:", root)
 

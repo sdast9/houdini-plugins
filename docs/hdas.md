@@ -424,6 +424,7 @@ in `tests/test_run_feedback.py`; each fails on the previous sources):
 | *Save Log* with *Run in Background* wrote every line of `output/log.txt` twice (PolyFEM's own log and the console capture shared the file) | `log.txt` is PolyFEM's own log; the console goes to `output/console_log.txt`. *Run Status* and *Open Log* follow `log.txt`, also with *Quiet* on |
 | *Import* left *Max Iterations (AL Phase)* at the node's earlier value when the file had no AL budget of its own (it then uses the nonlinear one) | Set to the imported *Max Iterations* |
 | *Import* brought a symmetric ±θ fiber family back as two file-based families, and a cylindrical, curve or attribute source as a file (same material, settings lost) | *Write* keeps each fiber subdomain's Material settings in `input/hda_scene.json`; *Import* restores them when they reproduce the imported material block and the per-element values in its files exactly, and otherwise keeps the file-based families with a note (for example when a SOP they read is gone) |
+| *Adhesion Slip Velocity (epsa)* defaulted to 1.0, against PolyFEM's 0.001 and *Static Friction Velocity*'s 0.001 | Default 0.001 (user decision 2026-11-15). Houdini saves only values that differ from the default, so a scene saved with adhesion on and epsa left at 1.0 now writes 0.001; set 1.0 by hand to reproduce such a run |
 
 ### Read PVD review fixes (2026-11-14)
 

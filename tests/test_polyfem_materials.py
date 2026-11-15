@@ -355,13 +355,19 @@ def main():
           fresh.evalParm("materials1_1")
           == phm.MATERIAL_TOKENS.index("HGODispersion"),
           phm.MATERIAL_TOKENS[fresh.evalParm("materials1_1")])
-    check("re-imported per-element fiber source",
-          fresh.parm("fib_source1_1").evalAsString() == "file"
-          and fresh.evalParm("fib_file_field1_1") == "FIB_1_1",
-          fresh.parm("fib_source1_1").evalAsString())
-    check("re-imported per-element kappa source",
-          fresh.parm("kappa_source1_1").evalAsString() == "file",
-          fresh.parm("kappa_source1_1").evalAsString())
+    # Since 2026-11-14 the scene record restores the sources as entered
+    # (here per-element attributes) when they reproduce the run; without
+    # it they come back as the run's per-element files
+    # (tests/test_review_followups.py covers that path).
+    entered = {name: node.parm(name).evalAsString() if name.endswith(
+        "source1_1") else node.evalParm(name)
+        for name in ("fib_source1_1", "fib_sop1_1", "fib_attrib1_1",
+                     "kappa_source1_1", "kappa_sop1_1", "kappa_attrib1_1")}
+    restored = {name: fresh.parm(name).evalAsString() if name.endswith(
+        "source1_1") else fresh.evalParm(name) for name in entered}
+    check("re-imported per-element fiber and kappa sources as entered",
+          restored == entered and entered["fib_source1_1"] == "attribute",
+          f"{restored} vs {entered}")
     check("re-imported k1/k2", fresh.evalParm("hgo_k11_1") == 1e4
           and fresh.evalParm("hgo_k21_1") == 5.0)
 
