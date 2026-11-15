@@ -282,9 +282,9 @@ def check_selection_patterns(root):
 
 
 def main():
-    hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"))
+    hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"), force_use_assets=True)
     hou.hda.installFile(os.path.join(
-        BASE, "object_stevenabramowitch.dev.PolyFEM.2.0.hdanc"))
+        BASE, "object_stevenabramowitch.dev.PolyFEM.2.0.hdanc"), force_use_assets=True)
     root = tempfile.mkdtemp(prefix="polyfem_stale_")
     check_cleared_mesh(root)
     check_default_condition(root)

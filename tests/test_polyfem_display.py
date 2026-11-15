@@ -44,10 +44,10 @@ def xform_matrix(node):
 
 
 def main():
-    hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"))
+    hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"), force_use_assets=True)
     hou.hda.installFile(
         os.path.join(
-            BASE, "object_stevenabramowitch.dev.PolyFEM.2.0.hdanc"))
+            BASE, "object_stevenabramowitch.dev.PolyFEM.2.0.hdanc"), force_use_assets=True)
 
     work = tempfile.mkdtemp(prefix="polyfem_display_test_")
     mesh = os.path.join(work, "cube.msh")

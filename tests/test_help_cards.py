@@ -45,7 +45,7 @@ def block_types(block, found):
 def main():
     pages = api.get_pages()
     for library, category, name, phrases in ASSETS:
-        hou.hda.installFile(os.path.join(BASE, library))
+        hou.hda.installFile(os.path.join(BASE, library), force_use_assets=True)
         node_type = hou.nodeType(category(), name)
         text = node_type.embeddedHelp()
         assert text.strip(), f"{name}: no help card"

@@ -121,7 +121,7 @@ def ensure_material_run():
 
 def main():
     assert os.path.isfile(POLYFEM_BIN), f"missing {POLYFEM_BIN}"
-    hou.hda.installFile(os.path.join(BASE, "object_readPVD.1.0.hdanc"))
+    hou.hda.installFile(os.path.join(BASE, "object_readPVD.1.0.hdanc"), force_use_assets=True)
     out_dir, pvd = ensure_material_run()
 
     node = hou.node("/obj").createNode("readPVD::1.0", "mat_viewer")

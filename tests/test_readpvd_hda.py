@@ -253,7 +253,7 @@ def check_conditionals(group, skip=()):
 
 
 def main():
-    hou.hda.installFile(os.path.join(BASE, "object_readPVD.1.0.hdanc"))
+    hou.hda.installFile(os.path.join(BASE, "object_readPVD.1.0.hdanc"), force_use_assets=True)
     node = hou.node("/obj").createNode("readPVD::1.0", "viewer")
     # new nodes cache by default, limited to the memory available at creation
     assert node.evalParm("cache") == 1

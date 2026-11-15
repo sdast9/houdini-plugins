@@ -94,9 +94,9 @@ def timed_cook(node):
 
 
 def main():
-    hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"))
+    hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"), force_use_assets=True)
     hou.hda.installFile(os.path.join(
-        BASE, "object_stevenabramowitch.dev.PolyFEM.2.0.hdanc"))
+        BASE, "object_stevenabramowitch.dev.PolyFEM.2.0.hdanc"), force_use_assets=True)
     work = tempfile.mkdtemp(prefix="polyfem_display_chain_")
     mesh = os.path.join(work, "box.msh")
     count = write_box(mesh, 40)        # 384,000 tets

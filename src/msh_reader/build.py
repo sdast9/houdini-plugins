@@ -101,7 +101,10 @@ def reload(kwargs):
         asset,
         parm_template_group=ptg,
         sections={"PythonModule": module_src,
-                  "Help": hda_build.read_source("msh_reader", "Help")},
+                  "Help": hda_build.read_source("msh_reader", "Help"),
+                  # show the reader's errors AND warnings on the asset
+                  # (an inner node's warning does not reach it otherwise)
+                  "MessageNodes": "read_msh"},
     )
     return path
 

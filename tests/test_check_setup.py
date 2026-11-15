@@ -62,6 +62,25 @@ def write_box(path, n=2):
     return path
 
 
+def write_box_two_groups(path):
+    """The box as Gmsh writes MSH 2.2 when its volume is in physical groups
+    1 and 2: every tetrahedron twice, once per group."""
+    write_box(path)
+    with open(path) as handle:
+        head, rest = handle.read().split("$Elements\n")
+    lines = rest.split("$EndElements")[0].split("\n")[1:-1]
+    rows = []
+    for line in lines:
+        values = line.split()
+        for group in ("1", "2"):
+            rows.append(" ".join([str(len(rows) + 1), values[1], values[2],
+                                  group] + values[4:]))
+    with open(path, "w") as handle:
+        handle.write(head + f"$Elements\n{len(rows)}\n" + "\n".join(rows)
+                     + "\n$EndElements\n")
+    return path
+
+
 def write_two_hexes(path):
     """Two unit hexahedra sharing a face, physical groups 1 and 2."""
     points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (0, 0, 1),
@@ -272,6 +291,30 @@ def check_other_findings(root):
     return scene
 
 
+def check_duplicate_elements(root):
+    """An MSH 2.2 volume in two physical groups: the MSH Reader loads each
+    tetrahedron once, but PolyFEM reads both copies and stops, so Check
+    Setup refuses the mesh by name (2026-11-14 MSH Reader review)."""
+    scene = Scene(root, "two_groups", write_box_two_groups)
+    source = scene.node.node("geo_1").geometry()
+    assert len(source.prims()) == 48, len(source.prims())
+    assert source.attribValue("msh_duplicate_elements") == 48
+    message = only(scene.check("write"), "errors", "more than once")
+    assert "MSH 4.1" in message, message
+    assert scene.mod.write_params_only({"node": scene.node}) is None
+    scene.sideset("axis:-z:0.01", 0, "[0, 0, 0]")
+    code, log = scene.solve_anyway()
+    assert code == 1 and "are the same element" in log, (code, log[-400:])
+    plain = Scene(root, "one_group")
+    assert plain.node.node("geo_1").geometry().attribValue(
+        "msh_duplicate_elements") == 0
+    assert not any("more than once" in error
+                   for error in plain.check("write")["errors"])
+    print("PASS: an MSH 2.2 mesh with elements written once per physical "
+          "group is refused by name (PolyFEM: 'the same element'); the same "
+          "mesh written once is not")
+
+
 def check_value_ranges(root):
     """Values PolyFEM hangs on (2026-11-14 review): Skip Frames below 1 (the
     solver stalls before the first step and keeps allocating memory) and a
@@ -428,12 +471,13 @@ def check_gate(scene):
 
 def main():
     assert os.path.isfile(POLYFEM_BIN), f"missing {POLYFEM_BIN}"
-    hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"))
+    hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"), force_use_assets=True)
     hou.hda.installFile(os.path.join(
-        BASE, "object_stevenabramowitch.dev.PolyFEM.2.0.hdanc"))
+        BASE, "object_stevenabramowitch.dev.PolyFEM.2.0.hdanc"), force_use_assets=True)
     root = tempfile.mkdtemp(prefix="polyfem_check_setup_")
     check_cases_against_solver(root)
     scene = check_other_findings(root)
+    check_duplicate_elements(root)
     check_value_ranges(root)
     check_disabled_geometry(root)
     check_gate(scene)

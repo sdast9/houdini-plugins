@@ -35,7 +35,7 @@ def make_reader(path, name):
 
 
 def main():
-    hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"))
+    hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"), force_use_assets=True)
     work = tempfile.mkdtemp(prefix="msh_reader_topology_")
 
     mesh2d = os.path.join(work, "mixed_2d.msh")
@@ -93,6 +93,76 @@ def main():
     assert geo.prim(1).attribValue("is_volume") == 0
 
     print("PASS: MSH Reader non-tet/hex topology and numbering")
+    check_review_cases(work)
+
+
+def failing_reader(path, name):
+    """A reader whose cook stops with an error (cook() raises then)."""
+    node = hou.node("/obj").createNode("geo", name).createNode(
+        "MSH_Reader::3.0")
+    node.parm("File").set(path)
+    try:
+        node.cook(force=True)
+    except hou.OperationFailed:
+        pass
+    return node
+
+
+def messages(node, kind):
+    return "\n".join(getattr(node, kind)())
+
+
+def check_review_cases(work):
+    """Cases from the 2026-11-14 MSH Reader review: what the asset itself
+    reports (warnings used to stay on the inner read_msh node)."""
+    nodes = [(1, 0, 0, 0), (2, 1, 0, 0), (3, 0, 1, 0), (4, 0, 0, 1),
+             (5, 1, 0, 1), (6, 0, 1, 1), (7, 0, 0, 2)]
+    tet = (1, 2, 3, 4)
+    prism = (4, 5, 6, 7, 5, 6)     # degenerate is fine: never loaded
+
+    path = os.path.join(work, "tet_prism.msh")
+    write_msh(path, nodes, [(1, 4, 2, 1, 1) + tet, (2, 6, 2, 1, 1) + prism])
+    reader = make_reader(path, "reader_prism")
+    assert len(reader.geometry().prims()) == 1
+    text = messages(reader, "warnings")
+    assert "Ignored elements" in text and "1 prism" in text, text
+
+    path = os.path.join(work, "two_groups.msh")
+    write_msh(path, nodes[:4], [(1, 4, 2, 1, 1) + tet, (2, 4, 2, 2, 1) + tet])
+    reader = make_reader(path, "reader_two_groups")
+    geo = reader.geometry()
+    assert len(geo.prims()) == 1, len(geo.prims())
+    assert geo.prim(0).attribValue("msh_physical_tag") == 1
+    assert geo.attribValue("msh_duplicate_elements") == 1
+    text = messages(reader, "warnings")
+    assert "share elements" in text and "writes 1 elements" in text, text
+
+    path = os.path.join(work, "one_group.msh")
+    write_msh(path, nodes[:4], [(1, 4, 2, 1, 1) + tet])
+    reader = make_reader(path, "reader_one_group")
+    assert reader.geometry().attribValue("msh_duplicate_elements") == 0
+    assert not reader.warnings() and not reader.errors()
+
+    cases = {
+        "no_elements": ([], "no elements"),
+        "bad_node": ([(1, 4, 2, 1, 1, 1, 2, 3, 9)],
+                     "node tag 9, which is not a node"),
+    }
+    for name, (elements, fragment) in cases.items():
+        path = os.path.join(work, name + ".msh")
+        write_msh(path, nodes[:4], elements)
+        reader = failing_reader(path, "reader_" + name)
+        assert fragment in messages(reader, "errors"), (
+            name, reader.errors())
+    path = os.path.join(work, "v40.msh")
+    with open(path, "w") as handle:
+        handle.write("$MeshFormat\n4 0 8\n$EndMeshFormat\n"
+                     "$Nodes\n0\n$EndNodes\n$Elements\n0\n$EndElements\n")
+    reader = failing_reader(path, "reader_v40")
+    assert "version 4.1" in messages(reader, "errors"), reader.errors()
+    print("PASS: ignored prisms, shared physical groups and MSH 2.2 copies "
+          "warn on the asset; missing elements, bad node tags and MSH 4.0 "
+          "are named errors")
 
 
 if __name__ == "__main__":

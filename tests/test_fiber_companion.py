@@ -38,10 +38,10 @@ format="ascii">1001 1001 1001 1001 1001</DataArray>
 
 
 def main():
-    hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"))
+    hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"), force_use_assets=True)
     hou.hda.installFile(os.path.join(
-        BASE, "object_stevenabramowitch.dev.PolyFEM.2.0.hdanc"))
-    hou.hda.installFile(os.path.join(BASE, "object_readPVD.1.0.hdanc"))
+        BASE, "object_stevenabramowitch.dev.PolyFEM.2.0.hdanc"), force_use_assets=True)
+    hou.hda.installFile(os.path.join(BASE, "object_readPVD.1.0.hdanc"), force_use_assets=True)
 
     work = tempfile.mkdtemp(prefix="polyfem_fiber_companion_")
     os.makedirs(os.path.join(work, "input"))

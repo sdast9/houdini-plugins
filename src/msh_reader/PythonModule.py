@@ -16,6 +16,9 @@
 #                      (0 = no physical group), without the Entity shift
 #   detail msh_physical_names  JSON {"<tag>": "<name>"} of the primary
 #                      dimension's $PhysicalNames (empty object if none)
+#   detail msh_duplicate_elements  primary elements an MSH 2.2 file wrote
+#                      more than once (once per physical group) and that were
+#                      loaded once; PolyFEM reads every copy and stops
 # New in 3.0: 2D and 1D meshes are emitted as primary elements. Optional
 #   lower-dimensional physical groups in 3D are imported as boundary polys
 #   with prim surface_entity (enables gmsh-authored sidesets downstream).
@@ -54,6 +57,9 @@ def cook(node):
         mesh = read_msh(path)
     except (OSError, MshParseError) as e:
         raise hou.NodeError(f"Failed to read MSH file: {e}")
+    except Exception as e:  # a parser defect: still say which file
+        raise hou.NodeError(
+            f"Failed to read MSH file {path}: {type(e).__name__}: {e}")
 
     points = mesh["points"]
     n_points = len(points)
@@ -66,6 +72,10 @@ def cook(node):
     geo.setPointIntAttribValues("msh_pt_id", mesh["node_tags"].astype(np.int64).tolist())
 
     cells = mesh["cells"]
+    if not cells:
+        raise hou.NodeError(
+            f"MSH file contains {n_points} nodes but no elements: mesh the "
+            "geometry in Gmsh (or save all elements) before exporting")
 
     # Entity convention from 2.2: polyfem ids must be positive, so if any
     # primary element has physical tag 0 (no physical group), shift ALL by +1.
@@ -115,6 +125,48 @@ def cook(node):
         supported.update(("line", "point"))
     elif mesh_dim == 1:
         supported.add("point")
+    warnings = []
     unsupported = sorted(set(cells) - supported)
     if unsupported:
-        raise hou.NodeWarning(f"Ignored unsupported element families: {unsupported}")
+        counts = ", ".join(f"{len(cells[f]['entity'])} {f}"
+                           for f in unsupported)
+        warnings.append(
+            f"Ignored elements this reader does not load: {counts} (only "
+            f"{'/'.join(primary)} are loaded as {mesh_dim}D elements), so "
+            "part of the mesh is missing.")
+
+    # Elements in more than one physical group. PolyFEM assigns each element
+    # one group, the first; MSH 2.2 also writes such an element once per
+    # group, and those copies were left out above.
+    shown_dims = {mesh_dim}
+    if mesh_dim == 3 and asset.evalParm("import_surfaces"):
+        shown_dims.add(2)
+    all_names = mesh.get("physical_names", {})
+
+    def label(dim, tag):
+        name = all_names.get((dim, tag))
+        return f'{tag} "{name}"' if name else str(tag)
+
+    for dim, tags in mesh.get("shared_groups", ()):
+        if dim not in shown_dims:
+            continue
+        others = ", ".join(label(dim, t) for t in tags[1:])
+        warnings.append(
+            f"Physical groups {', '.join(label(dim, t) for t in tags)} "
+            f"share elements; each is loaded in its first group, "
+            f"{label(dim, tags[0])}, as PolyFEM assigns it, so {others} "
+            "get none of them.")
+    duplicates = int(mesh.get("duplicate_elements", {}).get(mesh_dim, 0))
+    geo.addAttrib(hou.attribType.Global, "msh_duplicate_elements", 0,
+                  create_local_variable=False)
+    geo.setGlobalAttribValue("msh_duplicate_elements", duplicates)
+    if duplicates:
+        warnings.append(
+            f"This MSH 2.2 file writes {duplicates} elements twice or more "
+            "(once per physical group they are in); each is loaded once. "
+            "PolyFEM reads every copy and stops ('the same element'), so the "
+            "PolyFEM node refuses this mesh: save it from Gmsh as MSH 4.1 "
+            "(each element once, in its first group), or put each element "
+            "in a single physical group.")
+    if warnings:
+        raise hou.NodeWarning("\n".join(warnings))

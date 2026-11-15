@@ -6520,6 +6520,18 @@ def _min_boundary_edge(parent, geometries):
     return min(values) if values else None
 
 
+def _msh_duplicate_elements(geo_data):
+    """Elements the MSH Reader loaded once that the file (MSH 2.2) wrote
+    once per physical group; 0 for other meshes or older readers."""
+    if geo_data is None \
+            or geo_data.findGlobalAttrib("msh_duplicate_elements") is None:
+        return 0
+    try:
+        return int(geo_data.attribValue("msh_duplicate_elements"))
+    except (hou.Error, TypeError, ValueError):
+        return 0
+
+
 def check_setup(parent, purpose="check"):
     """Find setup problems before PolyFEM does.
 
@@ -6568,10 +6580,20 @@ def check_setup(parent, purpose="check"):
             errors.append(f"Geometry {geo}: the mesh is not loaded; pick its "
                           "file again.")
             continue
+        source = parent.node(f"geo_{geo}").geometry()
+        duplicates = _msh_duplicate_elements(source)
+        if duplicates:
+            errors.append(
+                f"Geometry {geo}: its MSH 2.2 file writes {duplicates} "
+                "elements more than once (once per physical group they are "
+                "in). Houdini shows each once, but PolyFEM reads every copy "
+                "and stops ('Elements 0 and 1 are the same element'). Save "
+                "the mesh from Gmsh as MSH "
+                "4.1 (each element once, in its first group), or put each "
+                "element in a single physical group.")
         if obstacle:
             obstacles.append(geo)
             continue
-        source = parent.node(f"geo_{geo}").geometry()
         if source.countPrimType(hou.primType.Tetrahedron) \
                 + source.countPrimType(hou.primType.Hexahedron) == 0:
             errors.append(

@@ -68,10 +68,10 @@ def centroids_of(node, geo):
 
 def main():
     assert os.path.isfile(POLYFEM_BIN), f"missing {POLYFEM_BIN}"
-    hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"))
+    hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"), force_use_assets=True)
     hou.hda.installFile(
-        os.path.join(BASE, "object_stevenabramowitch.dev.PolyFEM.2.0.hdanc"))
-    hou.hda.installFile(os.path.join(BASE, "object_readPVD.1.0.hdanc"))
+        os.path.join(BASE, "object_stevenabramowitch.dev.PolyFEM.2.0.hdanc"), force_use_assets=True)
+    hou.hda.installFile(os.path.join(BASE, "object_readPVD.1.0.hdanc"), force_use_assets=True)
     reader_node = hou.node("/obj").createNode("readPVD::1.0", "hdf_reader")
     reader = reader_node.hdaModule()
 

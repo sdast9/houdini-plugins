@@ -14,6 +14,14 @@ highest dimension becomes the primary elements: tetrahedra and hexahedra for
 a volume mesh, triangles and quadrilaterals for a 2D mesh, lines for a 1D
 mesh. The PolyFEM node uses this node to load its meshes.
 
+Physical tags are read without the sign Gmsh writes for reversed
+orientation. An element in several physical groups is loaded once, in its
+first group (the one PolyFEM assigns), with a warning. MSH 2.2 writes such an
+element once per group; the PolyFEM node refuses that file, since PolyFEM
+reads every copy and stops on the duplicate: save it as MSH 4.1. MSH 4.0 is not read. A
+higher-order mesh keeps all its nodes as points, so mid-edge nodes appear as
+loose points.
+
 == Attributes ==
 
 :: `msh_pt_id` (point):
@@ -32,6 +40,9 @@ mesh. The PolyFEM node uses this node to load its meshes.
 :: `is_volume`, `ElementNum`, `centroid` (primitive):
     Whether the primitive is a primary element, its sequential number, and
     its centroid.
+:: `msh_duplicate_elements` (detail):
+    How many extra copies of elements an MSH 2.2 file wrote (one per extra
+    physical group) and the reader left out.
 :: `surface_entity` (primitive):
     With __Import Physical Surfaces__, the physical tag of 2D groups in a 3D
     mesh (loaded as polygons, e.g. to see Gmsh-authored sidesets).

@@ -405,10 +405,10 @@ def check_hdf5_portability(root):
 
 def main():
     assert os.path.isfile(POLYFEM_BIN), f"missing {POLYFEM_BIN}"
-    hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"))
+    hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"), force_use_assets=True)
     hou.hda.installFile(os.path.join(
-        BASE, "object_stevenabramowitch.dev.PolyFEM.2.0.hdanc"))
-    hou.hda.installFile(os.path.join(BASE, "object_readPVD.1.0.hdanc"))
+        BASE, "object_stevenabramowitch.dev.PolyFEM.2.0.hdanc"), force_use_assets=True)
+    hou.hda.installFile(os.path.join(BASE, "object_readPVD.1.0.hdanc"), force_use_assets=True)
     root = tempfile.mkdtemp(prefix="readpvd_first_look_")
     check_first_look(root)
     check_slash_fields(root)

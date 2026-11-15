@@ -183,9 +183,9 @@ def check_import(root, source_work):
 
 
 def main():
-    hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"))
+    hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"), force_use_assets=True)
     hou.hda.installFile(os.path.join(
-        BASE, "object_stevenabramowitch.dev.PolyFEM.2.0.hdanc"))
+        BASE, "object_stevenabramowitch.dev.PolyFEM.2.0.hdanc"), force_use_assets=True)
     root = tempfile.mkdtemp(prefix="polyfem_material_staging_")
     _, _, named_work = check_user_file_named_fibers_vtk(root)
     check_same_name_two_bodies(root)

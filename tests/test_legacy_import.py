@@ -10,9 +10,9 @@ from test_polyfem_hda import BASE, make_cube_msh
 
 
 def main():
-    hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"))
+    hou.hda.installFile(os.path.join(BASE, "sop_MSH_Reader.3.0.hdanc"), force_use_assets=True)
     hou.hda.installFile(
-        os.path.join(BASE, "object_stevenabramowitch.dev.PolyFEM.2.0.hdanc"))
+        os.path.join(BASE, "object_stevenabramowitch.dev.PolyFEM.2.0.hdanc"), force_use_assets=True)
 
     work = tempfile.mkdtemp(prefix="polyfem_legacy_test_")
     input_dir = os.path.join(work, "input")

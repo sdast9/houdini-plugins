@@ -51,8 +51,25 @@ hython tests/test_readpvd_materials.py   # material fields + fiber visualization
 ## MSH_Reader 3.0
 
 * **No gmsh dependency** (the pip auto-install flow is gone): native numpy
-  parser for MSH v2.2 ASCII and v4.1 ASCII/binary, validated against the gmsh
-  API on multi-volume meshes with physical groups.
+  parser for MSH v2.2 and v4.1, ASCII and binary, validated against the gmsh
+  API on multi-volume meshes with physical groups. MSH 4.0 (and any other
+  version) is refused by name: re-save as 4.1.
+* Physical groups (2026-11-14 review): tags are read without the sign Gmsh
+  writes for a group holding an entity with reversed orientation
+  (`Physical Surface(5) = {1, -2}` is one group 5); partitioned 4.1 meshes
+  take their groups from `$PartitionedEntities`; parametric node blocks are
+  read. An element in several physical groups is loaded once, in its first
+  group (the one PolyFEM assigns), with a warning naming the groups. MSH 2.2
+  writes such an element once per group: the reader loads one copy and
+  records the others in `msh_duplicate_elements` (detail), and the PolyFEM
+  node's Check Setup refuses that mesh, because PolyFEM reads every copy
+  and stops with "Elements 0 and 1 are the same element".
+* Warnings (ignored prisms/pyramids, shared groups, duplicate copies) show on
+  the asset itself, and malformed or truncated files, elements that point at
+  a missing node, and files without elements stop with a named error.
+* Higher-order meshes keep every node as a point (mid-edge nodes are loose
+  points): point numbers follow the file's nodes, which the PolyFEM node
+  relies on.
 * numpy bulk point creation + compiled VEX prim construction. The highest
   supported mesh dimension is emitted as the primary topology: tet/hex,
   tri/quad, or line.
