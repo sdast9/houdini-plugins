@@ -1274,19 +1274,20 @@ def _parms():
         "time_mapping", "Time Mapping", TIME_MAPPING_TOKENS,
         menu_labels=("Automatic", "One Frame per Output Step",
                      "Simulation Time"),
-        default_value=0,
+        default_value=1,
         script_callback="hou.phm().time_mapping_changed(kwargs)",
         script_callback_language=hou.scriptLanguage.Python,
-        help="Which time step each Houdini frame shows. Simulation Time: "
-             "Houdini time is simulation time, as on the PolyFEM node's Time "
-             "tab (simulation time = Start Time + (frame's time - Start "
-             "Frame's time) x Time Scale), so the results play back in step "
-             "with keyframed loads and obstacle motions; a frame shows the "
-             "last step at or before its simulation time. One Frame per "
-             "Output Step: frame k shows step k (every step, whatever its "
-             "time). Automatic: Simulation Time with the PolyFEM node's own "
-             "Start Frame and Time Scale when the run was written by it (its "
-             "input/hda_scene.json), one frame per output step otherwise."))
+        help="Which time step each Houdini frame shows. One Frame per Output "
+             "Step (the default): frame k shows step k, so the playbar has "
+             "exactly one frame per solved output step (0..N-1). Automatic: "
+             "Simulation Time with the PolyFEM node's own Start Frame and "
+             "Time Scale when the run was written by it (input/hda_scene.json), "
+             "one frame per output step otherwise. Simulation Time: Houdini "
+             "time is simulation time (simulation time = Start Time + "
+             "(frame's time - Start Frame's time) x Time Scale), so the "
+             "results play back in step with keyframed loads and obstacle "
+             "motions; a frame shows the last step at or before its "
+             "simulation time."))
     start_frame = hou.FloatParmTemplate(
         "time_start_frame", "Start Frame", 1, default_value=(1.0,),
         min=0.0, max=240.0,

@@ -355,8 +355,9 @@ def test_readpvd_batch_2b(root):
     node = hou.node("/obj").createNode("readPVD::1.0", "pvd_patch2")
     mod = node.hdaModule()
 
-    # 1. Read-only status fields & multiline probe_readout
+    # 1. Read-only status fields, multiline probe_readout, and default Time Mapping
     node.updateParmStates()
+    assert node.parm("time_mapping").evalAsString() == "steps"
     for name in ("availability_status", "color_status", "reference_status",
                  "probe_readout"):
         assert node.parm(name).isDisabled(), f"{name} should be read-only"

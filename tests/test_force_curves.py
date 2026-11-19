@@ -322,7 +322,12 @@ def check_elements(root):
 
 def check_reader(root, reader, curves):
     module = reader.hdaModule()
+    # Default: one frame per output step (0..4)
+    assert reader.parm("time_mapping").evalAsString() == "steps"
+    assert module.entry_index(reader, 3) == 3
+    assert module.playbar_range(reader) == (0, 4)
     # Automatic: the PolyFEM node's timeline (frame 1 = t 0, 24 fps)
+    reader.parm("time_mapping").set(0)
     assert reader.parm("time_mapping").evalAsString() == "auto"
     assert module.playbar_range(reader) == (1, 25)
     for frame, step in ((1, 0), (6, 0), (7, 1), (24, 3), (25, 4), (40, 4)):
@@ -332,10 +337,6 @@ def check_reader(root, reader, curves):
     assert status.startswith("Step 2 of 4: t = 0.5"), status
     readout = reader.evalParm("force_readout")
     assert "sideset 4" in readout and "reaction" in readout, readout
-    # one frame per output step, as before
-    reader.parm("time_mapping").set(1)
-    assert module.entry_index(reader, 3) == 3
-    assert module.playbar_range(reader) == (0, 4)
     # a custom timeline: frame 101 = t 0, 2 simulated s per Houdini s
     reader.setParms({"time_mapping": 2, "time_start_frame": 101,
                      "time_scale": 2.0})

@@ -169,7 +169,7 @@ def check_statistics(root):
         sheets["Data"][0][:3]
     assert data["Step"] == [0.0, 1.0, 2.0, 3.0, 4.0]
     assert np.allclose(data["Time"], times, rtol=0, atol=0)
-    assert data["Frame"] == [1.0, 7.0, 13.0, 19.0, 25.0], data["Frame"]
+    assert data["Frame"] == [0.0, 1.0, 2.0, 3.0, 4.0], data["Frame"]
     header = "Bar: von Mises stress"
     count = 6 * 2 ** 3  # write_box(n=2): 8 cubes of 6 tets
     for name in ("max", "min", "mean", "arithmetic mean", "RMS", "P50",

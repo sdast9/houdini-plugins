@@ -43,12 +43,13 @@ Every parameter has a tooltip: hover over its label for details.
 
 __Time Mapping__ says which time step a frame shows:
 
-* __Automatic__ (the default): the PolyFEM node's own timeline when the run
-  was written by it (its __Start Frame__ and __Time Scale__, recorded in
+* __One Frame per Output Step__ (the default): frame k shows step k (the
+  playbar matches the solved output steps 0..N-1).
+* __Automatic__: the PolyFEM node's own timeline when the run was written by
+  it (its __Start Frame__ and __Time Scale__, recorded in
   `input/hda_scene.json`), so a keyed load or a moving obstacle and its
   result are on the same frame; one frame per step otherwise.
 * __Simulation Time__: your own __Start Frame__ and __Time Scale__.
-* __One Frame per Output Step__: frame k shows step k.
 
 On a timeline a frame shows the last step at or before its simulation time.
 __Simulation Time__ (the read-only line under it) shows the step on screen
