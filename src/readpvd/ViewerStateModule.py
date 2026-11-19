@@ -104,13 +104,17 @@ class State:
             return False
         geo = output.geometry()
         origin, direction = ui_event.ray()
+        inv = self.node.worldTransform().inverted()
+        local_origin = origin * inv
+        local_direction = (
+            (origin + direction) * inv - local_origin).normalized()
         # Probe the primary result only. Excluding the readpvd_* decoration
         # groups (glyphs, legend, gnomon, supplementary blocks)
         # keeps the pick from snapping to a decoration point that carries no
         # field data -- the cause of "position is right but values are zero".
         intersector = su.GeometryIntersector(
             geo, scene_viewer=self.scene_viewer, pattern="* ^readpvd_*")
-        intersector.intersect(origin, direction)
+        intersector.intersect(local_origin, local_direction)
         if not intersector.intersected or intersector.prim_num < 0:
             return False
         # Snap to the nearest corner of the hit primitive: a real model vertex
@@ -155,7 +159,8 @@ class State:
                 marker_geo = hou.Geometry()
                 marker_geo.createPoint().setPosition(position)
                 self.probe_marker.setGeometry(marker_geo)
-                self.probe_marker.draw(handle)
+                self.probe_marker.draw(
+                    handle, {"xform": self.node.worldTransform()})
                 self.probe_text.draw(handle, {
                     "text": readout.replace("\n", "<br>"),
                     "multi_line": True,

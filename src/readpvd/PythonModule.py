@@ -679,6 +679,8 @@ def _menu_token(node, name):
 
 def _format_number(value, digits, notation="automatic"):
     value = float(value)
+    if not math.isfinite(value):
+        return str(value)
     digits = max(1, int(digits))
     if notation == "scientific":
         return f"{value:.{digits - 1}e}"
@@ -843,7 +845,7 @@ def sim_time_text(node):
     times = _pvd_times(node)
     if not times:
         return "Load a PVD file."
-    index = min(entry_index(node), len(times) - 1)
+    index = max(0, min(entry_index(node), len(times) - 1))
     if time_mapping(node) is None:
         how = "one frame per output step"
         parm = node.parm("time_mapping")
@@ -1297,6 +1299,18 @@ def color_selection_changed(kwargs):
     update_color_status(kwargs)
 
 
+def color_scale_changed(kwargs):
+    """Color Scale callback: switching to log10 with a non-positive range
+    auto-ranges to positive values unless Lock Displayed Range is on."""
+    node = kwargs["node"]
+    if (node.evalParm("color_scale") == 1
+            and not node.evalParm("range_lock")
+            and (node.evalParm("color_min") <= 0
+                 or node.evalParm("color_max") <= 0)):
+        auto_range_default(node)
+    update_color_status(kwargs)
+
+
 def time_scope_changed(kwargs):
     sync_available_options(kwargs)
     update_color_status(kwargs)
@@ -1522,13 +1536,25 @@ def _mesh_field(mesh, field):
 
     @once
     def pk1():
-        return jacobian()[:, None, None] * np.einsum(
-            "nij,njk->nik", cauchy(), np.swapaxes(Finv(), 1, 2))
+        jac = jacobian()
+        valid = np.abs(jac) > 1e-12
+        out = np.zeros_like(cauchy())
+        if np.any(valid):
+            out[valid] = jac[valid, None, None] * np.einsum(
+                "nij,njk->nik", cauchy()[valid],
+                np.swapaxes(Finv()[valid], 1, 2))
+        return out
 
     @once
     def pk2():
-        return jacobian()[:, None, None] * np.einsum(
-            "nij,njk,nlk->nil", Finv(), cauchy(), Finv())
+        jac = jacobian()
+        valid = np.abs(jac) > 1e-12
+        out = np.zeros_like(cauchy())
+        if np.any(valid):
+            out[valid] = jac[valid, None, None] * np.einsum(
+                "nij,njk,nlk->nil", Finv()[valid], cauchy()[valid],
+                Finv()[valid])
+        return out
 
     kinematics = {
         "F_mat": F, "J": jacobian,
@@ -1560,6 +1586,7 @@ def _mesh_field(mesh, field):
         "cauchy_trace": trace, "hydrostatic_stress": hydro,
         "deviatoric_stress": dev, "stress_J2": j2,
         "stress_J3": lambda: np.linalg.det(dev()),
+        "von_mises": lambda: np.sqrt(np.maximum(0, 3 * j2())),
         "von_mises_derived": lambda: np.sqrt(np.maximum(0, 3 * j2())),
         "max_shear_stress": lambda: 0.5 * (eigen()[:, 0] - eigen()[:, 2]),
         "stress_triaxiality": lambda: np.divide(
@@ -1756,28 +1783,49 @@ def probe_readout(node, point_number):
         return None, ""
     point = geo.point(row)
     position = point.position()
+    digits = int(node.evalParm("legend_digits")) \
+        if node.parm("legend_digits") is not None else 5
+    notation = _menu_token(node, "legend_number_format") or "automatic"
+
+    def _fmt(v):
+        if isinstance(v, (tuple, list)):
+            return ", ".join(_format_number(c, digits, notation) for c in v)
+        if isinstance(v, float):
+            return _format_number(v, digits, notation)
+        return str(v)
+
     lines = [f"Point {point_number}",
-             "Position: " + ", ".join(f"{value:.6g}" for value in position)]
+             "Position: " + _fmt(tuple(position))]
     block_attrib = geo.findPointAttrib("pvd_block")
     if block_attrib is not None:
         block = point.attribValue(block_attrib)
         if block:
             lines.append(f"PVD Block: {block}")
-    for name in ("solution", node.evalParm("color_attrib"),
+    color_attrib = node.evalParm("color_attrib")
+    units_text = node.evalParm("field_units").strip()
+    if node.evalParm("smooth_field"):
+        for_color = geo.findPointAttrib("for_color")
+        if for_color is not None:
+            smoothed = point.attribValue(for_color)
+            lines.append(
+                f"Displayed (smoothed {_field_label(color_attrib)}): "
+                f"{_fmt(smoothed)}"
+                + (f" {units_text}" if units_text else ""))
+    seen_names = set()
+    for name in ("solution", color_attrib,
                  "reference_comparison", "body_ids", "sidesets",
                  "cauchy_eigenvalues", "pk2_eigenvalues",
                  "principal_stretches"):
+        if not name or name in seen_names:
+            continue
+        seen_names.add(name)
         attrib = geo.findPointAttrib(name)
         if attrib is None:
             continue
         value = point.attribValue(attrib)
-        if isinstance(value, tuple):
-            text = ", ".join(f"{component:.6g}" for component in value)
-        else:
-            text = f"{value:.6g}" if isinstance(value, float) else str(value)
-        units = node.evalParm("field_units").strip() \
-            if name in (node.evalParm("color_attrib"),
-                        "reference_comparison") else ""
+        text = _fmt(value)
+        units = units_text if name in (color_attrib,
+                                       "reference_comparison") else ""
         lines.append(f"{_field_label(name)}: {text}"
                      + (f" {units}" if units else ""))
     return position, "\n".join(lines)
@@ -2059,6 +2107,8 @@ def _build_block_geometry(mesh, block_name, slug, colors, values, components):
                 for i in indices:
                     prim.addVertex(points[int(i)])
                 prim_group.add(prim)
+        elif family == "point":
+            continue  # points already exist; 1-vertex polygons are invalid
         else:  # tri / quad: bulk creation (>=3 verts)
             for prim in block.createPolygons(
                     tuple(tuple(int(i) for i in indices)
@@ -2086,6 +2136,7 @@ def cook_multi_blocks(node):
     if not wanted:
         return
     blocks = load_frame(path, entry_index(asset))
+    invalid_rgb = tuple(float(c) for c in asset.evalParmTuple("invalid_color"))
 
     for block_name, mesh in blocks.items():
         if block_name not in wanted:
@@ -2093,6 +2144,8 @@ def cook_multi_blocks(node):
         slug = block_name.lower()
         positions = np.asarray(mesh["points"], dtype=np.float64)
         solution = mesh["point_data"].get("solution")
+        if solution is None:
+            solution = mesh["point_data"].get("displacement")
         if asset.evalParm("show_deformed") and solution is not None:
             positions = positions + np.asarray(solution, dtype=np.float64)
         # _build_block_geometry reads positions back from the mesh dict; keep
@@ -2106,14 +2159,20 @@ def cook_multi_blocks(node):
         if values is None:
             colors = np.ones((len(positions), 3), dtype=np.float64)
         else:
-            reduced = _reduce_array(
-                values, _menu_token(asset, f"multi_{slug}_reduction"))
+            reduced = np.asarray(_reduce_array(
+                values, _menu_token(asset, f"multi_{slug}_reduction")),
+                dtype=np.float64)
             low, high = asset.evalParmTuple(f"multi_{slug}_range")
             denom = high - low
-            normalized = (np.full(len(reduced), 0.5) if abs(denom) < 1e-20
-                          else np.clip((reduced - low) / denom, 0.0, 1.0))
+            finite = np.isfinite(reduced)
+            if abs(denom) < 1e-20:
+                normalized = np.full(len(reduced), 0.5, dtype=np.float64)
+            else:
+                normalized = np.clip((reduced - low) / denom, 0.0, 1.0)
             ramp = asset.parm(f"multi_{slug}_ramp").evalAsRamp()
-            colors = np.asarray([ramp.lookup(float(v)) for v in normalized])
+            colors = np.asarray([
+                ramp.lookup(float(v)) if ok else invalid_rgb
+                for v, ok in zip(normalized, finite)], dtype=np.float64)
         mesh["_field_name"] = field
         geo.merge(_build_block_geometry(
             mesh, block_name, slug, colors, values, components))
@@ -3735,10 +3794,16 @@ def force_readout_text(node):
 
 def _chart_series(node, curves):
     """(x, y, x label, y label, title) of the chosen chart."""
-    token = node.evalParm("force_chart_set")
+    token = node.evalParm("force_chart_set").strip()
     try:
         column = curves["sets"].index(int(token))
     except (ValueError, TypeError):
+        if token and node.evalParm("force_sets").strip():
+            available = ", ".join(str(s) for s in curves["sets"])
+            raise ForceCurveError(
+                f"Chart set '{token}' is not in the computed Force Sets "
+                f"({available}). Clear Force Sets or include '{token}' and "
+                "press Compute Force Curves.")
         column = 0
     quantity = _menu_token(node, "force_chart_quantity")
     component = _menu_token(node, "force_chart_component")
@@ -3808,10 +3873,10 @@ def _chart_class():
 
         def _marker_index(self):
             node = hou.nodeBySessionId(self.node_id)
-            if node is None or self.series is None:
+            if node is None or self.series is None or not len(self.series[0]):
                 return None
             try:
-                return entry_index(node)
+                return max(0, min(entry_index(node), len(self.series[0]) - 1))
             except Exception:
                 return None
 
@@ -3905,7 +3970,14 @@ def _update_chart(node):
     if window is None:
         return
     curves = _FORCE_CURVES.get(node.sessionId())
-    window.set_series(_chart_series(node, curves) if curves else None)
+    if not curves:
+        window.set_series(None)
+        return
+    try:
+        window.set_series(_chart_series(node, curves))
+    except ForceCurveError as exc:
+        window.set_series(None)
+        _message(str(exc))
 
 
 def show_force_chart(kwargs):
@@ -3914,16 +3986,17 @@ def show_force_chart(kwargs):
     node = kwargs["node"]
     try:
         curves = force_curves(node)
+        series = _chart_series(node, curves)
     except ForceCurveError as exc:
         _message(str(exc))
         return None
     if not hou.isUIAvailable():
-        return _chart_series(node, curves)
+        return series
     window = _CHART_WINDOWS.get(node.sessionId())
     if window is None:
         window = _chart_class()(node, hou.qt.mainWindow())
         _CHART_WINDOWS[node.sessionId()] = window
-    window.set_series(_chart_series(node, curves))
+    window.set_series(series)
     window.show()
     window.raise_()
     return window
@@ -4587,13 +4660,14 @@ def deformed_mesh_positions(geometry, match, topology, solution, coordinates):
         if len(file_nodes) else 0.0
     scale = float(np.abs(solution[corner_points]).max()) \
         if len(file_nodes) else 0.0
-    if spread > 1e-9 * max(scale, 1e-300):
+    rest = geometry["rest"]
+    rest_extent = float(np.ptp(rest, axis=0).max()) if len(rest) else 1.0
+    if spread > 1e-9 * max(scale, 1e-6 * rest_extent, 1e-12):
         raise ExportError(
             f"Geometry {geometry['number']}: copies of a node have different "
             f"displacements (by {spread:.3g}); the mesh is not conforming.")
     used = np.zeros(count, dtype=bool)
     used[file_nodes] = True
-    rest = geometry["rest"]
     deformed = rest + displacement
     corners = geometry["file_corners"]
     is_hex = geometry["is_hex"]
@@ -5865,8 +5939,32 @@ def export_data(node, progress=None):
         seen[region["label"]] = seen.get(region["label"], 0) + 1
         if seen[region["label"]] > 1:
             region["label"] = f"{region['label']} ({seen[region['label']]})"
-    components = {q["index"]: _field_components(node, q["field"])
-                  for q in quantities}
+    # Validate quantity fields against the exported steps rather than only the
+    # playbar frame (a field absent at frame 0 may exist on later exported
+    # steps). Scan endpoints first, falling back to intermediate steps only
+    # when a requested field is still missing.
+    step_fields = {}
+    probe_order = list(dict.fromkeys([steps[0], steps[-1]] + list(steps)))
+    missing_fields = {q["field"] for q in quantities
+                      if q["field"] != "_volume"
+                      and not q["field"].startswith("fiber_")}
+    for step in probe_order:
+        if not missing_fields:
+            break
+        try:
+            info = frame_field_info(pvd, step).get("Volume", {})
+        except Exception:
+            continue
+        avail = _available_fields_from_fields(_fields_from_info(info), True)
+        step_fields.update(avail)
+        missing_fields -= set(avail)
+    components = {}
+    for q in quantities:
+        if q["field"] == "_volume" or q["field"].startswith("fiber_"):
+            components[q["index"]] = 1
+        else:
+            components[q["index"]] = step_fields.get(
+                q["field"], _field_components(node, q["field"]))
     for q in quantities:
         if not components[q["index"]]:
             raise ExportError(
@@ -6278,6 +6376,8 @@ def open_export_data(kwargs):
     """Open Spreadsheet button (exports first when there is no file)."""
     node = kwargs["node"]
     path = node.evalParm("export_data_file").strip()
+    if path and not path.lower().endswith(".xlsx"):
+        path += ".xlsx"
     if not path and node.evalParm("PVD_file"):
         stem = os.path.splitext(os.path.basename(node.evalParm("PVD_file")))[0]
         path = os.path.join(export_folder(node), f"{stem}_data.xlsx")

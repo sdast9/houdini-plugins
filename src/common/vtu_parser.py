@@ -184,6 +184,15 @@ def _strip_inline_payloads(data):
     pos = 0
     while True:
         start = data.find(b"<DataArray", pos)
+        comment = data.find(b"<!--", pos)
+        if comment >= 0 and (start < 0 or comment < start):
+            end_comment = data.find(b"-->", comment + 4)
+            if end_comment < 0:
+                out += data[pos:]
+                break
+            out += data[pos:end_comment + 3]
+            pos = end_comment + 3
+            continue
         if start < 0:
             out += data[pos:]
             break
@@ -240,12 +249,21 @@ class _Reader:
     def __init__(self, path):
         with open(path, "rb") as f:
             self.data = f.read()
-        # appended section (raw): everything after the first '_' following
-        # <AppendedData
+        # appended section (raw or base64): everything after the first '_'
+        # following <AppendedData ...>
         self.appended = None
+        self.appended_encoding = "raw"
         idx = self.data.find(b"<AppendedData")
         if idx >= 0:
-            start = self.data.find(b"_", idx)
+            tag_end = self.data.find(b">", idx)
+            if tag_end >= 0:
+                app_attrs = dict(_XML_ATTR_RE.findall(
+                    self.data[idx:tag_end]))
+                enc = app_attrs.get(b"encoding", b"raw").decode(
+                    "ascii", "ignore").lower()
+                if enc:
+                    self.appended_encoding = enc
+            start = self.data.find(b"_", max(idx, tag_end))
             end = self.data.rfind(b"</AppendedData>")
             self.appended = self.data[start + 1:end]
             # ElementTree chokes on raw bytes inside AppendedData: replace
@@ -265,10 +283,71 @@ class _Reader:
             if span is not None:
                 self._payload[id(elem)] = span
         self.byte_order = self.root.get("byte_order", "LittleEndian")
+        self._endian = ">" if self.byte_order == "BigEndian" else "<"
         self.header_dtype = np.dtype(
-            _VTK_TO_NP[self.root.get("header_type", "UInt32")])
-        comp = self.root.get("compressor", "")
-        self.compressed = "ZLib" in comp
+            _VTK_TO_NP[self.root.get("header_type", "UInt32")]
+        ).newbyteorder(self._endian)
+        comp = self.root.get("compressor", "").strip()
+        if not comp:
+            self.compressed = False
+        elif "ZLib" in comp:
+            self.compressed = True
+        else:
+            raise VtuParseError(
+                f"Unsupported VTK compressor '{comp}' "
+                "(only vtkZLibDataCompressor is supported)")
+
+    @staticmethod
+    def _decode_inline_base64(payload):
+        """Decode single-stream or VTK two-stream (header_b64 + data_b64)."""
+        compact = b"".join(payload.split())
+        if not compact:
+            return b""
+        first_eq = compact.find(b"=")
+        if 0 <= first_eq < len(compact) - 2:
+            split_at = first_eq
+            while split_at < len(compact) and compact[split_at:split_at + 1] == b"=":
+                split_at += 1
+            return (binascii.a2b_base64(compact[:split_at])
+                    + binascii.a2b_base64(compact[split_at:]))
+        return binascii.a2b_base64(compact)
+
+    def _decode_appended_base64(self, buf):
+        """Decode one array from <AppendedData encoding='base64'>."""
+        hsize = self.header_dtype.itemsize
+        if not self.compressed:
+            h_chars = 4 * ((hsize + 2) // 3)
+            head = binascii.a2b_base64(buf[:h_chars])
+            nbytes = int(np.frombuffer(head, self.header_dtype, count=1)[0])
+            if buf[h_chars - 1:h_chars] == b"=":
+                p_chars = 4 * ((nbytes + 2) // 3)
+                return binascii.a2b_base64(buf[h_chars:h_chars + p_chars])[:nbytes]
+            total_chars = 4 * ((hsize + nbytes + 2) // 3)
+            return binascii.a2b_base64(buf[:total_chars])[hsize:hsize + nbytes]
+        hdr3_chars = 4 * hsize  # 3 * hsize is always divisible by 3
+        hdr3 = np.frombuffer(
+            binascii.a2b_base64(buf[:hdr3_chars]), self.header_dtype, count=3)
+        nblocks = int(hdr3[0])
+        total_hbytes = (3 + nblocks) * hsize
+        h_chars = 4 * ((total_hbytes + 2) // 3)
+        full_hdr = binascii.a2b_base64(buf[:h_chars])[:total_hbytes]
+        sizes = np.frombuffer(
+            full_hdr, self.header_dtype, count=nblocks, offset=3 * hsize)
+        total_comp = int(np.sum(sizes))
+        if buf[h_chars - 1:h_chars] == b"=":
+            c_chars = 4 * ((total_comp + 2) // 3)
+            comp_bytes = binascii.a2b_base64(
+                buf[h_chars:h_chars + c_chars])[:total_comp]
+        else:
+            total_chars = 4 * ((total_hbytes + total_comp + 2) // 3)
+            comp_bytes = binascii.a2b_base64(
+                buf[:total_chars])[total_hbytes:total_hbytes + total_comp]
+        out = []
+        offset = 0
+        for size in sizes:
+            out.append(zlib.decompress(comp_bytes[offset:offset + int(size)]))
+            offset += int(size)
+        return b"".join(out)
 
     def _decode_block(self, raw):
         """Decode (possibly multi-block zlib) payload -> bytes."""
@@ -289,24 +368,33 @@ class _Reader:
         return b"".join(out)
 
     def read_data_array(self, elem):
-        dtype = np.dtype(_VTK_TO_NP[elem.get("type")])
+        native_dtype = np.dtype(_VTK_TO_NP[elem.get("type")])
+        dtype = native_dtype.newbyteorder(self._endian)
         ncomp = int(elem.get("NumberOfComponents", "1"))
         fmt = elem.get("format", "ascii")
         if fmt == "appended":
             if self.appended is None:
                 raise VtuParseError("appended format without AppendedData")
             offset = int(elem.get("offset", "0"))
-            arr = np.frombuffer(
-                self._decode_block(self.appended[offset:]), dtype=dtype)
+            if self.appended_encoding == "base64":
+                raw = self._decode_appended_base64(self.appended[offset:])
+            elif self.appended_encoding == "raw":
+                raw = self._decode_block(self.appended[offset:])
+            else:
+                raise VtuParseError(
+                    f"Unsupported AppendedData encoding '{self.appended_encoding}'")
+            arr = np.frombuffer(raw, dtype=dtype).astype(
+                native_dtype, copy=False)
         else:
             span = self._payload.get(id(elem))
             payload = (self._payload_source[span[0]:span[1]]
                        if span is not None else b"")
             if fmt == "ascii":
-                arr = np.array(payload.split(), dtype=dtype)
+                arr = np.array(payload.split(), dtype=native_dtype)
             elif fmt == "binary":
-                arr = np.frombuffer(
-                    self._decode_block(base64.b64decode(payload)), dtype=dtype)
+                raw = self._decode_block(self._decode_inline_base64(payload))
+                arr = np.frombuffer(raw, dtype=dtype).astype(
+                    native_dtype, copy=False)
             else:
                 raise VtuParseError(f"Unknown DataArray format {fmt}")
         if ncomp > 1:

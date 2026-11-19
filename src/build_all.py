@@ -11,16 +11,13 @@ import os
 import shutil
 import sys
 
+import hou
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.abspath(os.path.join(HERE, ".."))
 
 for pkg in ("msh_reader", "polyfem", "readpvd"):
     sys.path.insert(0, os.path.join(HERE, pkg))
-
-import importlib
-
-for pkg in ("msh_reader", "polyfem", "readpvd"):
-    module = importlib.import_module(f"{pkg}.build") if False else None
 
 # import explicitly (each build.py defines build(out_dir))
 sys.path.insert(0, HERE)
@@ -28,7 +25,9 @@ from msh_reader import build as msh_build  # noqa: E402
 from polyfem import build as polyfem_build  # noqa: E402
 from readpvd import build as readpvd_build  # noqa: E402
 
-OTLS_DIR = os.path.expanduser("~/Library/Preferences/houdini/22.0/otls")
+OTLS_DIR = os.path.join(hou.homeHoudiniDirectory(), "otls")
+if os.path.isdir(hou.homeHoudiniDirectory()):
+    os.makedirs(OTLS_DIR, exist_ok=True)
 
 for builder in (msh_build, polyfem_build, readpvd_build):
     built = builder.build(OUT)

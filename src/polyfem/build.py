@@ -196,7 +196,7 @@ def build(out_dir):
         definition.setExtraFileOption(f"{section}/IsViewerState", True)
 
     definition.save(definition.libraryFilePath())
-    return definition.libraryFilePath()
+    return hda_build.commit_asset(asset)
 
 
 if __name__ == "__main__":

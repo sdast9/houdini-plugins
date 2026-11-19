@@ -59,12 +59,14 @@ node.parent().hdaModule().cook_gnomon(node)
 MULTI_BLOCK_SOP_CODE = """\
 node = hou.pwd()
 node.evalParm("pvdpath"); node.evalParm("frame")
+node.evalParm("dataepoch")
 node.parent().hdaModule().cook_multi_blocks(node)
 """
 
 REFERENCE_SOP_CODE = """\
 node = hou.pwd()
 node.evalParm("frame")
+node.evalParm("dataepoch")
 node.parent().hdaModule().cook_reference_comparison(node)
 """
 
@@ -219,7 +221,7 @@ matrix3 rebuild_symmetric(vector fvals; matrix3 vecs) {
 if (haspointattrib(0, "solution"))
     f@solution_mag = length(v@solution);
 
-if (haspointattrib(0, "F_1")) {
+if (haspointattrib(0, "F_1") && haspointattrib(0, "F_2") && haspointattrib(0, "F_3")) {
     // PolyFEM flattens tensors column-major: the exported X_i arrays are
     // the COLUMNS of the tensor, while VEX set(a, b, c) fills rows --
     // transpose to recover the true matrix (verified against PolyFEM's own
@@ -272,9 +274,9 @@ if (haspointattrib(0, "F_1")) {
     if (abs(f@J) > 1e-12) {
         3@almansi_strain = 0.5 * (I - invert(B));
         v@almansi_strain_eigenvalues = set(
-            0.5 * (1.0 - 1.0 / lcg_vals.x),
-            0.5 * (1.0 - 1.0 / lcg_vals.y),
-            0.5 * (1.0 - 1.0 / lcg_vals.z));
+            0.5 * (1.0 - 1.0 / max(lcg_vals.x, 1e-20)),
+            0.5 * (1.0 - 1.0 / max(lcg_vals.y, 1e-20)),
+            0.5 * (1.0 - 1.0 / max(lcg_vals.z, 1e-20)));
     } else {
         3@almansi_strain = 0;
         v@almansi_strain_eigenvalues = 0;
@@ -297,8 +299,12 @@ if (haspointattrib(0, "F_1")) {
     // Cauchy stress from the exported field, or reconstructed from the 1st
     // Piola-Kirchhoff stress (sigma = (1/J) P F^T) when only that was written,
     // so PolyFEM can export just F + pk1 and everything else is derived.
-    int have_cauchy = haspointattrib(0, "cauchy_stress_1");
-    int have_pk1 = haspointattrib(0, "pk1_stress_1");
+    int have_cauchy = haspointattrib(0, "cauchy_stress_1")
+        && haspointattrib(0, "cauchy_stress_2")
+        && haspointattrib(0, "cauchy_stress_3");
+    int have_pk1 = haspointattrib(0, "pk1_stress_1")
+        && haspointattrib(0, "pk1_stress_2")
+        && haspointattrib(0, "pk1_stress_3");
     if (have_cauchy || (have_pk1 && abs(f@J) > 1e-12)) {
         matrix3 cauchy;
         if (have_cauchy)
@@ -470,13 +476,26 @@ if (detail(0, "color_field_missing", 0) == 1) {
 BODY_FILTER_VEX = """\
 if (chs("../visible_bodies") == "") return;
 if (!haspointattrib(0, "body_ids")) return;
-string tokens[] = split(chs("../visible_bodies"));
+string tokens[] = split(re_replace(",", " ", chs("../visible_bodies")));
 if (len(tokens) == 0) return;
 float body_value = point(0, "body_ids", primpoint(0, @primnum, 0));
 int body = (int)rint(body_value);
 foreach (string token; tokens)
     if (atoi(token) == body) return;
 removeprim(0, @primnum, 1);
+"""
+
+BODY_FILTER_POINTS_VEX = """\
+if (nprimitives(0) > 0) return;
+if (chs("../visible_bodies") == "") return;
+if (!haspointattrib(0, "body_ids")) return;
+string tokens[] = split(re_replace(",", " ", chs("../visible_bodies")));
+if (len(tokens) == 0) return;
+float body_value = point(0, "body_ids", @ptnum);
+int body = (int)rint(body_value);
+foreach (string token; tokens)
+    if (atoi(token) == body) return;
+removepoint(0, @ptnum);
 """
 
 FIBER_VEX = """\
@@ -486,9 +505,14 @@ FIBER_VEX = """\
 // colour by |direction| and never by sign.
 if (chi("../show_fibers") == 0) return;
 if (haspointattrib(0, "coincident_rep")
-    && point(0, "coincident_rep", @ptnum) < 0.5)
+    && float(point(0, "coincident_rep", @ptnum)) < 0.5)
     return;
-if (@ptnum % max(1, chi("../fiber_stride")) != 0) return;
+int sample_id = @ptnum;
+if (haspointattrib(0, "coincident_id")) {
+    float cid = point(0, "coincident_id", @ptnum);
+    sample_id = (int)rint(cid);
+}
+if (sample_id % max(1, chi("../fiber_stride")) != 0) return;
 
 string wanted = chs("../fiber_family");
 string names[] = split(chs("../fiber_attribs"));
@@ -504,7 +528,7 @@ int has_f = 0;
 if (haspointattrib(0, "F_mat")) {
     F = matrix3(point(0, "F_mat", @ptnum));
     has_f = 1;
-} else if (haspointattrib(0, "F_1")) {
+} else if (haspointattrib(0, "F_1") && haspointattrib(0, "F_2") && haspointattrib(0, "F_3")) {
     F = transpose(set(point(0, "F_1", @ptnum), point(0, "F_2", @ptnum),
                       point(0, "F_3", @ptnum)));
     has_f = 1;
@@ -608,9 +632,14 @@ GLYPH_VEX = """\
 // on all its duplicated copies); draw a single glyph per node, not one per
 // duplicate, so coincident glyphs do not stack up.
 if (chi("../smooth_field") && haspointattrib(0, "coincident_rep")
-    && point(0, "coincident_rep", @ptnum) < 0.5)
+    && float(point(0, "coincident_rep", @ptnum)) < 0.5)
     return;
-if (@ptnum % max(1, chi("../glyph_stride")) != 0) return;
+int sample_id = @ptnum;
+if (chi("../smooth_field") && haspointattrib(0, "coincident_id")) {
+    float cid = point(0, "coincident_id", @ptnum);
+    sample_id = (int)rint(cid);
+}
+if (sample_id % max(1, chi("../glyph_stride")) != 0) return;
 string tensor = chs("../glyph_tensor");
 string vec_name =
       tensor == "right_cauchy_green" ? "right_cauchy_green_eigenvectors"
@@ -997,8 +1026,8 @@ def _export_tab():
         **_callback("export_region_from_probe"),
         help="Use the point last clicked with the probe (Probe tab): its "
              "node or element for One Node / One Element, its undeformed "
-             "position as the centre of a Sphere (other kinds become a "
-             "Sphere) or as the point of a Half Space.")
+             "position as the centre of a Sphere, or as the point of a "
+             "Half Space.")
     probe.setConditional(
         hou.parmCondType.HideWhen,
         "{ export_region_kind# == all } { export_region_kind# == bodies } "
@@ -1301,12 +1330,14 @@ def _parms():
         "hou.phm().source_block_menu(kwargs)")
     source_block.setItemGeneratorScriptLanguage(hou.scriptLanguage.Python)
     main.addParmTemplate(source_block)
-    main.addParmTemplate(hou.StringParmTemplate(
+    avail = hou.StringParmTemplate(
         "availability_status", "Available Data", 1,
         default_value=("Select a PVD file to inspect its renderable data.",),
         help="Read-only summary of what the loaded result contains (blocks, "
              "fields, bodies, fibers) and therefore which controls below are "
-             "usable."))
+             "usable.")
+    avail.setConditional(hou.parmCondType.DisableWhen, READ_ONLY)
+    main.addParmTemplate(avail)
     main.addParmTemplate(hou.MenuParmTemplate(
         "field_time_scope", "Field Availability Scope",
         ("current", "every", "any"),
@@ -1329,13 +1360,16 @@ def _parms():
              "makes every frame change re-parse and rebuild the mesh, so "
              "scrubbing is much slower; leave off unless the topology actually "
              "changes over time. Off = topology parsed once and cached."))
-    main.addParmTemplate(hou.IntParmTemplate(
+    topo_frame = hou.IntParmTemplate(
         "topo_frame", "Topology Frame", 1, default_value=(0,),
         help="When Remeshing Mode is off, the mesh connectivity is read once "
              "from the time step this Houdini frame shows (through Time "
              "Mapping, like the playbar) and reused for every other frame "
              "(only positions and fields change). Leave at 0 (the first "
-             "step) unless that step is missing or damaged."))
+             "step) unless that step is missing or damaged.")
+    topo_frame.setConditional(
+        hou.parmCondType.DisableWhen, "{ remesh_mode == 1 }")
+    main.addParmTemplate(topo_frame)
     main.addParmTemplate(hou.ToggleParmTemplate(
         "cache", "Cache Frames", default_value=True,
         script_callback="hou.phm().toggle_cache(kwargs)",
@@ -1409,8 +1443,10 @@ def _parms():
         "surface_only", "Display Boundary Surface Only", default_value=True,
         help="Show only the outer surface of the volume mesh instead of "
              "every solid element. Much faster to display for large meshes "
-             "and looks the same from outside; turn off when you need to "
-             "clip into the interior or probe interior points."))
+             "and looks the same from outside. Clipping Plane and Thin Slice "
+             "automatically reveal interior faces while active; turn this "
+             "off only when you need full solid tetrahedra/hexahedra "
+             "downstream or unclipped interior access."))
     show_deformed = hou.ToggleParmTemplate(
         "show_deformed", "Show Deformed", default_value=True,
         help="Move the mesh by the computed displacement so you see the "
@@ -1476,11 +1512,13 @@ def _parms():
              "they exist; other fields use a generic nodal average. Linear "
              "elements have no true sub-element variation -- raise PolyFEM's "
              "vismesh sampling or element order for that."))
-    disp.addParmTemplate(hou.StringParmTemplate(
+    color_status = hou.StringParmTemplate(
         "color_status", "Color Field Status", 1,
         default_value=("Cook the result to validate the selected field.",),
         help="Read-only: whether the chosen Color Field was found in the "
-             "current frame, and the reduction that is actually displayed."))
+             "current frame, and the reduction that is actually displayed.")
+    color_status.setConditional(hou.parmCondType.DisableWhen, READ_ONLY)
+    disp.addParmTemplate(color_status)
     missing = hou.FloatParmTemplate(
         "missing_color", "Unavailable Field Color", 3,
         default_value=(0.35, 0.35, 0.35),
@@ -1499,6 +1537,8 @@ def _parms():
     disp.addParmTemplate(hou.MenuParmTemplate(
         "color_scale", "Color Scale", ("linear", "log10"),
         menu_labels=("Linear", "Logarithmic (Base 10)"), default_value=0,
+        script_callback="hou.phm().color_scale_changed(kwargs)",
+        script_callback_language=hou.scriptLanguage.Python,
         help="Linear maps values evenly between the displayed minimum and "
              "maximum. Logarithmic spreads the colors by powers of ten, which "
              "helps when values span several orders of magnitude (stress "
@@ -1515,33 +1555,48 @@ def _parms():
              "percentile limits instead of the absolute minimum and maximum, "
              "so a few outliers (a single hot element) do not wash out the "
              "colors everywhere else."))
-    disp.addParmTemplate(hou.FloatParmTemplate(
+    range_percentiles = hou.FloatParmTemplate(
         "range_percentiles", "Range Percentiles", 2,
         default_value=(1.0, 99.0), min=0.0, max=100.0,
         help="Lower and upper percentiles used by Ignore Range Outliers: "
-             "1 and 99 map the color range to the middle 98% of the values."))
-    disp.addParmTemplate(hou.ToggleParmTemplate(
+             "1 and 99 map the color range to the middle 98% of the values.")
+    range_percentiles.setConditional(
+        hou.parmCondType.DisableWhen, "{ range_percentile == 0 }")
+    disp.addParmTemplate(range_percentiles)
+    range_symmetric = hou.ToggleParmTemplate(
         "range_symmetric", "Symmetric Range Around Zero", default_value=False,
         help="Make the displayed range symmetric around zero (e.g. -5 to +5) "
              "so that a diverging ramp puts zero exactly in the middle. "
-             "Useful for signed fields such as principal stresses."))
-    disp.addParmTemplate(hou.FloatParmTemplate(
+             "Useful for signed fields such as principal stresses.")
+    range_symmetric.setConditional(
+        hou.parmCondType.DisableWhen, "{ color_scale == log10 }")
+    disp.addParmTemplate(range_symmetric)
+    color_min = hou.FloatParmTemplate(
         "color_min", "Displayed Minimum", 1, default_value=(0.0,),
         help="Value mapped to the left end of the color ramp. Values below "
              "it are clamped to that color. Set by the Auto Range buttons or "
-             "type your own."))
-    disp.addParmTemplate(hou.FloatParmTemplate(
+             "type your own.")
+    color_min.setConditional(
+        hou.parmCondType.DisableWhen, "{ range_lock == 1 }")
+    disp.addParmTemplate(color_min)
+    color_max = hou.FloatParmTemplate(
         "color_max", "Displayed Maximum", 1, default_value=(1.0,),
         help="Value mapped to the right end of the color ramp. Values above "
-             "it are clamped to that color."))
-    disp.addParmTemplate(hou.ButtonParmTemplate(
+             "it are clamped to that color.")
+    color_max.setConditional(
+        hou.parmCondType.DisableWhen, "{ range_lock == 1 }")
+    disp.addParmTemplate(color_max)
+    autoscale_btn = hou.ButtonParmTemplate(
         "autoscale", "Auto Range: Current Frame",
         script_callback="hou.phm().autoscale(kwargs)",
         script_callback_language=hou.scriptLanguage.Python,
         help="Set Displayed Minimum/Maximum from the values in the frame "
              "currently shown (instant). Respects Ignore Range Outliers and "
-             "Symmetric Range; blocked by Lock Displayed Range."))
-    disp.addParmTemplate(hou.ButtonParmTemplate(
+             "Symmetric Range; blocked by Lock Displayed Range.")
+    autoscale_btn.setConditional(
+        hou.parmCondType.DisableWhen, "{ range_lock == 1 }")
+    disp.addParmTemplate(autoscale_btn)
+    autoscale_all_btn = hou.ButtonParmTemplate(
         "autoscale_all", "Auto Range: All Frames (scans sequence)",
         script_callback="hou.phm().autoscale_all(kwargs)",
         script_callback_language=hou.scriptLanguage.Python,
@@ -1549,7 +1604,10 @@ def _parms():
              "the global range. This must read every frame once, so it can "
              "take a while for long sequences of large meshes -- unavoidable, "
              "the values live inside each file. Use Auto Range: Current Frame "
-             "for an instant range from the displayed frame."))
+             "for an instant range from the displayed frame.")
+    autoscale_all_btn.setConditional(
+        hou.parmCondType.DisableWhen, "{ range_lock == 1 }")
+    disp.addParmTemplate(autoscale_all_btn)
     ramp = hou.RampParmTemplate(
         "color_ramp", "Displayed Color Ramp", hou.rampParmType.Color,
         help="Colors used from Displayed Minimum (left) to Displayed Maximum "
@@ -1602,8 +1660,8 @@ def _parms():
     glyph_tensor.setItemGeneratorScript(
         "hou.phm().glyph_tensor_menu(kwargs)")
     glyph_tensor.setItemGeneratorScriptLanguage(hou.scriptLanguage.Python)
-    glyph_tensor.setConditional(
-        hou.parmCondType.DisableWhen, "{ has_glyph_data == 0 }")
+    glyph_off = "{ has_glyph_data == 0 } { add_glyphs == 0 }"
+    glyph_tensor.setConditional(hou.parmCondType.DisableWhen, glyph_off)
     ana.addParmTemplate(glyph_tensor)
     direction_folder = hou.FolderParmTemplate(
         "glyph_directions", "Principal Directions",
@@ -1616,32 +1674,41 @@ def _parms():
                                            help=(
             "Draw this principal direction. Principal directions are ordered "
             "by principal value from largest to smallest."))
-        direction.setConditional(
-            hou.parmCondType.DisableWhen, "{ has_glyph_data == 0 }")
+        direction.setConditional(hou.parmCondType.DisableWhen, glyph_off)
         direction_folder.addParmTemplate(direction)
     ana.addParmTemplate(direction_folder)
-    ana.addParmTemplate(hou.FloatParmTemplate(
-        "tensor_scale", "Principal-Value Length Scale", 1,
-        default_value=(0.01,),
-        help="Multiplier from principal value to line length (scene units "
-             "per unit of the tensor). Press Auto-Estimate Glyph Scale to get "
-             "a value that fits the mesh; then adjust by eye."))
-    ana.addParmTemplate(hou.MenuParmTemplate(
-        "glyph_length_mode", "Glyph Length Mode",
-        ("value", "normalized", "clamped"),
-        menu_labels=("Scale by Principal Value", "Normalized Directions",
-                     "Scale by Value with Maximum Length"),
-        default_value=0,
-        help="How long each glyph line is. Scale by Principal Value: length "
-             "proportional to the magnitude (shows where the field is "
-             "strong). Normalized: all lines the same length (shows only "
-             "direction). Scale by Value with Maximum Length: proportional "
-             "but capped, so a few huge values do not hide everything else."))
-    ana.addParmTemplate(hou.FloatParmTemplate(
+    for template in (
+            hou.FloatParmTemplate(
+                "tensor_scale", "Principal-Value Length Scale", 1,
+                default_value=(0.01,),
+                help="Multiplier from principal value to line length (scene "
+                     "units per unit of the tensor). Press Auto-Estimate "
+                     "Glyph Scale to get a value that fits the mesh; then "
+                     "adjust by eye."),
+            hou.MenuParmTemplate(
+                "glyph_length_mode", "Glyph Length Mode",
+                ("value", "normalized", "clamped"),
+                menu_labels=("Scale by Principal Value",
+                             "Normalized Directions",
+                             "Scale by Value with Maximum Length"),
+                default_value=0,
+                help="How long each glyph line is. Scale by Principal Value: "
+                     "length proportional to the magnitude (shows where the "
+                     "field is strong). Normalized: all lines the same length "
+                     "(shows only direction). Scale by Value with Maximum "
+                     "Length: proportional but capped, so a few huge values "
+                     "do not hide everything else.")):
+        template.setConditional(hou.parmCondType.DisableWhen, glyph_off)
+        ana.addParmTemplate(template)
+    glyph_max_length = hou.FloatParmTemplate(
         "glyph_max_length", "Maximum Glyph Length", 1, default_value=(1.0,),
         min=0.0, max=1e9,
         help="Longest line allowed (scene units) when Glyph Length Mode is "
-             "Scale by Value with Maximum Length."))
+             "Scale by Value with Maximum Length.")
+    glyph_max_length.setConditional(
+        hou.parmCondType.DisableWhen,
+        glyph_off + " { glyph_length_mode != clamped }")
+    ana.addParmTemplate(glyph_max_length)
     for name, label, which in (
             ("glyph_scale_first", "First Direction Length Multiplier",
              "largest"),
@@ -1649,42 +1716,55 @@ def _parms():
              "middle"),
             ("glyph_scale_third", "Third Direction Length Multiplier",
              "smallest")):
-        ana.addParmTemplate(hou.FloatParmTemplate(
+        gscale = hou.FloatParmTemplate(
             name, label, 1, default_value=(1.0,), min=0.0, max=1e9,
             help=f"Extra length factor for the glyphs of the {which} "
                  "principal value only, e.g. to emphasize one direction "
-                 "(1 = no change)."))
-    ana.addParmTemplate(hou.ToggleParmTemplate(
+                 "(1 = no change).")
+        gscale.setConditional(hou.parmCondType.DisableWhen, glyph_off)
+        ana.addParmTemplate(gscale)
+    glyph_arrowheads = hou.ToggleParmTemplate(
         "glyph_arrowheads", "Show Glyph Arrowheads", default_value=False,
         help="Draw a small arrowhead at both ends of each glyph line so the "
-             "direction reads clearly from a distance."))
-    ana.addParmTemplate(hou.FloatParmTemplate(
+             "direction reads clearly from a distance.")
+    glyph_arrowheads.setConditional(hou.parmCondType.DisableWhen, glyph_off)
+    ana.addParmTemplate(glyph_arrowheads)
+    glyph_arrow_size = hou.FloatParmTemplate(
         "glyph_arrow_size", "Glyph Arrowhead Size", 1,
         default_value=(0.08,), min=0.001, max=0.5,
-        help="Size of the arrowheads as a fraction of the glyph length."))
-    ana.addParmTemplate(hou.IntParmTemplate(
-        "glyph_stride", "Glyph Sampling Stride", 1, default_value=(1,),
-        min=1, max=100000,
-        help="Draw a glyph only at every Nth point, to thin them out on "
-             "dense meshes (1 = every point)."))
-    ana.addParmTemplate(hou.ToggleParmTemplate(
-        "glyph_sign_color", "Stress Sign Colors", default_value=True,
-        help="For stress tensors, color glyphs red where the principal "
-             "stress is tension (positive) and blue where it is compression "
-             "(negative). Strain tensors use the uniform color."))
-    glyph_color = hou.FloatParmTemplate(
-        "glyph_color", "Uniform Glyph Color", 3, default_value=(1, 1, 1),
-        help="Color of the glyph lines when Stress Sign Colors is off (or "
-             "for strain tensors, which have no sign coloring).")
-    ana.addParmTemplate(glyph_color)
-    ana.addParmTemplate(hou.ButtonParmTemplate(
-        "autoglyph", "Auto-Estimate Glyph Scale",
-        script_callback="hou.phm().autoglyph(kwargs)",
-        script_callback_language=hou.scriptLanguage.Python,
-        help="Size the glyphs to the mesh: the largest glyphs span about half "
-             "an average edge. For value-scaled glyphs the estimate accounts "
-             "for the selected tensor's principal-value magnitude, so it works "
-             "for stress and strain alike."))
+        help="Size of the arrowheads as a fraction of the glyph length.")
+    glyph_arrow_size.setConditional(
+        hou.parmCondType.DisableWhen,
+        glyph_off + " { glyph_arrowheads == 0 }")
+    ana.addParmTemplate(glyph_arrow_size)
+    for template in (
+            hou.IntParmTemplate(
+                "glyph_stride", "Glyph Sampling Stride", 1,
+                default_value=(1,), min=1, max=100000,
+                help="Draw a glyph only at every Nth point, to thin them out "
+                     "on dense meshes (1 = every point)."),
+            hou.ToggleParmTemplate(
+                "glyph_sign_color", "Stress Sign Colors", default_value=True,
+                help="For stress tensors, color glyphs red where the "
+                     "principal stress is tension (positive) and blue where "
+                     "it is compression (negative). Strain tensors use the "
+                     "uniform color."),
+            hou.FloatParmTemplate(
+                "glyph_color", "Uniform Glyph Color", 3,
+                default_value=(1, 1, 1),
+                help="Color of the glyph lines when Stress Sign Colors is off "
+                     "(or for strain tensors, which have no sign coloring)."),
+            hou.ButtonParmTemplate(
+                "autoglyph", "Auto-Estimate Glyph Scale",
+                script_callback="hou.phm().autoglyph(kwargs)",
+                script_callback_language=hou.scriptLanguage.Python,
+                help="Size the glyphs to the mesh: the largest glyphs span "
+                     "about half an average edge. For value-scaled glyphs the "
+                     "estimate accounts for the selected tensor's "
+                     "principal-value magnitude, so it works for stress and "
+                     "strain alike.")):
+        template.setConditional(hou.parmCondType.DisableWhen, glyph_off)
+        ana.addParmTemplate(template)
     fiber_folder = hou.FolderParmTemplate(
         "fiber_folder", "Fibers", folder_type=hou.folderType.Simple)
     show_fibers = hou.ToggleParmTemplate(
@@ -1754,14 +1834,19 @@ def _parms():
                                   help="Color of the fiber lines when Fiber "
                                        "Color is set to Uniform.")):
         template.setConditional(
-            hou.parmCondType.DisableWhen, "{ show_fibers == 0 }")
+            hou.parmCondType.DisableWhen,
+            "{ show_fibers == 0 } { fiber_color_mode != uniform }"
+            if template.name() == "fiber_color" else "{ show_fibers == 0 }")
         fiber_folder.addParmTemplate(template)
 
-    fiber_folder.addParmTemplate(hou.ButtonParmTemplate(
+    autofiber = hou.ButtonParmTemplate(
         "autofiber", "Auto-Estimate Fiber Scale",
         script_callback="hou.phm().autofiber(kwargs)",
         script_callback_language=hou.scriptLanguage.Python,
-        help="Size the fiber lines to the mesh (about half an average edge)."))
+        help="Size the fiber lines to the mesh (about half an average edge).")
+    autofiber.setConditional(
+        hou.parmCondType.DisableWhen, "{ show_fibers == 0 }")
+    fiber_folder.addParmTemplate(autofiber)
     fiber_attribs = hou.StringParmTemplate(
         "fiber_attribs", "fiber_attribs", 1,
         default_value=("",),
@@ -1835,6 +1920,9 @@ def _parms():
             f"multi_{slug}_ramp", f"{label} Color Ramp",
             hou.rampParmType.Color,
             help=f"Color ramp used for the additional {label} block.")
+        block_ramp.setConditional(
+            hou.parmCondType.DisableWhen,
+            f"{{ has_block_{slug} == 0 }} {{ multi_{slug}_show == 0 }}")
         folder.addParmTemplate(block_ramp)
         multi.addParmTemplate(folder)
     ptg.append(multi)
@@ -1848,26 +1936,34 @@ def _parms():
              "Requires matching point topology. Parses the reference frame in "
              "addition to the current one, so each frame change does a little "
              "more work while this is on."))
-    compare.addParmTemplate(hou.IntParmTemplate(
+    ref_frame = hou.IntParmTemplate(
         "reference_frame", "Reference Frame", 1, default_value=(0,), min=0,
         help="Houdini frame to compare against: the time step that frame "
              "shows (through Time Mapping, like the playbar) is the "
              "reference; the status line names the step. 0 shows the first "
              "step, usually the undeformed start. The mesh must have the same "
-             "points in both frames."))
-    compare.addParmTemplate(hou.MenuParmTemplate(
+             "points in both frames.")
+    ref_frame.setConditional(
+        hou.parmCondType.DisableWhen, "{ reference_enable == 0 }")
+    compare.addParmTemplate(ref_frame)
+    ref_mode = hou.MenuParmTemplate(
         "reference_mode", "Comparison Value",
         ("difference", "absolute", "percent"),
         menu_labels=("Current Minus Reference", "Absolute Difference",
                      "Percentage Change"), default_value=0,
         help="What to color: the signed change since the reference frame, "
              "its magnitude, or the change as a percentage of the reference "
-             "value."))
-    compare.addParmTemplate(hou.StringParmTemplate(
+             "value.")
+    ref_mode.setConditional(
+        hou.parmCondType.DisableWhen, "{ reference_enable == 0 }")
+    compare.addParmTemplate(ref_mode)
+    ref_status = hou.StringParmTemplate(
         "reference_status", "Reference Comparison Status", 1,
         default_value=("Comparison is disabled.",),
         help="Read-only: whether the reference frame could be loaded and "
-             "matched to the current one."))
+             "matched to the current one.")
+    ref_status.setConditional(hou.parmCondType.DisableWhen, READ_ONLY)
+    compare.addParmTemplate(ref_status)
     ptg.append(compare)
 
     probe = hou.FolderParmTemplate("probe_folder", "Probe",
@@ -1880,19 +1976,25 @@ def _parms():
              "vector/tensor values, IDs, and reference comparison. Enabling "
              "this activates the node's viewer state (no need to press Enter "
              "in the viewport); the probe works while that state is active."))
-    probe.addParmTemplate(hou.IntParmTemplate(
+    probe_pt = hou.IntParmTemplate(
         "probe_point", "Probed Point Number", 1, default_value=(-1,), min=-1,
         help="The last probed vertex (-1 = none): its point number in the "
              "result before clipping (the point number in the loaded block's "
              "result file). The marker follows this vertex as frames change, "
              "also while a clip or slice is active; you can also type a "
-             "number to probe it directly."))
-    probe.addParmTemplate(hou.StringParmTemplate(
+             "number to probe it directly.")
+    probe_pt.setConditional(
+        hou.parmCondType.DisableWhen, "{ probe_enabled == 0 }")
+    probe.addParmTemplate(probe_pt)
+    probe_readout = hou.StringParmTemplate(
         "probe_readout", "Probe Readout", 1,
         default_value=("Enable the viewport probe and click the result.",),
+        tags={"editor": "1", "editorlines": "4-10"},
         help="Read-only text with the probed point's position, displacement, "
              "field value, body and sideset ids, principal values and "
-             "reference comparison."))
+             "reference comparison.")
+    probe_readout.setConditional(hou.parmCondType.DisableWhen, READ_ONLY)
+    probe.addParmTemplate(probe_readout)
     ptg.append(probe)
 
     section = hou.FolderParmTemplate("section_folder", "Clip / Slice",
@@ -1902,30 +2004,45 @@ def _parms():
         menu_labels=("Off", "Clipping Plane", "Thin Slice"),
         default_value=0,
         help="Cut into the model to see inside. Clipping Plane removes one "
-             "side of a plane; Thin Slice keeps only a slab around the plane. "
-             "Glyphs and fibers are added after the cut and are never "
+             "side of a plane; Thin Slice keeps only a slab centered on the "
+             "plane. Glyphs and fibers are added after the cut and are never "
              "removed by it."))
-    section.addParmTemplate(hou.FloatParmTemplate(
-        "clip_origin", "Plane Origin", 3, default_value=(0, 0, 0),
-        help="Auto-set to the scene's bounding-box center when a PVD file "
-             "is loaded (only while still at 0,0,0; your edits are kept)."))
-    section.addParmTemplate(hou.FloatParmTemplate(
-        "clip_direction", "Plane Normal", 3, default_value=(1, 0, 0),
-        help="Auto-aligned to the scene's longest bounding-box axis when a "
-             "PVD file is loaded (only while still at the +X default; your "
-             "edits are kept)."))
-    section.addParmTemplate(hou.MenuParmTemplate(
+    for template in (
+            hou.FloatParmTemplate(
+                "clip_origin", "Plane Origin", 3, default_value=(0, 0, 0),
+                help="Auto-set to the scene's bounding-box center when a PVD "
+                     "file is loaded (only while still at 0,0,0; your edits "
+                     "are kept)."),
+            hou.FloatParmTemplate(
+                "clip_direction", "Plane Normal", 3, default_value=(1, 0, 0),
+                help="Auto-aligned to the scene's longest bounding-box axis "
+                     "when a PVD file is loaded (only while still at the +X "
+                     "default; your edits are kept).")):
+        template.setConditional(
+            hou.parmCondType.DisableWhen, "{ clip_mode == off }")
+        section.addParmTemplate(template)
+    clip_keep = hou.MenuParmTemplate(
         "clip_keep", "Clip Side To Keep", ("above", "below"),
         menu_labels=("Above Plane", "Below Plane"), default_value=0,
         help="Which side of the clipping plane stays visible (above = the "
-             "side the Plane Normal points to)."))
-    section.addParmTemplate(hou.ToggleParmTemplate(
+             "side the Plane Normal points to).")
+    clip_keep.setConditional(
+        hou.parmCondType.DisableWhen, "{ clip_mode != clip }")
+    section.addParmTemplate(clip_keep)
+    clip_fill = hou.ToggleParmTemplate(
         "clip_fill", "Fill Clipped Surface", default_value=True,
-        help="Creates a colored cut surface when clipping closed geometry."))
-    section.addParmTemplate(hou.FloatParmTemplate(
+        help="Creates a colored cut surface when clipping closed geometry.")
+    clip_fill.setConditional(
+        hou.parmCondType.DisableWhen, "{ clip_mode == off }")
+    section.addParmTemplate(clip_fill)
+    slice_thickness = hou.FloatParmTemplate(
         "slice_thickness", "Slice Thickness", 1, default_value=(0.01,),
         min=1e-8, max=1e9,
-        help="Thickness of the kept slab (scene units) in Thin Slice mode."))
+        help="Total thickness of the kept slab (centered on Plane Origin, "
+             "scene units) in Thin Slice mode.")
+    slice_thickness.setConditional(
+        hou.parmCondType.DisableWhen, "{ clip_mode != slice }")
+    section.addParmTemplate(slice_thickness)
     ptg.append(section)
 
 
@@ -1958,89 +2075,110 @@ def _parms():
         hou.parmCondType.DisableWhen,
         "{ legend_mode != 2 legend_mode != 3 probe_enabled == 0 }")
     legend.addParmTemplate(overlay_button)
-    legend.addParmTemplate(hou.StringParmTemplate(
-        "legend_title", "Custom Legend Title", 1, default_value=("",),
-        help="Leave empty to use the resolved color field and displayed value."))
-    legend.addParmTemplate(hou.IntParmTemplate(
-        "legend_ticks", "Number of Tick Labels", 1, default_value=(6,),
-        min=2, max=21,
-        help="How many labeled values are written along the color bar "
-             "(including both ends)."))
-    legend.addParmTemplate(hou.IntParmTemplate(
-        "legend_digits", "Significant Digits", 1, default_value=(5,),
-        min=1, max=12,
-        help="Number of significant digits shown in the legend labels and "
-             "probe values."))
-    legend.addParmTemplate(hou.MenuParmTemplate(
-        "legend_number_format", "Legend Number Format",
-        ("automatic", "scientific", "engineering", "fixed"),
-        menu_labels=("Automatic", "Scientific", "Engineering", "Fixed"),
-        default_value=0,
-        help="How legend numbers are written: Automatic picks per value; "
-             "Scientific uses powers of ten (1.2e+05); Engineering uses "
-             "powers of a thousand (120e+03); Fixed uses plain decimals."))
-    legend.addParmTemplate(hou.StringParmTemplate(
-        "field_units", "Displayed Field Units", 1, default_value=("",),
-        help="Optional units appended to legend titles and probe values."))
-    text_color = hou.FloatParmTemplate(
-        "legend_text_color", "Legend Text Color", 3, default_value=(1, 1, 1),
-        help="Color of the legend title and tick labels (scene legend and "
-             "viewport overlay).")
-    legend.addParmTemplate(text_color)
-    legend.addParmTemplate(hou.MenuParmTemplate(
-        "legend_orientation", "Scene Legend Plane and Up Direction",
-        tuple(str(i) for i in range(12)),
-        menu_labels=("XY Plane, +X Up", "XY Plane, -X Up",
-                     "XY Plane, +Y Up", "XY Plane, -Y Up",
-                     "YZ Plane, +Y Up", "YZ Plane, -Y Up",
-                     "YZ Plane, +Z Up", "YZ Plane, -Z Up",
-                     "XZ Plane, +X Up", "XZ Plane, -X Up",
-                     "XZ Plane, +Z Up", "XZ Plane, -Z Up"),
-        default_value=2,
-        help="Which world plane the scene legend lies in and which way its "
-             "'up' points. Choose the plane facing your usual camera."))
-    legend.addParmTemplate(hou.FloatParmTemplate(
-        "legend_translate", "Scene Legend Translation", 3,
-        default_value=(0, 0, 0),
-        help="Position of the scene legend geometry (scene units). Place "
-             "Scene Legend Beside Model sets it automatically."))
+    legend_off = "{ legend_mode == off }"
+    legend_and_probe_off = "{ legend_mode == off probe_enabled == 0 }"
+    scene_legend_off = "{ legend_mode == off } { legend_mode == overlay }"
+    overlay_legend_off = "{ legend_mode == off } { legend_mode == scene }"
+    for template, cond in (
+            (hou.StringParmTemplate(
+                "legend_title", "Custom Legend Title", 1, default_value=("",),
+                help="Leave empty to use the resolved color field and "
+                     "displayed value."), legend_off),
+            (hou.IntParmTemplate(
+                "legend_ticks", "Number of Tick Labels", 1, default_value=(6,),
+                min=2, max=21,
+                help="How many labeled values are written along the color bar "
+                     "(including both ends)."), legend_off),
+            (hou.IntParmTemplate(
+                "legend_digits", "Significant Digits", 1, default_value=(5,),
+                min=1, max=12,
+                help="Number of significant digits shown in the legend labels "
+                     "and probe readout."), legend_and_probe_off),
+            (hou.MenuParmTemplate(
+                "legend_number_format", "Legend Number Format",
+                ("automatic", "scientific", "engineering", "fixed"),
+                menu_labels=("Automatic", "Scientific", "Engineering",
+                             "Fixed"),
+                default_value=0,
+                help="How legend and probe numbers are written: Automatic "
+                     "picks per value; Scientific uses powers of ten "
+                     "(1.2e+05); Engineering uses powers of a thousand "
+                     "(120e+03); Fixed uses plain decimals."),
+             legend_and_probe_off),
+            (hou.StringParmTemplate(
+                "field_units", "Displayed Field Units", 1, default_value=("",),
+                help="Optional units appended to legend titles and probe "
+                     "values."), legend_and_probe_off),
+            (hou.FloatParmTemplate(
+                "legend_text_color", "Legend Text Color", 3,
+                default_value=(1, 1, 1),
+                help="Color of the legend title and tick labels (scene legend "
+                     "and viewport overlay)."), legend_off)):
+        template.setConditional(hou.parmCondType.DisableWhen, cond)
+        legend.addParmTemplate(template)
     legend_rotate = hou.FloatParmTemplate(
         "legend_rotate", "Additional Scene Legend Rotation", 3,
         default_value=(0, 0, 0),
         help="Extra rotation (degrees) applied to the scene legend after the "
              "plane/up choice, for fine adjustment.")
     legend_rotate.setLook(hou.parmLook.Angle)
-    legend.addParmTemplate(legend_rotate)
-    legend.addParmTemplate(hou.FloatParmTemplate(
-        "legend_scale", "Scene Legend Scale", 1, default_value=(1.0,),
-        min=0.0001, max=1000,
-        help="Overall size of the scene legend geometry."))
-    legend.addParmTemplate(hou.ButtonParmTemplate(
-        "legend_autoplace", "Place Scene Legend Beside Model",
-        script_callback="hou.phm().autoplace_legend(kwargs)",
-        script_callback_language=hou.scriptLanguage.Python,
-        help="Move and size the scene legend so it sits next to the model's "
-             "bounding box at a readable size."))
-    legend.addParmTemplate(hou.MenuParmTemplate(
-        "overlay_corner", "Overlay Screen Corner",
-        ("upper_left", "upper_right", "lower_left", "lower_right"),
-        menu_labels=("Upper Left", "Upper Right", "Lower Left", "Lower Right"),
-        default_value=1,
-        help="Corner of the viewport where the screen-fixed overlay legend "
-             "is drawn."))
-    legend.addParmTemplate(hou.IntParmTemplate(
-        "overlay_margin", "Overlay Margin (Pixels)", 1, default_value=(24,),
-        min=0, max=1000,
-        help="Distance in pixels between the overlay legend and the "
-             "viewport edges."))
-    legend.addParmTemplate(hou.IntParmTemplate(
-        "overlay_width", "Overlay Bar Width (Pixels)", 1, default_value=(28,),
-        min=8, max=500,
-        help="Width of the overlay color bar in pixels."))
-    legend.addParmTemplate(hou.IntParmTemplate(
-        "overlay_height", "Overlay Bar Height (Pixels)", 1,
-        default_value=(260,), min=40, max=2000,
-        help="Height of the overlay color bar in pixels."))
+    for template in (
+            hou.MenuParmTemplate(
+                "legend_orientation", "Scene Legend Plane and Up Direction",
+                tuple(str(i) for i in range(12)),
+                menu_labels=("XY Plane, +X Up", "XY Plane, -X Up",
+                             "XY Plane, +Y Up", "XY Plane, -Y Up",
+                             "YZ Plane, +Y Up", "YZ Plane, -Y Up",
+                             "YZ Plane, +Z Up", "YZ Plane, -Z Up",
+                             "XZ Plane, +X Up", "XZ Plane, -X Up",
+                             "XZ Plane, +Z Up", "XZ Plane, -Z Up"),
+                default_value=2,
+                help="Which world plane the scene legend lies in and which "
+                     "way its 'up' points. Choose the plane facing your usual "
+                     "camera."),
+            hou.FloatParmTemplate(
+                "legend_translate", "Scene Legend Translation", 3,
+                default_value=(0, 0, 0),
+                help="Position of the scene legend geometry (scene units). "
+                     "Place Scene Legend Beside Model sets it automatically."),
+            legend_rotate,
+            hou.FloatParmTemplate(
+                "legend_scale", "Scene Legend Scale", 1, default_value=(1.0,),
+                min=0.0001, max=1000,
+                help="Overall size of the scene legend geometry."),
+            hou.ButtonParmTemplate(
+                "legend_autoplace", "Place Scene Legend Beside Model",
+                script_callback="hou.phm().autoplace_legend(kwargs)",
+                script_callback_language=hou.scriptLanguage.Python,
+                help="Move and size the scene legend so it sits next to the "
+                     "model's bounding box at a readable size.")):
+        template.setConditional(hou.parmCondType.DisableWhen, scene_legend_off)
+        legend.addParmTemplate(template)
+    for template in (
+            hou.MenuParmTemplate(
+                "overlay_corner", "Overlay Screen Corner",
+                ("upper_left", "upper_right", "lower_left", "lower_right"),
+                menu_labels=("Upper Left", "Upper Right", "Lower Left",
+                             "Lower Right"),
+                default_value=1,
+                help="Corner of the viewport where the screen-fixed overlay "
+                     "legend is drawn."),
+            hou.IntParmTemplate(
+                "overlay_margin", "Overlay Margin (Pixels)", 1,
+                default_value=(24,), min=0, max=1000,
+                help="Distance in pixels between the overlay legend and the "
+                     "viewport edges."),
+            hou.IntParmTemplate(
+                "overlay_width", "Overlay Bar Width (Pixels)", 1,
+                default_value=(28,), min=8, max=500,
+                help="Width of the overlay color bar in pixels."),
+            hou.IntParmTemplate(
+                "overlay_height", "Overlay Bar Height (Pixels)", 1,
+                default_value=(260,), min=40, max=2000,
+                help="Height of the overlay color bar in pixels.")):
+        template.setConditional(
+            hou.parmCondType.DisableWhen, overlay_legend_off)
+        legend.addParmTemplate(template)
     ptg.append(legend)
 
     gnomon = hou.FolderParmTemplate("gnomon_folder", "Gnomon",
@@ -2048,13 +2186,17 @@ def _parms():
     gnomon.addParmTemplate(hou.ToggleParmTemplate(
         "gnomon_show", "Show Scene Gnomon", default_value=False,
         help="Adds a renderable XYZ orientation marker to the final geometry."))
-    gnomon.addParmTemplate(hou.FloatParmTemplate(
-        "gnomon_center", "Gnomon Center", 3, default_value=(0, 0, 0),
-        help="World position of the gnomon's origin (scene units)."))
-    gnomon.addParmTemplate(hou.FloatParmTemplate(
-        "gnomon_scale", "Gnomon Axis Length", 1, default_value=(1.0,),
-        min=0.0001, max=1000,
-        help="Length of each gnomon axis line (scene units)."))
+    gnomon_off = "{ gnomon_show == 0 }"
+    for template in (
+            hou.FloatParmTemplate(
+                "gnomon_center", "Gnomon Center", 3, default_value=(0, 0, 0),
+                help="World position of the gnomon's origin (scene units)."),
+            hou.FloatParmTemplate(
+                "gnomon_scale", "Gnomon Axis Length", 1, default_value=(1.0,),
+                min=0.0001, max=1000,
+                help="Length of each gnomon axis line (scene units).")):
+        template.setConditional(hou.parmCondType.DisableWhen, gnomon_off)
+        gnomon.addParmTemplate(template)
     for name, label, what in (
             ("gnomon_x", "Show X Axis", "Draw the red X axis line."),
             ("gnomon_y", "Show Y Axis", "Draw the green Y axis line."),
@@ -2063,8 +2205,10 @@ def _parms():
              "Draw arrowheads at the tip of each axis."),
             ("gnomon_center_marker", "Show Center Marker",
              "Draw a small marker at the gnomon origin.")):
-        gnomon.addParmTemplate(hou.ToggleParmTemplate(
-            name, label, default_value=True, help=what))
+        g_toggle = hou.ToggleParmTemplate(
+            name, label, default_value=True, help=what)
+        g_toggle.setConditional(hou.parmCondType.DisableWhen, gnomon_off)
+        gnomon.addParmTemplate(g_toggle)
     ptg.append(gnomon)
 
     hidden_flags = ["has_solution_data", "has_glyph_data", "has_multibody",
@@ -2173,6 +2317,9 @@ def build(out_dir):
     reference.parm("python").set(REFERENCE_SOP_CODE)
     reference.addSpareParmTuple(hou.FloatParmTemplate("frame", "frame", 1))
     reference.parm("frame").setExpression("$F", hou.exprLanguage.Hscript)
+    reference.addSpareParmTuple(hou.IntParmTemplate("dataepoch", "dataepoch", 1))
+    reference.parm("dataepoch").setExpression('ch("../data_epoch")',
+                                              hou.exprLanguage.Hscript)
     reference.setNextInput(deform)
 
     # Field reduction -> optional nodal averaging -> ramp mapping.
@@ -2189,9 +2336,11 @@ def build(out_dir):
     # Show/hide bodies. Filtering before OUT_result means the range, probe,
     # glyphs, and clip all act on the visible bodies only.
     body_filter = wrangle("body_filter", 1, BODY_FILTER_VEX, color)
+    body_filter_pts = wrangle("body_filter_points", 2, BODY_FILTER_POINTS_VEX,
+                              body_filter)
 
     out_result = asset.createNode("null", "OUT_result")
-    out_result.setNextInput(body_filter)
+    out_result.setNextInput(body_filter_pts)
 
     # Glyphs are kept as their own stream (blast everything but the glyph
     # group) so the clip/slice stage below never cuts them.
@@ -2237,6 +2386,10 @@ def build(out_dir):
     multi_blocks.addSpareParmTuple(hou.FloatParmTemplate(
         "frame", "frame", 1))
     multi_blocks.parm("frame").setExpression("$F", hou.exprLanguage.Hscript)
+    multi_blocks.addSpareParmTuple(hou.IntParmTemplate(
+        "dataepoch", "dataepoch", 1))
+    multi_blocks.parm("dataepoch").setExpression(
+        'ch("../data_epoch")', hou.exprLanguage.Hscript)
     empty_multi = asset.createNode("null", "empty_multi_blocks")
     multi_switch = asset.createNode("switch", "multi_block_switch")
     multi_switch.parm("input").setExpression('ch("../show_multi_blocks")')
@@ -2271,14 +2424,20 @@ def build(out_dir):
         clip_node.parm("dofill").setExpression(
             'ch("../clip_fill")', hou.exprLanguage.Hscript)
     for axis in "xyz":
+        idx = "xyz".index(axis)
         clip_one.parm("origin" + axis).setExpression(
-            f'ch("../clip_origin{axis}")', hou.exprLanguage.Hscript)
+            "hou.pwd().parent().evalParmTuple('clip_origin')"
+            f"[{idx}] - ("
+            "hou.Vector3(hou.pwd().parent().evalParmTuple('clip_direction'))"
+            f".normalized()[{idx}] * 0.5 * "
+            "hou.pwd().parent().evalParm('slice_thickness') "
+            "if hou.pwd().parent().evalParm('clip_mode') == 2 else 0.0)",
+            hou.exprLanguage.Python)
         clip_two.parm("origin" + axis).setExpression(
             "hou.pwd().parent().evalParmTuple('clip_origin')"
-            f"[{'xyz'.index(axis)}] + "
+            f"[{idx}] + "
             "hou.Vector3(hou.pwd().parent().evalParmTuple('clip_direction'))"
-            ".normalized()"
-            f"[{'xyz'.index(axis)}] * "
+            f".normalized()[{idx}] * 0.5 * "
             "hou.pwd().parent().evalParm('slice_thickness')",
             hou.exprLanguage.Python)
     clip_one.parm("clipop").setExpression(
@@ -2349,7 +2508,11 @@ def build(out_dir):
     for marker, source in (("# @VTU_PARSER@", "vtu_parser.py"),
                            ("# @MSH_PARSER@", "msh_parser.py"),
                            ("# @XLSX_WRITER@", "xlsx_writer.py")):
-        module = module.replace(marker, hda_build.read_source("common", source))
+        if marker not in module:
+            raise RuntimeError(
+                f"Missing {marker} marker in readpvd/PythonModule.py")
+        module = module.replace(
+            marker, hda_build.read_source("common", source), 1)
 
     state_name = TYPE_NAME
     definition = asset.type().definition()
@@ -2400,7 +2563,7 @@ def build(out_dir):
     if hidden_any:
         definition.setParmTemplateGroup(ptg)
         definition.save(definition.libraryFilePath())
-    return definition.libraryFilePath()
+    return hda_build.commit_asset(asset)
 
 
 if __name__ == "__main__":

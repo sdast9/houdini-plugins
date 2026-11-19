@@ -87,7 +87,9 @@ def build(out_dir):
     # ---- PythonModule: embed the native parser ----------------------------
     parser_src = hda_build.read_source("common", "msh_parser.py")
     module_src = hda_build.read_source("msh_reader", "PythonModule.py")
-    module_src = module_src.replace("# @MSH_PARSER@", parser_src)
+    if "# @MSH_PARSER@" not in module_src:
+        raise RuntimeError("Missing # @MSH_PARSER@ marker in msh_reader/PythonModule.py")
+    module_src = module_src.replace("# @MSH_PARSER@", parser_src, 1)
     module_src += """
 
 def reload(kwargs):

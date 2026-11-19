@@ -432,6 +432,11 @@ def geometry_to_origin(kwargs):
 def reset_transform(kwargs):
     parent = kwargs["node"]
     geo_number = kwargs["script_multiparm_index"]
+    for prefix in ("xform_t__", "xform_r__", "xform_s__"):
+        for axis in "xyz":
+            parm = parent.parm(f"{prefix}{geo_number}{axis}")
+            if parm is not None and parm.keyframes():
+                parm.deleteAllKeyframes()
     parent.setParms({f"xform_t__{geo_number}x": 0, f"xform_t__{geo_number}y": 0,
                      f"xform_t__{geo_number}z": 0, f"xform_r__{geo_number}x": 0,
                      f"xform_r__{geo_number}y": 0, f"xform_r__{geo_number}z": 0,
@@ -739,6 +744,20 @@ def create_geo_nodes(kwargs):
                 "mesh is loaded.")
         return
 
+    existing_node = parent.node("geo_" + geo_number)
+    existing_geo = existing_node is not None
+    prev_path = None
+    if existing_geo:
+        src_parm = existing_node.parm("File") or existing_node.parm("file")
+        if src_parm is not None:
+            prev_path = src_parm.unexpandedString()
+
+    def _restore_file_parm():
+        if prev_path:
+            parent.setParms({f"file_location{geo_number}": prev_path})
+        else:
+            parent.parm("file_location" + geo_number).revertToDefaults()
+
     root, extension = os.path.splitext(path_parm)
     extension = extension.lower()
     non_msh = extension in (".obj", ".stl", ".ply")
@@ -749,62 +768,79 @@ def create_geo_nodes(kwargs):
         parent.parm("file_location" + geo_number).revertToDefaults()
         destroy_geo_nodes(parent, geo_number)
         return
-    if non_msh:
-        parent.setParms({"is_obstacle" + geo_number: 1})
 
-    existing_geo = parent.node("geo_" + geo_number) is not None
-    saved_obstacle_color = _color_tuple(
-        parent, f"color_{geo_number}") if existing_geo else None
-    obstacle_check = parent.parm("is_obstacle" + geo_number).eval()
-    # What a reload must keep, captured before the old chain goes away.
-    previous = _capture_previous_mesh(parent, geo_number) \
-        if existing_geo else None
-    destroy_geo_nodes(parent, geo_number)
+    obstacle_check = 1 if non_msh else parent.parm(
+        "is_obstacle" + geo_number).eval()
 
-    # stage a copy in <working_dir>/input/, under a name no other geometry
-    # uses for a different mesh
+    # Stage and validate the new mesh before destroying the existing chain,
+    # so a missing, unreadable or invalid file does not wipe loaded geometry.
     working_dir = parent.evalParm("working_dir")
     input_dir = os.path.join(working_dir, "input")
     try:
-        dst = _stage_mesh(
+        dst_abs = _stage_mesh(
             geo_number, path_parm, input_dir,
             _staged_meshes(parent, input_dir, exclude=geo_number))
     except (OSError, hou.Error) as e:
         _message(f"Could not copy mesh into working dir: {e}")
+        _restore_file_parm()
         return
-    # Remembered on the node: a reload compares the new file with the one
-    # that was loaded, which may since have been overwritten in place.
-    digest = _file_digest(dst)
-    parent.setUserData(_mesh_digest_key(geo_number), digest)
-    dst = portable_path(parent, dst)
-    parent.setParms({f"file_location{geo_number}": dst})
+    digest = _file_digest(dst_abs)
+    dst = portable_path(parent, dst_abs)
 
+    stale_probe = parent.node("__staging_probe")
+    if stale_probe is not None:
+        stale_probe.destroy()
     if obstacle_check == 0 or not non_msh:
-        file_node = parent.createNode("MSH_Reader::3.0", "geo_" + geo_number)
+        file_node = parent.createNode("MSH_Reader::3.0", "__staging_probe")
         file_node.parm("File").set(dst)
     else:
-        file_node = parent.createNode("file", "geo_" + geo_number)
+        file_node = parent.createNode("file", "__staging_probe")
         file_node.parm("file").set(dst)
     try:
         file_node.cook(force=True)
     except hou.OperationFailed:
+        file_node.destroy()
         _message("Failed to read the mesh; check the file.")
-        parent.parm("file_location" + geo_number).revertToDefaults()
+        _restore_file_parm()
         return
 
-    upstream = file_node
     groups = None
     if obstacle_check == 0:
         if file_node.geometry().findPrimAttrib("Entity") is None:
+            file_node.destroy()
             _message("Mesh has no Entity attribute.")
+            _restore_file_parm()
             return
         groups = physical_groups(file_node.geometry())
+        if not groups["tags"]:
+            file_node.destroy()
+            _message("Mesh has no elements.")
+            _restore_file_parm()
+            return
         if len(groups["tags"]) > 999:
+            file_node.destroy()
             _message(f"The mesh has {len(groups['tags'])} physical groups; "
                      "this node supports up to 999 subdomains per geometry.")
-            destroy_geo_nodes(parent, geo_number)
-            parent.parm("file_location" + geo_number).revertToDefaults()
+            _restore_file_parm()
             return
+
+    saved_obstacle_color = _color_tuple(
+        parent, f"color_{geo_number}") if existing_geo else None
+    # What a reload must keep, captured before the old chain goes away.
+    previous = _capture_previous_mesh(parent, geo_number) \
+        if existing_geo else None
+    destroy_geo_nodes(parent, geo_number)
+    file_node.setName("geo_" + geo_number)
+
+    if non_msh:
+        parent.setParms({"is_obstacle" + geo_number: 1})
+    # Remembered on the node: a reload compares the new file with the one
+    # that was loaded, which may since have been overwritten in place.
+    parent.setUserData(_mesh_digest_key(geo_number), digest)
+    parent.setParms({f"file_location{geo_number}": dst})
+
+    upstream = file_node
+    if obstacle_check == 0:
         upstream = parent.createNode("attribwrangle",
                                      "subdomains_" + geo_number)
         upstream.setParms({"class": 1, "group": "@is_volume==1",
@@ -1542,7 +1578,23 @@ def eval_geo_num(kwargs):
 def clear_geos(kwargs):
     parent = kwargs["node"]
     parent.allowEditingOfContents()
+    old_geos = int(parent.evalParm("num_geos"))
     num_geos = max(1, int(eval_geo_num(kwargs)))
+    if num_geos < old_geos and hou.isUIAvailable():
+        dropped = [g for g in range(num_geos + 1, old_geos + 1)
+                   if parent.node(f"geo_{g}") is not None]
+        if dropped:
+            choice = hou.ui.displayMessage(
+                f"Lowering Number of Geometries from {old_geos} to {num_geos} "
+                f"will remove geometry {', '.join(str(g) for g in dropped)} "
+                "and all of its materials and sidesets.",
+                buttons=("Remove", "Cancel"),
+                default_choice=1, close_choice=1,
+                severity=hou.severityType.Warning,
+                title="Remove Geometries")
+            if choice != 0:
+                parent.setParms({"geo_int": old_geos})
+                return
     parent.setParms({"num_geos": num_geos})
     for item in parent.children():
         if item.name() in _PROTECTED_NODES:
@@ -1635,6 +1687,21 @@ def update_entities(kwargs, call=None):
 def revert_entities(kwargs):
     parent = kwargs["node"]
     geo_number = kwargs["script_multiparm_index"]
+    has_edits = any(
+        item.name().split("_")[0] == "vex"
+        and _geo_index_of(item.name()) == int(geo_number)
+        for item in parent.children())
+    if has_edits and hou.isUIAvailable():
+        choice = hou.ui.displayMessage(
+            f"Restore Mesh Subdomains on Geometry {geo_number} discards all "
+            "element reassignments and removes any added subdomains with "
+            "their materials and sidesets.",
+            buttons=("Restore", "Cancel"),
+            default_choice=1, close_choice=1,
+            severity=hou.severityType.Warning,
+            title="Restore Mesh Subdomains")
+        if choice != 0:
+            return
     for item in parent.children():
         name = item.name()
         if name.split("_")[0] == "vex" and _geo_index_of(name) == int(geo_number):
@@ -1679,11 +1746,14 @@ def BC_check(kwargs):
 
 def create_group(kwargs):
     """Sideset count callback: maintain groupcreate nodes in the surface chain."""
-    BC_check(kwargs)
     parent = kwargs["node"]
     parent.allowEditingOfContents()
     geo_number = kwargs["script_multiparm_index2"]
     vol_num = kwargs["script_multiparm_index"]
+    if parent.parm("is_obstacle" + str(geo_number)).eval():
+        _message("Obstacles take a displacement, not sidesets.")
+        parent.setParms({f"sideset_selection{geo_number}_{vol_num}": 0})
+        return
     if parent.node("geo_" + geo_number) is None:
         _message("No input geometry provided to apply sideset!")
         parent.setParms({f"sideset_selection{geo_number}_{vol_num}": 0})
@@ -2011,10 +2081,14 @@ def simulation_steps(parent):
     steps = int(parent.evalParm("num_timesteps"))
     tend_on = bool(parent.evalParm("end_time_bool"))
     dt_on = bool(parent.evalParm("time_inc_bool"))
-    has_steps = bool(parent.evalParm("num_timesteps_bool")) \
-        and not (tend_on and dt_on)
-    has_tend = tend_on or not has_steps
-    has_dt = dt_on or not has_steps
+    steps_on = bool(parent.evalParm("num_timesteps_bool"))
+    if int(tend_on) + int(dt_on) + int(steps_on) < 2:
+        raise hou.NodeError(
+            "The Time tab does not define a run: turn on two of End Time, "
+            "Time Increment and # of Timesteps.")
+    has_steps = steps_on and not (tend_on and dt_on)
+    has_tend = tend_on
+    has_dt = dt_on
     if has_tend and has_dt:
         if not (dt > 0 and tend > t0):
             raise hou.NodeError(
@@ -2914,7 +2988,13 @@ def resolve_sidesets(parent, geo, num_vols):
         return "faces", members
 
     for vol in range(1, num_vols + 1):
-        for j in range(1, parent.evalParm(f"sideset_selection{geo}_{vol}") + 1):
+        n_sidesets = parent.evalParm(f"sideset_selection{geo}_{vol}")
+        if n_sidesets > 99:
+            raise hou.NodeError(
+                f"Geometry {geo}, subdomain {vol}: at most 99 sidesets are "
+                f"supported per subdomain (found {n_sidesets}); the ID scheme "
+                "reserves 1..99 per subdomain.")
+        for j in range(1, n_sidesets + 1):
             pattern = parent.evalParm(f"basegroup{geo}_{vol}_{j}")
             grouptype = parent.evalParm(f"grouptype{geo}_{vol}_{j}")
             conditions = _sideset_conditions(parent, geo, vol, j,
@@ -3625,9 +3705,18 @@ def _read_element_file(path, count, components, field, label, parent=None,
                 "was staged under that name. Pick your original fiber file "
                 "again (it is now staged under a name Write never uses).")
     else:
-        text = open(path).read()
-        delimiter = "," if ("," in text and ".vtk" not in path.lower()) else None
-        values = np.loadtxt(path, delimiter=delimiter, ndmin=2)
+        delimiter = None
+        if ".vtk" not in path.lower():
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    stripped = line.split("#", 1)[0].strip()
+                    if stripped:
+                        delimiter = "," if "," in stripped else None
+                        break
+        try:
+            values = np.loadtxt(path, delimiter=delimiter, ndmin=2)
+        except (OSError, ValueError) as exc:
+            raise hou.NodeError(f"{label}: could not read {path} ({exc})")
         if components == 1:
             values = values.reshape(-1)
         elif values.shape[1] != components:
@@ -5017,19 +5106,19 @@ def build_time(parent, data):
         integrator = integrator_dict[integrator]
 
     time = {"t0": t0, "integrator": integrator, "quasistatic": quasistatic}
-    tend_on = parent.evalParm("end_time_bool")
-    dt_on = parent.evalParm("time_inc_bool")
-    steps_on = parent.evalParm("num_timesteps_bool")
+    tend_on = bool(parent.evalParm("end_time_bool"))
+    dt_on = bool(parent.evalParm("time_inc_bool"))
+    steps_on = bool(parent.evalParm("num_timesteps_bool"))
+    if int(tend_on) + int(dt_on) + int(steps_on) < 2:
+        raise hou.NodeError(
+            "The Time tab does not define a run: turn on two of End Time, "
+            "Time Increment and # of Timesteps.")
     if tend_on:
         time["tend"] = parent.evalParm("tend")
     if dt_on:
         time["dt"] = parent.evalParm("dt")
     if steps_on and not (tend_on and dt_on):
         time["time_steps"] = int(parent.evalParm("num_timesteps"))
-    if "tend" not in time and "time_steps" not in time:
-        time["tend"] = parent.evalParm("tend")
-    if "dt" not in time and "time_steps" not in time:
-        time["dt"] = parent.evalParm("dt")
     data["time"] = time
 
 
@@ -5649,16 +5738,21 @@ def build_output(parent, data):
     def b(name):
         return bool(parent.evalParm(name))
 
-    # On by default, but only meaningful (and only written) with contact.
-    contact_forces = b("contact_forces_fields") and b("enable")
-    friction_forces = b("friction_forces_fields")
-    normal_adh = b("normal_adhesion_forces_fields")
-    tang_adh = b("tangential_adhesion_forces_fields")
+    # Contact surface fields are only meaningful (and only written) when their
+    # corresponding contact feature is enabled.
+    contact_on = b("enable")
+    adhesion_on = contact_on and b("adhesion_enable")
+    gcp_adapt_on = contact_on and b("gcp_enable") and b("adapt_dhat")
+    contact_forces = b("contact_forces_fields") and contact_on
+    friction_forces = b("friction_forces_fields") and contact_on
+    normal_adh = b("normal_adhesion_forces_fields") and adhesion_on
+    tang_adh = b("tangential_adhesion_forces_fields") and adhesion_on
+    adaptive_dhat = b("adaptive_dhat") and gcp_adapt_on
     surface = (b("normals_fields") or b("displaced_normals_fields")
                or b("sidesets_fields")
                or b("solution_grad_fields") or contact_forces
                or friction_forces or normal_adh or tang_adh
-               or b("adaptive_dhat"))
+               or adaptive_dhat)
     jacobian_validity = b("validity_fields")
     volume = (b("velocity_fields") or b("acceleration_fields")
               or b("nodes_field") or b("forces_fields") or jacobian_validity)
@@ -5691,7 +5785,7 @@ def build_output(parent, data):
                 (friction_forces, "friction_forces"),
                 (normal_adh, "normal_adhesion_forces"),
                 (tang_adh, "tangential_adhesion_forces"),
-                (b("adaptive_dhat"), "adaptive_dhat"),
+                (adaptive_dhat, "adaptive_dhat"),
                 (b("body_ids_fields"), "body_ids"),
                 (b("velocity_fields"), "velocity"),
                 (b("acceleration_fields"), "acceleration"),
@@ -6358,8 +6452,20 @@ def confirm_output_folder(parent):
         new_folder = next_free_folder(working_dir)
         os.makedirs(os.path.join(new_folder, "input"), exist_ok=True)
         os.makedirs(os.path.join(new_folder, "output"), exist_ok=True)
-        parent.parm("working_dir").set(new_folder)
-        _status(f"Working directory changed to {new_folder}")
+        raw_wd = parent.parm("working_dir").unexpandedString().rstrip("/\\")
+        stored = new_folder
+        if "$" in raw_wd:
+            match = re.match(r"^(.*)_run(\d+)$", raw_wd)
+            raw_stem = match.group(1) if match else raw_wd
+            suffix = re.search(r"(_run\d+)/?$", new_folder)
+            if suffix:
+                candidate = raw_stem + suffix.group(1) + "/"
+                if os.path.normpath(os.path.abspath(
+                        hou.text.expandString(candidate))) == os.path.normpath(
+                            os.path.abspath(new_folder)):
+                    stored = candidate
+        parent.parm("working_dir").set(stored)
+        _status(f"Working directory changed to {stored}")
         return True
     return False
 
@@ -6879,23 +6985,48 @@ def check_setup(parent, purpose="check"):
                 "at start-up. Switch Barrier Stiffness Mode to Adaptive or "
                 "Fixed, or turn off Geometric Contact (GCP) (Contact tab).")
         if parent.evalParm("barrier_mode") == 0 \
-                and not parent.evalParm("gcp_enable") \
-                and parent.evalParm("improved_max"):
-            if _menu_token(parent, "si_coefficient_identity") == "stencil":
-                errors.append(IMPROVED_MAX_STENCIL_ERROR)
-            else:
-                notes.append(
-                    "Remove Duplicate Contacts (Improved Max) is on: "
-                    "experimental, verified in 2D frictionless tests only "
-                    "(3D and friction not yet validated). It needs a PolyFEM "
-                    "built from sdast9/polyfem a54509955 or later; an older "
-                    "binary refuses it at start-up.")
+                and not parent.evalParm("gcp_enable"):
+            if parent.evalParm("si_trim_lower") >= parent.evalParm("si_trim_upper"):
+                errors.append(
+                    "Semi-Implicit Trim Lower Band must be smaller than Trim "
+                    "Upper Band (Contact > Barrier (IPC) > Semi-Implicit "
+                    "Options).")
+            if parent.evalParm("improved_max"):
+                if _menu_token(parent, "si_coefficient_identity") == "stencil":
+                    errors.append(IMPROVED_MAX_STENCIL_ERROR)
+                else:
+                    notes.append(
+                        "Remove Duplicate Contacts (Improved Max) is on: "
+                        "experimental, verified in 2D frictionless tests only "
+                        "(3D and friction not yet validated). It needs a "
+                        "PolyFEM built from sdast9/polyfem a54509955 or later; "
+                        "an older binary refuses it at start-up.")
+        if _menu_token(parent, "resource_limits") == "custom":
+            bp_idx = int(parent.evalParm("broad_phase"))
+            if bp_idx not in (0, 1):
+                bp_name = ("Hash Grid", "Brute Force", "Spatial Hash", "BVH",
+                           "Sweep and Prune", "Sweep and Tiniest Queue")[bp_idx]
+                warnings.append(
+                    f"Custom Contact Resource Limits are skipped by the "
+                    f"{bp_name} broad phase (ceilings are only enforced by "
+                    "Hash Grid and Brute Force). Switch Broad Phase to Hash "
+                    "Grid / Brute Force or leave Resource Limits on Automatic "
+                    "(Contact > CCD Parameters).")
+    if _menu_token(parent, "method") == "Wolfe":
+        c1 = parent.evalParm("armijo_c")
+        c2 = parent.evalParm("wolfe_c2")
+        if not (c1 < c2 < 1.0):
+            errors.append(
+                f"Strong Wolfe curvature c2 ({c2:g}) must lie strictly "
+                f"between Armijo c ({c1:g}) and 1 (Solver > Line Search).")
     try:
         _check_composite_consistency(parent)
     except hou.Error as exc:
         errors.append(_error_text(exc))
 
     t0, tend = parent.evalParm("t0"), parent.evalParm("tend")
+    if t0 < 0:
+        errors.append(f"Start Time ({t0:g}) cannot be negative (Time tab).")
     if parent.evalParm("end_time_bool") and not tend > t0:
         errors.append(f"End Time ({tend:g}) must be after Start Time "
                       f"({t0:g}) (Time tab).")
@@ -7036,22 +7167,29 @@ def _timeline_findings(parent, obstacles, errors, notes):
 # What Show Expert Controls hides: (folder label path or parm names, label,
 # whether the export reads it in this setup). Hiding never changes a value.
 _EXPERT_FOLDERS = (
-    (("Contact", "Barrier (ICP)", "Semi-Implicit Options"),
-     lambda p: p.evalParm("enable")
+    (("Contact", "Barrier (IPC)", "Semi-Implicit Options"),
+     lambda p: p.evalParm("enable") and not p.evalParm("gcp_enable")
      and _menu_token(p, "barrier_mode") == "semi_implicit"),
     (("Solver", "Augmented Lagrangian"), lambda p: True),
     (("Solver", "Rayleigh Damping"), lambda p: True),
     (("Solver", "Linear", "AMGCL Precond Settings"),
-     lambda p: _menu_token(p, "solver") == "AMGCL"),
+     lambda p: _menu_token(p, "solver_nl") != "BFGS"
+     and _menu_token(p, "solver") == "AMGCL"),
     (("Output", "Advanced"), lambda p: True),
 )
 _EXPERT_PARMS = (
     (("solver_type",), "Solver > Linear > AMGCL",
-     lambda p: _menu_token(p, "solver") == "AMGCL"),
+     lambda p: _menu_token(p, "solver_nl") != "BFGS"
+     and _menu_token(p, "solver") == "AMGCL"),
     (("max_iter_hypre", "pre_max_iter_hypre", "theta_hypre",
-      "nodal_coarsening_hypre", "tolerance_hypre_AMGCL"),
+      "nodal_coarsening_hypre"),
      "Solver > Linear > Hypre",
-     lambda p: _menu_token(p, "solver") in ("Hypre", "AMGCL")),
+     lambda p: _menu_token(p, "solver_nl") != "BFGS"
+     and _menu_token(p, "solver") == "Hypre"),
+    (("tolerance_hypre_AMGCL",),
+     "Solver > Linear",
+     lambda p: _menu_token(p, "solver_nl") != "BFGS"
+     and _menu_token(p, "solver") in ("Hypre", "AMGCL")),
     (("wolfe_c2", "wolfe_growth_factor", "wolfe_growth_limit",
       "wolfe_max_evaluations", "wolfe_max_objective_restarts",
       "wolfe_approximate_epsilon"), "Solver > Line Search > Wolfe",
@@ -7068,10 +7206,20 @@ def _expert_notes(parent):
         return []
     group = parent.parmTemplateGroup()
     changed = []
+    multiparm_types = (
+        hou.folderType.MultiparmBlock,
+        hou.folderType.ScrollingMultiparmBlock,
+        hou.folderType.TabbedMultiparmBlock,
+    )
 
     def visit(templates, where):
         for template in templates:
             if template.type() == hou.parmTemplateType.Folder:
+                if template.folderType() in multiparm_types:
+                    tuple_parm = parent.parmTuple(template.name())
+                    if tuple_parm is not None and not tuple_parm.isAtDefault():
+                        changed.append(" > ".join(where + (template.label(),)))
+                    continue
                 visit(template.parmTemplates(),
                       where + (template.label(),))
                 continue
@@ -7578,9 +7726,6 @@ def active_run(parent):
         if _finished(run) is None:
             return run
         poll_runs()
-        return None
-    if run is not None:
-        return None
     manifest = _manifest(output)
     completion = manifest.get("completion", {})
     process = manifest.get("process", {})
@@ -7616,10 +7761,12 @@ def _describe_process(run):
 
 
 def _clear_run_files(output):
-    """Remove the previous run's status files before a new run starts, so
-    nothing of it (its pid in PolyFEM's manifest, its exit status) is read
-    as the new run's. The user has already agreed to replace that run."""
-    for name in (_EXIT_STATUS_FILE, _LAUNCHER_PID_FILE, "run-manifest.json"):
+    """Remove the previous run's status and log files before a new run starts,
+    so nothing of it (its pid in PolyFEM's manifest, its exit status, or its
+    logged steps) is read as the new run's. The user has already agreed to
+    replace that run."""
+    for name in (_EXIT_STATUS_FILE, _LAUNCHER_PID_FILE, "run-manifest.json",
+                 "log.txt", _CONSOLE_LOG, _TERMINAL_LOG):
         path = os.path.join(output, name)
         if os.path.isfile(path):
             os.remove(path)
@@ -7648,7 +7795,6 @@ def run_background(kwargs):
         # holds anything printed outside PolyFEM's logger) goes to its own
         # file, and Run Status follows PolyFEM's log.
         capture_path = os.path.join(output, _CONSOLE_LOG)
-    log_file = open(capture_path, "w")
     options = {}
     if platform.system() == "Windows":
         options["creationflags"] = getattr(
@@ -7657,11 +7803,15 @@ def run_background(kwargs):
         # its own session: it survives Houdini quitting, and Stop can signal
         # the whole process group
         options["start_new_session"] = True
-    proc = subprocess.Popen(args, cwd=input_dir, stdout=log_file,
-                            stderr=subprocess.STDOUT, **options)
+    try:
+        with open(capture_path, "w") as log_file:
+            proc = subprocess.Popen(args, cwd=input_dir, stdout=log_file,
+                                    stderr=subprocess.STDOUT, **options)
+    except OSError as exc:
+        _message(f"Could not start PolyFEM: {exc}")
+        return None
     run = _register_run(parent, "background", output, log_path, popen=proc,
                         binary=args[0])
-    run["log_handle"] = log_file
     _status(f"PolyFEM running in background (pid {proc.pid}); log: {log_path}")
     return run
 
@@ -7747,7 +7897,11 @@ def write_params(kwargs):
                  "gnome-terminal, konsole, xfce4-terminal, xterm); use Run in "
                  f"Background instead, or run {script} yourself.")
         return None
-    subprocess.Popen(command)
+    try:
+        subprocess.Popen(command)
+    except OSError as exc:
+        _message(f"Could not open terminal for PolyFEM: {exc}")
+        return None
     run = _register_run(parent, "terminal", output,
                         os.path.join(output, _TERMINAL_LOG), binary=args[0])
     _status(f"PolyFEM started in a terminal window ({script}).")
@@ -7758,7 +7912,11 @@ def reattach_run(parent):
     """Follow a run this node started before the scene was reloaded (or that
     another session started in its folder). Called by OnLoaded."""
     output = _output_dir(parent)
-    if not output or output in _runs():
+    if not output:
+        return None
+    existing = _runs().get(output)
+    if existing is not None and existing.get("result") is None \
+            and _node_of(existing) is not None:
         return None
     record = _read_json(os.path.join(output, _RUN_RECORD))
     if not record:

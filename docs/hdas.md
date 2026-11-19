@@ -47,6 +47,7 @@ hython tests/test_legacy_import.py       # old params.json migration
 hython tests/test_polyfem_materials.py   # fiber models, composites, per-element data
 hython tests/test_readpvd_materials.py   # material fields + fiber visualization
 hython tests/test_patch1_fixes.py        # 2026-11-19 review Patch 1 regressions
+hython tests/test_patch2_fixes.py        # 2026-11-19 review Patch 2 regressions
 ```
 
 ## MSH_Reader 3.0
@@ -408,6 +409,21 @@ Targets the current build's strict-validated schema — the old fork keys
    viewport overlay legend, and scene gnomon; try both Auto Range buttons;
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
+
+### Pipeline review Patch 2 fixes (2026-11-19)
+
+Follow-up polish, UX gating, validation, and parser/tooling hardening from the
+same review across all three HDAs and `src/common/` (`tests/test_patch2_fixes.py`):
+
+| Asset | What was wrong | Now |
+| --- | --- | --- |
+| PolyFEM | ViewerState left the selection bar hidden on exit, ignored object transforms when raycasting, ran raycasts on mouse-move against stale cached geometry, used 1-based `setMultiParmTab`, lacked an undo group for handle drags, and displayed `"1.0"` | `onExit` restores the selection bar; `onMouseEvent` raycasts only on `Picked` in local object space against live `all` geometry with 0-based tab index; `onHandleToState` groups undo; label updated to `2.0` |
+| PolyFEM | DialogScript UI gaps: `"Barrier (ICP)"` typo, editable `min_edge`, float `num_timesteps`, negative Chebyshev `lower` min, hidden AMGCL `max_iter`, `swap_max_depth2` default mismatch (`1` vs `3`), raw snake_case labels in *Output ▸ Advanced*, missing gating on `integrator`, `Friction`, `Remeshing` subtabs, obstacle separators, composite fiber controls, `minimal_fields`/`materials_fields`, and contact-surface outputs | All labels, ranges, defaults, and `disablewhen`/`hidewhen`/`hidewhentab` conditions fixed to match `PythonModule.py` and PolyFEM's schema |
+| PolyFEM | `reset_transform` left keyframes; lowering `num_geos` or *Revert* dropped data silently; `create_group` on an obstacle created orphan nodes; `< 2` Time toggles silently used hidden values; `> 99` sidesets overflowed `boundary_id`; `_read_element_file` choked on commas in `#` comments; `build_output` leaked contact-surface flags when contact was off; `check_setup` missed trim-band inversion, Wolfe `c2`, and custom resource limits on BVH; `_expert_notes` skipped `Rayleigh Damping` multiparm and flagged Hypre parms on AMGCL / linear parms on BFGS | Keyframes cleared; destructive edits prompt in UI; obstacle sidesets rejected; `< 2` Time toggles and `> 99` sidesets raise `NodeError`; comment-safe element file reader; contact outputs gated; `check_setup` & `_expert_notes` accurate |
+| PolyFEM | Failed mesh reloads wiped the existing `geo_<N>` chain and 0-element meshes crashed; `_clear_run_files` left stale logs behind; finished `_runs()` entries blocked external `active_run` detection and `reattach_run`; `run_background` held the log FD open in the parent and didn't guard `Popen` `OSError` | New mesh is staged and validated before destroying the old chain (with 0-element guard); stale logs cleared; `active_run`/`reattach_run` handle finished runs; `Popen` wrapped and parent FD closed immediately |
+| Read PVD | Status fields (`availability_status`, `color_status`, `reference_status`, `probe_readout`) were editable and `probe_readout` was single-line; many sub-controls stayed enabled when their parent mode was off; *Thin Slice* kept `[origin, origin + t]` instead of centering on the plane; switching to `log10` with `color_min <= 0` painted the mesh solid magenta | Status fields read-only (`probe_readout` multiline); `DisableWhen` added across Main, Display, Analysis, Comparison, Probe, Clip/Slice, Legend, and Gnomon; *Thin Slice* symmetric `[origin - t/2, origin + t/2]`; switching to `log10` auto-ranges to positive values when unlocked |
+| Read PVD | 2D VTUs without `F_3` failed VEX derived quantities; `almansi_strain_eigenvalues` could divide by 0; glyph/fiber stride used discontinuous `@ptnum`; `visible_bodies` ignored commas and `Points` blocks; `multi_block_display` missed `dataepoch`, failed on `point` cells or `NaN` ramp lookups, and ignored `"displacement"`; Viewport Probe ignored object transforms; `probe_readout` ignored legend digits/format, duplicated `solution`, and hid smoothed values; `_mesh_field` missed `|J|` guard on PK1/PK2 and `von_mises` fallback; Force Chart marker/set mismatch and `export_data`/`open_export_data` edge cases | 2D-safe `F_1..F_3` guard; clamped Almansi denominator; `coincident_id`-based stride; comma & `Points`-block `visible_bodies`; `dataepoch`, `point`-cell, `NaN`, and `displacement` fixes in Multi-Block; local-space probe ray & `xform` marker; formatted/deduped/smoothed `probe_readout`; guarded PK1/PK2 & `von_mises` fallback; clamped chart marker & set validation; step-based `export_data` validation, `.xlsx` append in `open_export_data`, and extent-floored deformed-mesh conformity check |
+| `vtu_parser` / `msh_parser` / build | `vtu_parser` ignored `BigEndian`, failed on VTK two-stream base64, `<AppendedData encoding="base64">`, and XML comments containing `<DataArray>`, and silently misread non-ZLib compressors; `msh_parser` lacked Gmsh P5 types `25`/`28`; `build_all.py` hardcoded macOS `~/Library/Preferences/houdini/22.0/otls` and `hda_build.py` overwrote `.hdanc` in place leaving `/obj/hda_build_container` behind | Full `BigEndian`, two-stream base64, base64 `AppendedData`, and XML-comment support with explicit `VtuParseError` on unsupported compressors; P5 tri/line types `25`/`28` added; portable `hou.homeHoudiniDirectory()`, atomic `.tmp` replace, UTF-8 reads, marker assertions, and build-node cleanup |
 
 ### Pipeline review Patch 1 fixes (2026-11-19)
 

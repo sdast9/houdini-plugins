@@ -36,9 +36,10 @@ import numpy as np
 # gmsh element type -> (family, nodes_per_elem, n_corners)
 GMSH_ELEM_TYPES = {
     1: ("line", 2, 2), 8: ("line", 3, 2), 26: ("line", 4, 2), 27: ("line", 5, 2),
+    28: ("line", 6, 2),
     15: ("point", 1, 1),
     2: ("tri", 3, 3), 9: ("tri", 6, 3), 20: ("tri", 9, 3), 21: ("tri", 10, 3),
-    22: ("tri", 12, 3), 23: ("tri", 15, 3),
+    22: ("tri", 12, 3), 23: ("tri", 15, 3), 25: ("tri", 21, 3),
     3: ("quad", 4, 4), 10: ("quad", 9, 4), 16: ("quad", 8, 4),
     4: ("tet", 4, 4), 11: ("tet", 10, 4), 29: ("tet", 20, 4), 30: ("tet", 35, 4),
     31: ("tet", 56, 4),

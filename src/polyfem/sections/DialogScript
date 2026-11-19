@@ -965,7 +965,7 @@
                 label   "Mesh File"
                 type    geometry
                 default { "" }
-                help    "Volume mesh for this body: a Gmsh .msh file (tetrahedra or hexahedra; 2D triangles/quads also work). The file is copied into <working_dir>/input when selected; if another geometry already uses a different mesh with the same file name, the copy is renamed (part_geo2.msh) so neither replaces the other. Physical groups in the file become the subdomains you can assign materials to."
+                help    "Volume mesh for this body: a Gmsh .msh file (tetrahedra or hexahedra). The file is copied into <working_dir>/input when selected; if another geometry already uses a different mesh with the same file name, the copy is renamed (part_geo2.msh) so neither replaces the other. Physical groups in the file become the subdomains you can assign materials to. Surface meshes (.obj, .stl, .ply, or 2D .msh) can be used as rigid obstacles."
                 parmtag { "filechooser_mode" "read" }
                 parmtag { "filechooser_pattern" "*.msh, *.obj, *.stl,*.ply" }
                 parmtag { "script_callback" "hou.pwd().hm().create_geo_nodes(kwargs)" }
@@ -1313,6 +1313,7 @@
                 label   "Spacer"
                 type    separator
                 default { "" }
+                hidewhen "{ is_obstacle# != 0 }"
                 parmtag { "sidefx::layout_height" "large" }
                 parmtag { "sidefx::look" "blank" }
             }
@@ -1321,6 +1322,7 @@
                 label   "Spacer"
                 type    separator
                 default { "" }
+                hidewhen "{ is_obstacle# != 0 }"
                 parmtag { "sidefx::layout_height" "large" }
                 parmtag { "sidefx::look" "blank" }
             }
@@ -1329,6 +1331,7 @@
                 label   ""
                 type    label
                 default { "Each subdomain below has its own material, sidesets (boundary conditions) and initial conditions." }
+                hidewhen "{ is_obstacle# != 0 }"
                 parmtag { "sidefx::look" "block" }
             }
             parm {
@@ -2071,9 +2074,9 @@
                             label   "Fiber SOP"
                             type    oppath
                             default { "" }
-                            disablewhen "{ fam_fib_source#_#_# != attribute }"
-                            hidewhen "{ fam_fib_source#_#_# != attribute }"
-                            help    "SOP node with a per-element fiber-direction attribute for this family (matched by element centroid)."
+                            disablewhen "{ fam_fib_source#_#_# != attribute fam_mirror#_#_# != 1 } { fam_fib_source#_#_# != attribute fam_axis_source#_#_# != attribute }"
+                            hidewhen "{ fam_fib_source#_#_# != attribute fam_mirror#_#_# != 1 } { fam_fib_source#_#_# != attribute fam_axis_source#_#_# != attribute }"
+                            help    "SOP node with a per-element fiber-direction or rotation-axis attribute for this family (matched by element centroid)."
                             parmtag { "opfilter" "!!SOP!!" }
                             parmtag { "oprelative" "." }
                             parmtag { "script_callback_language" "python" }
@@ -2104,8 +2107,8 @@
                             type    vector
                             size    3
                             default { "0" "0" "0" }
-                            disablewhen "{ fam_fib_source#_#_# != cylindrical fam_axis_source#_#_# != cylindrical }"
-                            hidewhen "{ fam_fib_source#_#_# != cylindrical fam_axis_source#_#_# != cylindrical }"
+                            disablewhen "{ fam_fib_source#_#_# != cylindrical fam_mirror#_#_# != 1 } { fam_fib_source#_#_# != cylindrical fam_axis_source#_#_# != cylindrical }"
+                            hidewhen "{ fam_fib_source#_#_# != cylindrical fam_mirror#_#_# != 1 } { fam_fib_source#_#_# != cylindrical fam_axis_source#_#_# != cylindrical }"
                             help    "A point on the cylinder axis for this family's cylindrical fiber frame (also used when the rotation axis follows the cylinder wall normal)."
                             parmtag { "script_callback_language" "python" }
                         }
@@ -2115,8 +2118,8 @@
                             type    vector
                             size    3
                             default { "0" "1" "0" }
-                            disablewhen "{ fam_fib_source#_#_# != cylindrical fam_axis_source#_#_# != cylindrical }"
-                            hidewhen "{ fam_fib_source#_#_# != cylindrical fam_axis_source#_#_# != cylindrical }"
+                            disablewhen "{ fam_fib_source#_#_# != cylindrical fam_mirror#_#_# != 1 } { fam_fib_source#_#_# != cylindrical fam_axis_source#_#_# != cylindrical }"
+                            hidewhen "{ fam_fib_source#_#_# != cylindrical fam_mirror#_#_# != 1 } { fam_fib_source#_#_# != cylindrical fam_axis_source#_#_# != cylindrical }"
                             help    "Direction of the cylinder axis for this family's cylindrical frame."
                             parmtag { "script_callback_language" "python" }
                         }
@@ -2172,8 +2175,8 @@
                             label   "Half Angle (deg)"
                             type    float
                             default { "30" }
-                            disablewhen "{ fam_mirror#_#_# != 1 }"
-                            hidewhen "{ fam_mirror#_#_# != 1 }"
+                            disablewhen "{ fam_mirror#_#_# != 1 } { fam_fib_source#_#_# == expression }"
+                            hidewhen "{ fam_mirror#_#_# != 1 } { fam_fib_source#_#_# == expression }"
                             range   { 0 90 }
                             help    "Half angle in degrees between each of the two mirrored families and the base fiber direction (e.g. 30 gives fibers at +30 and -30 degrees)."
                             parmtag { "script_callback_language" "python" }
@@ -2183,8 +2186,8 @@
                             label   "Rotation Axis Source"
                             type    ordinal
                             default { "constant" }
-                            disablewhen "{ fam_mirror#_#_# != 1 }"
-                            hidewhen "{ fam_mirror#_#_# != 1 }"
+                            disablewhen "{ fam_mirror#_#_# != 1 } { fam_fib_source#_#_# == expression }"
+                            hidewhen "{ fam_mirror#_#_# != 1 } { fam_fib_source#_#_# == expression }"
                             menu {
                                 "constant"    "Constant Axis"
                                 "attribute"   "Per-Element Attribute"
@@ -2199,8 +2202,8 @@
                             type    vector
                             size    3
                             default { "0" "0" "1" }
-                            disablewhen "{ fam_mirror#_#_# != 1 } { fam_axis_source#_#_# != constant }"
-                            hidewhen "{ fam_mirror#_#_# != 1 } { fam_axis_source#_#_# != constant }"
+                            disablewhen "{ fam_mirror#_#_# != 1 } { fam_fib_source#_#_# == expression } { fam_axis_source#_#_# != constant }"
+                            hidewhen "{ fam_mirror#_#_# != 1 } { fam_fib_source#_#_# == expression } { fam_axis_source#_#_# != constant }"
                             range   { -1 1 }
                             help    "Constant rotation axis (normalized) for the mirrored pair; should be perpendicular to the base fiber direction."
                             parmtag { "script_callback_language" "python" }
@@ -2210,8 +2213,8 @@
                             label   "Rotation Axis Attribute"
                             type    string
                             default { "normal1" }
-                            disablewhen "{ fam_mirror#_#_# != 1 } { fam_axis_source#_#_# != attribute }"
-                            hidewhen "{ fam_mirror#_#_# != 1 } { fam_axis_source#_#_# != attribute }"
+                            disablewhen "{ fam_mirror#_#_# != 1 } { fam_fib_source#_#_# == expression } { fam_axis_source#_#_# != attribute }"
+                            hidewhen "{ fam_mirror#_#_# != 1 } { fam_fib_source#_#_# == expression } { fam_axis_source#_#_# != attribute }"
                             help    "Name of the vector primitive attribute holding a per-element rotation axis for the mirrored pair (for example a surface normal)."
                             parmtag { "script_callback_language" "python" }
                         }
@@ -2681,12 +2684,12 @@
         parm {
             name    "num_timesteps"
             label   "# of Timesteps"
-            type    log
+            type    intlog
             nolabel
             default { "200" }
             disablewhen "{ num_timesteps_bool != 1 }"
             hidewhen "{ num_timesteps_bool != 1 }"
-            range   { 0! 10000 }
+            range   { 1! 10000 }
             help    "Number of time steps to run (whole number)."
             parmtag { "script_callback_language" "python" }
         }
@@ -2701,6 +2704,7 @@
             label   "Integrator"
             type    ordinal
             default { "0" }
+            disablewhen "{ quasistatic == 1 }"
             menu {
                 "ImplicitEuler"     "ImplicitEuler"
                 "BDF1"              "BDF1"
@@ -2792,9 +2796,9 @@
         }
         group {
             name    "barrier_tab"
-            label   "Barrier (ICP)"
-            disablewhen "{ enable == 0 }"
-            hidewhen "{ enable == 0 }"
+            label   "Barrier (IPC)"
+            disablewhentab "{ enable == 0 }"
+            hidewhentab "{ enable == 0 }"
 
             parm {
                 name    "dhat"
@@ -2831,7 +2835,7 @@
                 type    string
                 nolabel
                 default { "-1" }
-                disablewhen "{ enable == 0 }"
+                disablewhen "{ working_dir != __polyfem_report_edit_sentinel__ }"
                 help    "Shortest mesh edge found by Calc Min Edge (length units). Read-only reference; -1 means not computed yet."
                 parmtag { "script_callback_language" "python" }
             }
@@ -3201,6 +3205,7 @@
             name    "barrier_tab_2"
             label   "Friction"
             disablewhentab "{ enable == 0 }"
+            hidewhentab "{ enable == 0 }"
 
             parm {
                 name    "cof"
@@ -3448,10 +3453,10 @@
                 label   "Max Iterations"
                 type    intlog
                 default { "1000" }
-                disablewhen "{ solver != Eigen::ConjugateGradient solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
-                hidewhen "{ solver != Eigen::ConjugateGradient solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
-                range   { 1 100000 }
-                help    "Maximum iterations of the iterative linear solver per Newton step. If it is reached the step is inaccurate; raise it or tighten the preconditioner."
+                disablewhen "{ solver != AMGCL solver != Eigen::ConjugateGradient solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
+                hidewhen "{ solver != AMGCL solver != Eigen::ConjugateGradient solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
+                range   { 1! 100000 }
+                help    "Maximum iterations of the iterative linear solver (Eigen or AMGCL) per Newton step. If it is reached the step is inaccurate; raise it or tighten the preconditioner."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3767,7 +3772,7 @@
                         default { "0.00833333" }
                         disablewhen "{ solver != AMGCL } { relax_type != chebyshev }"
                         hidewhen "{ solver != AMGCL } { relax_type != chebyshev }"
-                        range   { -1e-06 1 }
+                        range   { 1e-06 1 }
                         help    "Lower fraction of the spectrum the Chebyshev smoother targets (as a fraction of the largest eigenvalue)."
                         parmtag { "script_callback_language" "python" }
                     }
@@ -4683,7 +4688,8 @@
                     label   "Minimal Fields (derive in readPVD)"
                     type    toggle
                     default { "1" }
-                    help    "Export only what the Read PVD node needs to derive everything else (displacement, deformation gradient F, Cauchy stress) plus the surface/force arrays you enable. Von Mises, PK1/PK2 and the *_avg variants are skipped, making files much smaller and faster to write; Read PVD computes them on load. Turn off to write every field like upstream PolyFEM."
+                    disablewhen "{ materials_fields == 1 }"
+                    help    "Export only what the Read PVD node needs to derive everything else (displacement, deformation gradient F, Cauchy stress) plus the surface/force arrays you enable. Von Mises, PK1/PK2 and the *_avg variants are skipped, making files much smaller and faster to write; Read PVD computes them on load. Turn off to write every field like upstream PolyFEM. Disabled while Material output is on."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -4691,7 +4697,7 @@
                     label   "Scalar Values"
                     type    toggle
                     default { "1" }
-                    disablewhen "{ minimal_fields == 1 }"
+                    disablewhen "{ minimal_fields == 1 materials_fields == 0 }"
                     help    "Export scalar result fields such as von Mises stress (ignored under Minimal Fields, which derives them later)."
                     parmtag { "script_callback_language" "python" }
                 }
@@ -4700,7 +4706,7 @@
                     label   "Tensor Values"
                     type    toggle
                     default { "1" }
-                    disablewhen "{ minimal_fields == 1 }"
+                    disablewhen "{ minimal_fields == 1 materials_fields == 0 }"
                     help    "Export tensor result fields such as the deformation gradient and Cauchy stress (always exported under Minimal Fields)."
                     parmtag { "script_callback_language" "python" }
                 }
@@ -4825,6 +4831,7 @@
                         label   "Contact Forces"
                         type    toggle
                         default { "1" }
+                        disablewhen "{ enable == 0 }"
                         help    "Export the contact (barrier) force on every surface node into the Contact block -- the field to inspect when validating contact behavior. On by default; it is written only while Enable Contact (Contact tab) is on, so scenes without contact get no empty Contact block."
                         parmtag { "script_callback_language" "python" }
                     }
@@ -4833,6 +4840,7 @@
                         label   "Adaptive dhat"
                         type    toggle
                         default { "0" }
+                        disablewhen "{ enable == 0 } { gcp_enable == 0 } { adapt_dhat == 0 }"
                         help    "Export each surface element's local barrier activation distance. Only written when Geometric Contact (GCP) with Adaptive dhat is on; otherwise PolyFEM ignores this toggle."
                         parmtag { "script_callback_language" "python" }
                     }
@@ -4841,6 +4849,7 @@
                         label   "Friction Forces"
                         type    toggle
                         default { "0" }
+                        disablewhen "{ enable == 0 }"
                         help    "Export the friction force on every surface node into the Contact block."
                         parmtag { "script_callback_language" "python" }
                     }
@@ -4849,6 +4858,7 @@
                         label   "Normal Adhesion Forces"
                         type    toggle
                         default { "0" }
+                        disablewhen "{ enable == 0 } { adhesion_enable == 0 }"
                         help    "Export the normal adhesion force on every surface node."
                         parmtag { "script_callback_language" "python" }
                     }
@@ -4857,6 +4867,7 @@
                         label   "Tangential Adhesion Forces"
                         type    toggle
                         default { "0" }
+                        disablewhen "{ enable == 0 } { adhesion_enable == 0 }"
                         help    "Export the tangential adhesion force on every surface node."
                         parmtag { "export_disable" "1" }
                         parmtag { "script_callback_language" "python" }
@@ -4914,7 +4925,7 @@
                     }
                     parm {
                         name    "nodes"
-                        label   "nodes"
+                        label   "Nodes"
                         type    toggle
                         default { "0" }
                         help    "Also write the FEM node coordinates to output/nodes.txt."
@@ -4942,16 +4953,16 @@
             }
             parm {
                 name    "sol_on_grid"
-                label   "sol_on_grid"
+                label   "Sample Solution on Grid"
                 type    float
                 default { "-1" }
-                range   { 0 10 }
+                range   { -1 10 }
                 help    "Also sample the solution on a regular grid with this spacing (length units) and write it out. -1 = off."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
                 name    "compute_error"
-                label   "compute_error"
+                label   "Compute Error Norms"
                 type    toggle
                 default { "1" }
                 help    "Compute and log error norms of the solution (against an exact solution when the problem has one, otherwise reference norms). Cheap; leave on."
@@ -4959,16 +4970,16 @@
             }
             parm {
                 name    "sol_at_node"
-                label   "sol_at_node"
+                label   "Save Solution at Node"
                 type    integer
                 default { "-1" }
-                range   { 0 10 }
+                range   { -1 1000 }
                 help    "Write the solution value at this node index into the output JSON. -1 = off."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
                 name    "vis_boundary_only"
-                label   "vis_boundary_only"
+                label   "Visualize Boundary Only"
                 type    toggle
                 default { "0" }
                 help    "Write only the elements touching the boundary to the visualization output (smaller files; interior elements are omitted)."
@@ -4976,7 +4987,7 @@
             }
             parm {
                 name    "curved_mesh_size"
-                label   "curved_mesh_size"
+                label   "Curved Mesh Size"
                 type    toggle
                 default { "0" }
                 help    "When computing the mesh size for curved (higher-order) meshes, upsample the curved edges for a more accurate measure."
@@ -4984,7 +4995,7 @@
             }
             parm {
                 name    "save_solve_sequence_debug"
-                label   "save_solve_sequence_debug"
+                label   "Save AL Solve Sequence (Debug)"
                 type    toggle
                 default { "0" }
                 help    "Save the intermediate states of the boundary-condition (augmented Lagrangian) phase for debugging. Produces many files."
@@ -4992,7 +5003,7 @@
             }
             parm {
                 name    "save_ccd_debug_meshes"
-                label   "save_ccd_debug_meshes"
+                label   "Save CCD Debug Meshes"
                 type    toggle
                 default { "0" }
                 help    "Save the meshes handed to continuous collision detection whenever it limits a step, for debugging contact problems. Produces many files."
@@ -5000,7 +5011,7 @@
             }
             parm {
                 name    "save_time_sequence"
-                label   "save_time_sequence"
+                label   "Save Time Sequence"
                 type    toggle
                 default { "1" }
                 help    "Write a result file for every saved time step (on) or only the final state (off)."
@@ -5008,7 +5019,7 @@
             }
             parm {
                 name    "save_nl_solve_sequence"
-                label   "save_nl_solve_sequence"
+                label   "Save Newton Iteration Sequence (Debug)"
                 type    toggle
                 default { "0" }
                 help    "Save the state after every Newton iteration for debugging. Produces many files and slows the run."
@@ -5016,7 +5027,7 @@
             }
             parm {
                 name    "spectrum"
-                label   "spectrum"
+                label   "Compute System Spectrum"
                 type    toggle
                 default { "0" }
                 help    "Compute and record the eigenvalue spectrum of the system matrix in the output JSON (only in builds with Spectra; expensive)."
@@ -5131,11 +5142,13 @@
             label   "Separator"
             type    separator
             default { "" }
+            hidewhen "{ remeshing_enabled == 0 }"
         }
         group {
             name    "split"
             label   "Splitting"
-            hidewhen "{ remeshing_enabled == 0 }"
+            disablewhentab "{ remeshing_enabled == 0 }"
+            hidewhentab "{ remeshing_enabled == 0 }"
 
             parm {
                 name    "split_enabled"
@@ -5190,6 +5203,8 @@
         group {
             name    "split_1"
             label   "Collapsing"
+            disablewhentab "{ remeshing_enabled == 0 }"
+            hidewhentab "{ remeshing_enabled == 0 }"
 
             parm {
                 name    "collapse_enabled"
@@ -5254,6 +5269,8 @@
         group {
             name    "split_3"
             label   "Swap"
+            disablewhentab "{ remeshing_enabled == 0 }"
+            hidewhentab "{ remeshing_enabled == 0 }"
 
             parm {
                 name    "swap_enabled2"
@@ -5278,7 +5295,7 @@
                 name    "swap_max_depth2"
                 label   "Max Depth"
                 type    integer
-                default { "1" }
+                default { "3" }
                 disablewhen "{ swap_enabled2 == 0 }"
                 range   { 1! 10 }
                 help    "How many swap passes may run within one time step."
@@ -5289,6 +5306,8 @@
         group {
             name    "split_4"
             label   "Smoothing"
+            disablewhentab "{ remeshing_enabled == 0 }"
+            hidewhentab "{ remeshing_enabled == 0 }"
 
             parm {
                 name    "smooth_enabled"
@@ -5323,6 +5342,8 @@
         group {
             name    "split_5"
             label   "Local Relaxation"
+            disablewhentab "{ remeshing_enabled == 0 }"
+            hidewhentab "{ remeshing_enabled == 0 }"
 
             parm {
                 name    "local_mesh_n_ring"
