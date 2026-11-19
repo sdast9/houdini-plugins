@@ -1272,7 +1272,7 @@
                     type    string
                     default { "" }
                     help    "Element (primitive) selection, e.g. 0-99 or a group pattern, that you want to move into another subdomain. Subdomains are the regions of one mesh that can carry different materials."
-                    parmtag { "script_action" "import soputils\nparent = kwargs['node']\nparent.allowEditingOfContents(True)\ngeo_number = kwargs['script_multiparm_index']\ngroup_node = parent.node(\"elements_\"+str(geo_number))\n\n\n\nkwargs['node'] = group_node\nkwargs['geometrytype'] = kwargs['node'].parmTuple('grouptype')\nkwargs['inputindex'] = 0\nkwargs['ordered'] = kwargs['node'].parm('ordered').eval()\nsoputils.selectGroupParm(kwargs)\n\n\n" }
+                    parmtag { "script_action" "import soputils\nparent = kwargs['node']\nparent.allowEditingOfContents(True)\ngeo_number = kwargs['script_multiparm_index']\ngroup_node = parent.node(\"elements_\"+str(geo_number))\nif group_node is not None:\n    kwargs['node'] = group_node\n    kwargs['geometrytype'] = group_node.parmTuple('grouptype')\n    kwargs['inputindex'] = 0\n    kwargs['ordered'] = group_node.parm('ordered').eval()\n    soputils.selectGroupParm(kwargs)\n" }
                     parmtag { "script_action_help" "Select geometry from an available viewport.\nShift-click to turn on Select Groups." }
                     parmtag { "script_action_icon" "BUTTONS_reselect" }
                     parmtag { "script_callback" "" }
@@ -1471,8 +1471,9 @@
                         label   "Damping"
                         type    toggle
                         default { "0" }
-                        hidewhen "@SHOW_FOR(NeoHookean LinearElasticity SaintVenant FixedCorotational)@"
-                        help    "Add viscous (rate-dependent) damping to this material, controlled by phi and psi. Only meaningful in dynamic (non-quasistatic) runs; it dissipates energy so vibrations die out."
+                        disablewhen "@SHOW_FOR_DIRECT(NeoHookean LinearElasticity SaintVenant FixedCorotational IsochoricNeoHookean)@"
+                        hidewhen "@SHOW_FOR_DIRECT(NeoHookean LinearElasticity SaintVenant FixedCorotational IsochoricNeoHookean)@"
+                        help    "Add viscous (rate-dependent) damping to this material, controlled by phi and psi. Only meaningful in dynamic (non-quasistatic) runs; it dissipates energy so vibrations die out. Not supported on Composite (MaterialSum) materials (use Rayleigh damping on Solver > Advanced instead)."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1568,33 +1569,33 @@
                         name    "ogden_alphas#_#"
                         label   "Ogden Exponents alpha (list)"
                         type    string
-                        default { "[0.0329e6]" }
+                        default { "[2]" }
                         disablewhen "@SHOW_FOR(UnconstrainedOgden)@"
                         hidewhen "@SHOW_FOR(UnconstrainedOgden)@"
                         range   { -10000 10000 }
-                        help    "List of exponents alpha_i for the unconstrained (compressible) Ogden model, e.g. [2]. Same length as Mus and Ds."
+                        help    "List of exponents alpha_i for the unconstrained (compressible) Ogden model, e.g. [2]. Same length as Mus (must be non-zero)."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
                         name    "ogden_mus#_#"
                         label   "Ogden Moduli mu (list)"
                         type    string
-                        default { "[6.82]" }
+                        default { "[0.0329e6]" }
                         disablewhen "@SHOW_FOR(UnconstrainedOgden)@"
                         hidewhen "@SHOW_FOR(UnconstrainedOgden)@"
                         range   { -10000 10000 }
-                        help    "List of shear-like coefficients mu_i (stress units) for the unconstrained Ogden model. Same length as alphas."
+                        help    "List of shear-like coefficients mu_i (stress units) for the unconstrained Ogden model, e.g. [0.0329e6]. Same length as alphas."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
                         name    "ogden_ds#_#"
                         label   "Ogden Volumetric D (list)"
                         type    string
-                        default { "[1]" }
+                        default { "[1e-7]" }
                         disablewhen "@SHOW_FOR(UnconstrainedOgden)@"
                         hidewhen "@SHOW_FOR(UnconstrainedOgden)@"
                         range   { -10000 10000 }
-                        help    "List of volumetric coefficients D_i for the unconstrained Ogden model, controlling resistance to volume change. Same length as alphas."
+                        help    "List of volumetric coefficients D_i (1/stress units; smaller = less compressible) for the unconstrained Ogden model, e.g. [1e-7]. At least one non-zero entry."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -2270,8 +2271,8 @@
                         label   "Volume-Rate Damping phi"
                         type    float
                         default { "0" }
-                        disablewhen "{ damping#_# != 1 } @SHOW_FOR(NeoHookean LinearElasticity SaintVenant FixedCorotational)@"
-                        hidewhen "{ damping#_# != 1 } @SHOW_FOR(NeoHookean LinearElasticity SaintVenant FixedCorotational)@"
+                        disablewhen "{ damping#_# != 1 } @SHOW_FOR_DIRECT(NeoHookean LinearElasticity SaintVenant FixedCorotational IsochoricNeoHookean)@"
+                        hidewhen "{ damping#_# != 1 } @SHOW_FOR_DIRECT(NeoHookean LinearElasticity SaintVenant FixedCorotational IsochoricNeoHookean)@"
                         range   { -10000 10000 }
                         help    "Viscous damping coefficient phi (multiplies the rate of the first strain invariant). Larger values dissipate energy faster. Only used when Damping is on and the run is dynamic."
                         parmtag { "script_callback_language" "python" }
@@ -2281,8 +2282,8 @@
                         label   "Strain-Rate Damping psi"
                         type    float
                         default { "0" }
-                        disablewhen "{ damping#_# != 1 } @SHOW_FOR(NeoHookean LinearElasticity SaintVenant FixedCorotational)@"
-                        hidewhen "{ damping#_# != 1 } @SHOW_FOR(NeoHookean LinearElasticity SaintVenant FixedCorotational)@"
+                        disablewhen "{ damping#_# != 1 } @SHOW_FOR_DIRECT(NeoHookean LinearElasticity SaintVenant FixedCorotational IsochoricNeoHookean)@"
+                        hidewhen "{ damping#_# != 1 } @SHOW_FOR_DIRECT(NeoHookean LinearElasticity SaintVenant FixedCorotational IsochoricNeoHookean)@"
                         range   { -10000 10000 }
                         help    "Viscous damping coefficient psi (multiplies the rate of the second strain invariant). Only used when Damping is on and the run is dynamic."
                         parmtag { "script_callback_language" "python" }
@@ -3150,8 +3151,8 @@
                 label   "Enable"
                 type    toggle
                 default { "0" }
-                disablewhen "{ enable == 0 }"
-                help    "Use the Geometric Contact Potential (smooth, orientation-aware contact) instead of the standard IPC barrier. Experimental; not supported together with the semi-implicit barrier mode."
+                disablewhen "{ enable == 0 } { barrier_mode == semi_implicit }"
+                help    "Use the Geometric Contact Potential (smooth, orientation-aware contact) instead of the standard IPC barrier. Experimental; not supported together with the semi-implicit barrier mode (switch Barrier Stiffness Mode to Adaptive or Fixed first)."
                 parmtag { "script_callback_language" "python" }
             }
             parm {

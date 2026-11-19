@@ -259,10 +259,12 @@ PRINCIPAL_VALUE_FIELDS = {
     "cauchy_eigenvalues", "pk2_eigenvalues",
 }
 
+# Euler angles (degrees, Houdini XYZ rotation order) taking the local XY (+Y up)
+# scene legend into each of the 12 (plane, up) orientations.
 LEGEND_ROTATIONS = (
     (0, 0, -90), (0, 0, 90), (0, 0, 0), (0, 0, 180),
-    (0, 90, 0), (0, 90, 180), (0, 90, -90), (0, 90, 90),
-    (90, 0, -90), (90, 0, 90), (90, 0, 0), (-90, 0, 0),
+    (0, 90, 0), (0, 90, 180), (90, 0, 90), (-90, 0, -90),
+    (0, -90, -90), (0, 90, 90), (90, 0, 0), (-90, 0, 0),
 )
 
 # Block/field metadata for the whole sequence, keyed on the PVD file
@@ -1321,8 +1323,16 @@ def _mesh_point_field(mesh, field):
     for raw_name, data in mesh["point_data"].items():
         if _field_name(raw_name) == field:
             array = np.asarray(data, dtype=np.float64)
-            if len(array) == len(mesh["points"]):
+            n_points = len(mesh["points"])
+            if len(array) == n_points:
                 return array
+            # Match cook_frame: fields that omit obstacle vertices (e.g. *_avg)
+            # are zero-padded to the full mesh point count.
+            if 0 < len(array) < n_points:
+                padded = np.zeros((n_points,) + array.shape[1:],
+                                  dtype=np.float64)
+                padded[:len(array)] = array
+                return padded
     for raw_name, by_family in mesh.get("cell_data", {}).items():
         if _field_name(raw_name) != field:
             continue
@@ -2601,6 +2611,16 @@ def cook_frame(node):
     geo.setGlobalAttribValue(
         "readpvd_fiber_reference_frame",
         "simulation_world_reference_a0" if families else "")
+    # Measure this cooked frame's size right here so cache_frame_limit enforces
+    # the memory budget during forward scrubbing (cache1 evaluates maxframes
+    # while frame_data is dirty for the new frame, so reading needsToCook()
+    # there never saw the first frame's size).
+    try:
+        frame_bytes = int(geo.intrinsicValue("memoryusage"))
+        if frame_bytes > 0:
+            _CACHE_FRAME_BYTES[asset.sessionId()] = frame_bytes
+    except (hou.Error, TypeError, ValueError):
+        pass
 
 
 # =============================================================================
@@ -2762,6 +2782,7 @@ def clear_cache(kwargs=None):
     _COOKED_FRAMES.pop(node.sessionId(), None)
     _CACHE_CLEARED.add(node.sessionId())
     _CACHE_CONTENTS.pop(node.sessionId(), None)
+    _CACHE_FRAME_BYTES.pop(node.sessionId(), None)
     # Cache Status reads this counter, so it updates the moment the button is
     # pressed instead of on the next frame change.
     epoch = node.parm("cache_epoch")
@@ -3157,8 +3178,9 @@ def autoplace_legend(kwargs):
     except hou.OperationFailed:
         return
     size = bbox.sizevec()
-    margin = max(float(size[0]), float(size[1]), float(size[2]), 1.0) * 0.1
-    scale = max(float(size[1]), float(size[2]), 1.0)
+    span = max(float(size[0]), float(size[1]), float(size[2]))
+    margin = max(span, 1e-9) * 0.1
+    scale = max(float(size[1]), float(size[2]), span * 0.5, 1e-9)
     node.parmTuple("legend_translate").set(
         (bbox.maxvec()[0] + margin, bbox.minvec()[1], bbox.minvec()[2]))
     node.parm("legend_scale").set(scale)
@@ -4158,9 +4180,15 @@ def volume_mesh(pvd_path, step):
 def volume_topology(mesh):
     """Elements (the volume cells, in PolyFEM's element order) and nodes
     (each element's copies of a vertex, merged per body) of a Volume block;
-    cached per topology."""
-    key = (str(mesh.get("topo_key")), len(mesh["points"]))
-    cached = _TOPOLOGY_CACHE.get(key)
+    cached per topology (including rest positions and body_ids)."""
+    points_arr = np.ascontiguousarray(mesh["points"], dtype=np.float64)
+    digest = hashlib.blake2b(points_arr.tobytes(), digest_size=12)
+    body_raw = mesh.get("point_data", {}).get("body_ids")
+    if body_raw is not None:
+        digest.update(np.ascontiguousarray(body_raw).tobytes())
+    key = (str(mesh.get("topo_key")), len(points_arr))
+    cache_key = (key, digest.hexdigest())
+    cached = _TOPOLOGY_CACHE.get(cache_key)
     if cached is not None:
         return cached
     if mesh.get("cell_types") is None:
@@ -4211,9 +4239,9 @@ def volume_topology(mesh):
         "n_elements": len(cells), "n_nodes": len(node_point),
         "connectivity": connectivity,
     }
-    if len(_TOPOLOGY_CACHE) > 1:
+    if len(_TOPOLOGY_CACHE) > 4:
         _TOPOLOGY_CACHE.clear()
-    _TOPOLOGY_CACHE[key] = topology
+    _TOPOLOGY_CACHE[cache_key] = topology
     return topology
 
 
@@ -5168,18 +5196,23 @@ def point_or_element_values(mesh, topology, field, token, element_rows,
     point_values[rows] = values
     if len(element_rows):
         weights = point_values[members[in_elements]]
-        total = np.bincount(owner[in_elements], weights=weights,
+        finite = np.isfinite(weights)
+        owners = owner[in_elements][finite]
+        total = np.bincount(owners, weights=weights[finite],
                             minlength=topology["n_elements"])
-        count = np.bincount(owner[in_elements],
-                            minlength=topology["n_elements"])
-        element_values = (total / np.maximum(count, 1))[element_rows]
+        count = np.bincount(owners, minlength=topology["n_elements"])
+        mean = np.where(count > 0, total / np.maximum(count, 1), np.nan)
+        element_values = mean[element_rows]
     if len(node_rows):
         points = np.flatnonzero(fe & needed)
-        total = np.bincount(point_node[points], weights=point_values[points],
+        weights = point_values[points]
+        finite = np.isfinite(weights)
+        nodes = point_node[points][finite]
+        total = np.bincount(nodes, weights=weights[finite],
                             minlength=topology["n_nodes"])
-        count = np.bincount(point_node[points],
-                            minlength=topology["n_nodes"])
-        node_values = (total / np.maximum(count, 1))[node_rows]
+        count = np.bincount(nodes, minlength=topology["n_nodes"])
+        mean = np.where(count > 0, total / np.maximum(count, 1), np.nan)
+        node_values = mean[node_rows]
     return element_values, node_values
 
 
@@ -5967,6 +6000,12 @@ def export_data(node, progress=None):
     header_units = {}
     for q in quantities:
         dimension = quantity_dimension(q["field"])
+        if q["value"] == "determinant" and components[q["index"]] == 9:
+            # det(T) scales as the cube of a 3x3 tensor's unit.
+            if dimension == "stress":
+                dimension = "stress3"
+            elif dimension not in ("none", None):
+                dimension = None
         header_units[q["index"]] = units.convert(dimension)
     tfactor, tunit = units.convert("time")
     data_header = ["Step", "Time" + (f" ({tunit})" if tunit else ""),
@@ -5996,10 +6035,13 @@ def export_data(node, progress=None):
                     unit_text = ""
                     values_out = values
                 elif key == "integral":
-                    vfactor, vunit = units.convert("volume")
-                    values_out = values * factor * vfactor
-                    unit_text = "" if unit is None else (
-                        f"{unit}*{vunit}" if unit else vunit)
+                    if unit is None:
+                        values_out = values
+                        unit_text = ""
+                    else:
+                        vfactor, vunit = units.convert("volume")
+                        values_out = values * factor * vfactor
+                        unit_text = f"{unit}*{vunit}" if unit else vunit
                 else:
                     values_out = values * factor
                     unit_text = unit or ""
@@ -6019,7 +6061,9 @@ def export_data(node, progress=None):
                     else node_positions
                 numbers = identity["element_number"] \
                     if q["basis"] == "elements" else identity["node_number"]
-                picked = np.where(where >= 0, rows[np.maximum(where, 0)], -1)
+                picked = (np.where(where >= 0, rows[np.maximum(where, 0)], -1)
+                          if len(rows) else np.full(len(where), -1,
+                                                    dtype=np.int64))
                 word = "element" if q["basis"] == "elements" else "node"
                 data_columns.append((
                     f"{region['label']}: {name}, max at {word}",
@@ -6076,10 +6120,12 @@ def export_data(node, progress=None):
                     f"in an Excel sheet ({XLSX_MAX_ROWS:,}); choose a smaller "
                     "region or turn this off.")
             name = _quantity_header(q, components[q["index"]])
+            unit_suffix = f" ({unit})" if unit else ""
             header = ["Region", "Geometry", word, "Body"] + [
                 f"{axis} ({lunit})" if lunit else axis for axis in "xyz"] + [
                 f"Step {step}: t = {entries[step][0] * tfactor:.6g}" + (
-                    f" {tunit}" if tunit else "") for step in item_steps]
+                    f" {tunit}" if tunit else "") + unit_suffix
+                for step in item_steps]
             by_step = items.get(q["index"], {})
 
             def item_rows(q=q, header=header, by_step=by_step,

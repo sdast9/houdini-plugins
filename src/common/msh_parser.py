@@ -483,21 +483,27 @@ def _read_v22_ascii(data, sections):
     # Group consecutive runs of identical (type, ntags) so the hot path is
     # vectorized; gmsh writes elements grouped by type, so runs are long.
     while p < len(tok):
+        if p + 3 > len(tok):
+            raise MshParseError("Truncated ASCII $Elements section")
         etype = int(tok[p + 1])
         ntags = int(tok[p + 2])
+        if ntags < 0:
+            raise MshParseError(f"Negative element tag count {ntags}")
         if etype not in GMSH_ELEM_TYPES:
             raise MshParseError(f"Unsupported gmsh element type {etype}")
         family, n_nodes, n_corners = GMSH_ELEM_TYPES[etype]
         stride = 3 + ntags + n_nodes
         # extend the run while the type/ntags columns keep matching
         max_run = (len(tok) - p) // stride
+        if max_run == 0:
+            raise MshParseError("Truncated ASCII $Elements section")
         view = tok[p:p + max_run * stride].reshape(max_run, stride)
         same = (view[:, 1] == etype) & (view[:, 2] == ntags)
         run = int(np.argmin(same)) if not same.all() else max_run
         if run == 0:
             run = 1
         block = view[:run]
-        phys = block[:, 3].astype(np.int32) if ntags >= 1 \
+        phys = np.abs(block[:, 3]).astype(np.int32) if ntags >= 1 \
             else np.zeros(run, dtype=np.int32)
         elementary = block[:, 4] if ntags >= 2 else None
         corners = block[:, 3 + ntags:3 + ntags + n_corners]
@@ -549,7 +555,13 @@ def _read_v22_binary(data, sections):
     cells = {}
     parsed = 0
     while parsed < num_elems:
+        if p + 3 > len(ints):
+            raise MshParseError("Truncated binary $Elements section")
         etype = int(ints[p]); n_follow = int(ints[p + 1]); ntags = int(ints[p + 2])
+        if n_follow <= 0:
+            raise MshParseError(f"Invalid binary element block count {n_follow}")
+        if ntags < 0:
+            raise MshParseError(f"Negative element tag count {ntags}")
         if etype not in GMSH_ELEM_TYPES:
             raise MshParseError(f"Unsupported gmsh element type {etype}")
         family, n_nodes, n_corners = GMSH_ELEM_TYPES[etype]
@@ -559,6 +571,8 @@ def _read_v22_binary(data, sections):
             # process it as one reshape, like the ASCII v2.2 reader.
             stride = 4 + ntags + n_nodes  # header + elm-number + tags + nodes
             max_run = min((len(ints) - p) // stride, num_elems - parsed)
+            if max_run == 0:
+                raise MshParseError("Truncated binary $Elements section")
             view = ints[p:p + max_run * stride].reshape(max_run, stride)
             same = ((view[:, 0] == etype) & (view[:, 1] == 1)
                     & (view[:, 2] == ntags))
@@ -569,12 +583,14 @@ def _read_v22_binary(data, sections):
         else:
             # block-grouped writer (PyMesh/fTetWild): one bulk read
             stride = 1 + ntags + n_nodes  # elm-number, tags..., node tags...
-            block = ints[p + 3:p + 3 + n_follow * stride].reshape(
-                n_follow, stride)
-            p += 3 + n_follow * stride
+            end = p + 3 + n_follow * stride
+            if end > len(ints) or parsed + n_follow > num_elems:
+                raise MshParseError("Truncated binary $Elements section")
+            block = ints[p + 3:end].reshape(n_follow, stride)
+            p = end
             parsed += n_follow
         # first tag is the physical group, matching the ASCII v2.2 path
-        phys = block[:, 1].astype(np.int32) if ntags >= 1 \
+        phys = np.abs(block[:, 1]).astype(np.int32) if ntags >= 1 \
             else np.zeros(len(block), dtype=np.int32)
         elementary = block[:, 2] if ntags >= 2 else None
         corners = block[:, 1 + ntags:1 + ntags + n_corners].astype(np.int64)
@@ -695,16 +711,25 @@ def _moved_nodes_v41_ascii(body, positions):
     lines = [b" ".join(tok[:4])]
     p, row = 4, 0
     for _ in range(blocks):
+        dim = int(tok[p])
+        parametric = int(tok[p + 2])
         count = int(tok[p + 3])
-        if int(tok[p + 2]):
-            raise MshParseError("parametric node coordinates are not "
-                                "supported")
+        if parametric and not (0 <= dim <= 3):
+            raise MshParseError(f"invalid parametric entity dimension {dim}")
         lines.append(b" ".join(tok[p:p + 4]))
         p += 4
         lines.extend(tok[p:p + count])                      # node tags
-        p += count + 3 * count
-        lines.extend(_coordinate_text(xyz)
-                     for xyz in positions[row:row + count])
+        p += count
+        extra = dim if parametric else 0
+        stride = 3 + extra
+        if extra == 0:
+            lines.extend(_coordinate_text(xyz)
+                         for xyz in positions[row:row + count])
+        else:
+            for k in range(count):
+                tail = b" ".join(tok[p + k * stride + 3:p + (k + 1) * stride])
+                lines.append(_coordinate_text(positions[row + k]) + b" " + tail)
+        p += stride * count
         row += count
     if row != total:
         raise MshParseError("$Nodes blocks do not add up to the node count")
@@ -715,14 +740,25 @@ def _moved_nodes_v22_binary(data, span, fmt_span, positions):
     fmt_body = data[fmt_span[0]:fmt_span[1]]
     nl = fmt_body.find(b"\n")
     probe = fmt_body[nl + 1:nl + 5]
-    endian = "<" if np.frombuffer(probe, "<i4")[0] == 1 else ">"
-    nl = data.find(b"\n", span[0])
+    if len(probe) != 4:
+        raise MshParseError("Truncated binary $MeshFormat endianness probe")
+    if np.frombuffer(probe, "<i4")[0] == 1:
+        endian = "<"
+    elif np.frombuffer(probe, ">i4")[0] == 1:
+        endian = ">"
+    else:
+        raise MshParseError("Unrecognized binary $MeshFormat endianness probe")
+    nl = data.find(b"\n", span[0], span[1])
+    if nl < 0:
+        raise MshParseError("Truncated binary $Nodes header")
     count = int(data[span[0]:nl])
     if count != len(positions):
         raise MshParseError(
             f"$Nodes lists {count} nodes, {len(positions)} positions given")
-    out = bytearray(data)
     base = nl + 1
+    if base + 28 * count > span[1]:
+        raise MshParseError("Truncated binary $Nodes section")
+    out = bytearray(data)
     coordinates = np.ascontiguousarray(positions, dtype=endian + "f8")
     for row in range(count):
         offset = base + 28 * row + 4          # int32 tag, then 3 float64
@@ -732,6 +768,8 @@ def _moved_nodes_v22_binary(data, span, fmt_span, positions):
 
 def _moved_nodes_v41_binary(data, span, positions):
     p = span[0]
+    if p + 32 > span[1]:
+        raise MshParseError("Truncated binary $Nodes header")
     blocks, total = (int(v) for v in np.frombuffer(data, "<u8", 2, p))
     if total != len(positions):
         raise MshParseError(
@@ -741,14 +779,25 @@ def _moved_nodes_v41_binary(data, span, positions):
     coordinates = np.ascontiguousarray(positions, dtype="<f8")
     row = 0
     for _ in range(blocks):
+        if p + 20 > span[1]:
+            raise MshParseError("Truncated binary $Nodes block header")
+        dim = int(np.frombuffer(data, "<i4", 1, p)[0])
         parametric = int(np.frombuffer(data, "<i4", 1, p + 8)[0])
         count = int(np.frombuffer(data, "<u8", 1, p + 12)[0])
-        if parametric:
-            raise MshParseError("parametric node coordinates are not "
-                                "supported")
+        if parametric and not (0 <= dim <= 3):
+            raise MshParseError(f"invalid parametric entity dimension {dim}")
         p += 20 + 8 * count
-        out[p:p + 24 * count] = coordinates[row:row + count].tobytes()
-        p += 24 * count
+        extra = dim if parametric else 0
+        stride_bytes = 8 * (3 + extra)
+        if p + stride_bytes * count > span[1]:
+            raise MshParseError("Truncated binary $Nodes block data")
+        if extra == 0:
+            out[p:p + 24 * count] = coordinates[row:row + count].tobytes()
+        else:
+            for k in range(count):
+                off = p + k * stride_bytes
+                out[off:off + 24] = coordinates[row + k].tobytes()
+        p += stride_bytes * count
         row += count
     if row != total:
         raise MshParseError("$Nodes blocks do not add up to the node count")
@@ -768,6 +817,10 @@ def write_moved_nodes(path, positions, out_path):
         raise MshParseError("Not a Gmsh MSH file with nodes")
     fmt = data[slice(*sections["MeshFormat"])].split()
     version, binary = float(fmt[0]), int(fmt[1]) == 1
+    if not (2.0 <= version < 3.0 or abs(version - 4.1) < 1e-6):
+        raise MshParseError(
+            f"Unsupported MSH version {version:g}: only 2.2 and 4.1 are "
+            "supported.")
     positions = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
     if not np.isfinite(positions).all():
         raise MshParseError("node positions must be finite numbers")
@@ -783,9 +836,17 @@ def write_moved_nodes(path, positions, out_path):
                 else _moved_nodes_v22_ascii(body, positions))
         result = data[:span[0]] + body + data[span[1]:]
     temporary = out_path + ".tmp"
-    with open(temporary, "wb") as handle:
-        handle.write(result)
-    os.replace(temporary, out_path)
+    try:
+        with open(temporary, "wb") as handle:
+            handle.write(result)
+        os.replace(temporary, out_path)
+    except Exception:
+        if os.path.exists(temporary):
+            try:
+                os.remove(temporary)
+            except OSError:
+                pass
+        raise
     return out_path
 
 

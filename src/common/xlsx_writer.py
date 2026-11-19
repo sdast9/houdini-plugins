@@ -22,7 +22,7 @@ XLSX_MAX_ROWS = 1048576
 XLSX_MAX_COLUMNS = 16384
 _XLSX_SHEET_FORBIDDEN = re.compile(r"[\[\]:*?/\\]")
 # characters XML 1.0 cannot carry at all
-_XLSX_XML_INVALID = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f￾￿]")
+_XLSX_XML_INVALID = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
 
 
 class XlsxLimitError(ValueError):
@@ -152,6 +152,8 @@ class XlsxWorkbook:
     def save(self, path, title="", creator=""):
         """Write the workbook to `path` (replacing it); returns the number
         of rows written per sheet."""
+        if not self._sheets:
+            raise ValueError("XlsxWorkbook must contain at least one sheet")
         stamp = datetime.datetime.now(datetime.timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%SZ")
         sheet_types = "".join(
@@ -174,91 +176,99 @@ class XlsxWorkbook:
             'styles" Target="styles.xml"/>')
         counts = []
         temporary = path + ".tmp"
-        with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as archive:
-            archive.writestr(
-                "[Content_Types].xml",
-                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
-                '<Types xmlns="http://schemas.openxmlformats.org/package/2006/'
-                'content-types"><Default Extension="rels" ContentType="'
-                'application/vnd.openxmlformats-package.relationships+xml"/>'
-                '<Default Extension="xml" ContentType="application/xml"/>'
-                '<Override PartName="/xl/workbook.xml" ContentType="'
-                'application/vnd.openxmlformats-officedocument.spreadsheetml.'
-                'sheet.main+xml"/><Override PartName="/xl/styles.xml" '
-                'ContentType="application/vnd.openxmlformats-officedocument.'
-                'spreadsheetml.styles+xml"/><Override PartName="/docProps/'
-                'core.xml" ContentType="application/vnd.openxmlformats-'
-                'package.core-properties+xml"/><Override PartName="/docProps/'
-                'app.xml" ContentType="application/vnd.openxmlformats-'
-                'officedocument.extended-properties+xml"/>'
-                + sheet_types + "</Types>")
-            archive.writestr(
-                "_rels/.rels",
-                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
-                '<Relationships xmlns="http://schemas.openxmlformats.org/'
-                'package/2006/relationships"><Relationship Id="rId1" '
-                'Type="http://schemas.openxmlformats.org/officeDocument/2006/'
-                'relationships/officeDocument" Target="xl/workbook.xml"/>'
-                '<Relationship Id="rId2" Type="http://schemas.openxmlformats.'
-                'org/package/2006/relationships/metadata/core-properties" '
-                'Target="docProps/core.xml"/><Relationship Id="rId3" Type="'
-                'http://schemas.openxmlformats.org/officeDocument/2006/'
-                'relationships/extended-properties" Target="docProps/app.xml"'
-                '/></Relationships>')
-            archive.writestr(
-                "docProps/core.xml",
-                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
-                '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.'
-                'org/package/2006/metadata/core-properties" xmlns:dc="http://'
-                'purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/'
-                'dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-'
-                f'instance"><dc:title>{_xlsx_escape(title)}</dc:title>'
-                f'<dc:creator>{_xlsx_escape(creator)}</dc:creator>'
-                f'<dcterms:created xsi:type="dcterms:W3CDTF">{stamp}'
-                '</dcterms:created><dcterms:modified xsi:type="dcterms:'
-                f'W3CDTF">{stamp}</dcterms:modified></cp:coreProperties>')
-            archive.writestr(
-                "docProps/app.xml",
-                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
-                '<Properties xmlns="http://schemas.openxmlformats.org/'
-                'officeDocument/2006/extended-properties"><Application>'
-                f'{_xlsx_escape(creator or "Read PVD")}</Application>'
-                '</Properties>')
-            archive.writestr(
-                "xl/workbook.xml",
-                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
-                '<workbook xmlns="http://schemas.openxmlformats.org/'
-                'spreadsheetml/2006/main" xmlns:r="http://schemas.'
-                'openxmlformats.org/officeDocument/2006/relationships">'
-                f'<bookViews><workbookView/></bookViews><sheets>{sheets}'
-                '</sheets></workbook>')
-            archive.writestr(
-                "xl/_rels/workbook.xml.rels",
-                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
-                '<Relationships xmlns="http://schemas.openxmlformats.org/'
-                f'package/2006/relationships">{relations}</Relationships>')
-            archive.writestr(
-                "xl/styles.xml",
-                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
-                '<styleSheet xmlns="http://schemas.openxmlformats.org/'
-                'spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"'
-                '/><name val="Calibri"/><family val="2"/></font><font><b/><sz '
-                'val="11"/><name val="Calibri"/><family val="2"/></font>'
-                '</fonts><fills count="2"><fill><patternFill patternType="'
-                'none"/></fill><fill><patternFill patternType="gray125"/>'
-                '</fill></fills><borders count="1"><border><left/><right/>'
-                '<top/><bottom/><diagonal/></border></borders><cellStyleXfs '
-                'count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId='
-                '"0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" '
-                'fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId='
-                '"0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont='
-                '"1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal"'
-                ' xfId="0" builtinId="0"/></cellStyles></styleSheet>')
-            for index, (name, rows, widths, header_rows) in enumerate(
-                    self._sheets, 1):
-                with archive.open(f"xl/worksheets/sheet{index}.xml", "w",
-                                  force_zip64=True) as handle:
-                    counts.append(self._write_sheet(handle, rows, widths,
-                                                    header_rows))
-        os.replace(temporary, path)
+        try:
+            with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr(
+                    "[Content_Types].xml",
+                    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+                    '<Types xmlns="http://schemas.openxmlformats.org/package/2006/'
+                    'content-types"><Default Extension="rels" ContentType="'
+                    'application/vnd.openxmlformats-package.relationships+xml"/>'
+                    '<Default Extension="xml" ContentType="application/xml"/>'
+                    '<Override PartName="/xl/workbook.xml" ContentType="'
+                    'application/vnd.openxmlformats-officedocument.spreadsheetml.'
+                    'sheet.main+xml"/><Override PartName="/xl/styles.xml" '
+                    'ContentType="application/vnd.openxmlformats-officedocument.'
+                    'spreadsheetml.styles+xml"/><Override PartName="/docProps/'
+                    'core.xml" ContentType="application/vnd.openxmlformats-'
+                    'package.core-properties+xml"/><Override PartName="/docProps/'
+                    'app.xml" ContentType="application/vnd.openxmlformats-'
+                    'officedocument.extended-properties+xml"/>'
+                    + sheet_types + "</Types>")
+                archive.writestr(
+                    "_rels/.rels",
+                    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+                    '<Relationships xmlns="http://schemas.openxmlformats.org/'
+                    'package/2006/relationships"><Relationship Id="rId1" '
+                    'Type="http://schemas.openxmlformats.org/officeDocument/2006/'
+                    'relationships/officeDocument" Target="xl/workbook.xml"/>'
+                    '<Relationship Id="rId2" Type="http://schemas.openxmlformats.'
+                    'org/package/2006/relationships/metadata/core-properties" '
+                    'Target="docProps/core.xml"/><Relationship Id="rId3" Type="'
+                    'http://schemas.openxmlformats.org/officeDocument/2006/'
+                    'relationships/extended-properties" Target="docProps/app.xml"'
+                    '/></Relationships>')
+                archive.writestr(
+                    "docProps/core.xml",
+                    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+                    '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.'
+                    'org/package/2006/metadata/core-properties" xmlns:dc="http://'
+                    'purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/'
+                    'dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-'
+                    f'instance"><dc:title>{_xlsx_escape(title)}</dc:title>'
+                    f'<dc:creator>{_xlsx_escape(creator)}</dc:creator>'
+                    f'<dcterms:created xsi:type="dcterms:W3CDTF">{stamp}'
+                    '</dcterms:created><dcterms:modified xsi:type="dcterms:'
+                    f'W3CDTF">{stamp}</dcterms:modified></cp:coreProperties>')
+                archive.writestr(
+                    "docProps/app.xml",
+                    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+                    '<Properties xmlns="http://schemas.openxmlformats.org/'
+                    'officeDocument/2006/extended-properties"><Application>'
+                    f'{_xlsx_escape(creator or "Read PVD")}</Application>'
+                    '</Properties>')
+                archive.writestr(
+                    "xl/workbook.xml",
+                    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+                    '<workbook xmlns="http://schemas.openxmlformats.org/'
+                    'spreadsheetml/2006/main" xmlns:r="http://schemas.'
+                    'openxmlformats.org/officeDocument/2006/relationships">'
+                    f'<bookViews><workbookView/></bookViews><sheets>{sheets}'
+                    '</sheets></workbook>')
+                archive.writestr(
+                    "xl/_rels/workbook.xml.rels",
+                    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+                    '<Relationships xmlns="http://schemas.openxmlformats.org/'
+                    f'package/2006/relationships">{relations}</Relationships>')
+                archive.writestr(
+                    "xl/styles.xml",
+                    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+                    '<styleSheet xmlns="http://schemas.openxmlformats.org/'
+                    'spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"'
+                    '/><name val="Calibri"/><family val="2"/></font><font><b/><sz '
+                    'val="11"/><name val="Calibri"/><family val="2"/></font>'
+                    '</fonts><fills count="2"><fill><patternFill patternType="'
+                    'none"/></fill><fill><patternFill patternType="gray125"/>'
+                    '</fill></fills><borders count="1"><border><left/><right/>'
+                    '<top/><bottom/><diagonal/></border></borders><cellStyleXfs '
+                    'count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId='
+                    '"0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" '
+                    'fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId='
+                    '"0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont='
+                    '"1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal"'
+                    ' xfId="0" builtinId="0"/></cellStyles></styleSheet>')
+                for index, (name, rows, widths, header_rows) in enumerate(
+                        self._sheets, 1):
+                    with archive.open(f"xl/worksheets/sheet{index}.xml", "w",
+                                      force_zip64=True) as handle:
+                        counts.append(self._write_sheet(handle, rows, widths,
+                                                        header_rows))
+            os.replace(temporary, path)
+        except Exception:
+            if os.path.exists(temporary):
+                try:
+                    os.remove(temporary)
+                except OSError:
+                    pass
+            raise
         return dict(zip(self.sheet_names, counts))

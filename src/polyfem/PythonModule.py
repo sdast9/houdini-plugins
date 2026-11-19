@@ -1491,32 +1491,44 @@ def clear_geo_tree(parent, geo_number):
                 merge_node.setInput(i, None)
 
 
-def clear_all_geos(kwargs):
+_LAST_FETCHED_ELEMENTS = {}
+
+
+def _has_loaded_geometry(parent):
+    return any(parent.node(f"geo_{g}") is not None
+               for g in range(1, max(1, parent.evalParm("num_geos")) + 1))
+
+
+def clear_all_geos(kwargs, _confirmed=False):
     parent = kwargs["node"]
+    if not _confirmed and hou.isUIAvailable() and _has_loaded_geometry(parent):
+        choice = hou.ui.displayMessage(
+            "Clear All removes every geometry, material, sideset and boundary "
+            "condition on this node and cannot be undone.",
+            buttons=("Clear All", "Cancel"),
+            default_choice=1, close_choice=1,
+            severity=hou.severityType.Warning, title="Clear All Geometries")
+        if choice != 0:
+            return
     parent.allowEditingOfContents()
     for item in parent.children():
         if item.name() not in _PROTECTED_NODES:
             item.destroy()
-    # Geometry 1 is the one entry that stays, so it is emptied by hand.
-    # Setting a value does not remove a channel: an animated transform (a
-    # moving obstacle) kept its keyframes here and moved whatever was loaded
-    # or imported into geometry 1 next, so the channels go first.
+    # Geometry 1 is the one entry that stays, so remove channels first and
+    # revert the entire instance to defaults (including transform/rotate
+    # orders, materials, display toggles and digest userData).
+    old_num_geos = max(1, parent.evalParm("num_geos"))
     for parm in _transform_parms(parent, 1):
         if parm.keyframes():
             parm.deleteAllKeyframes()
-    parent.setParms({
-        "geo_int": 1, "num_geos": 1, "num_volumes1": 1,
-        "sideset_selection1_1": 0, "initial_conditions1_1": 0,
-        "file_location1": "", "is_obstacle1": 0, "is_enabled1": 1,
-        "xform_t__1x": 0, "xform_t__1y": 0, "xform_t__1z": 0,
-        "xform_r__1x": 0, "xform_r__1y": 0, "xform_r__1z": 0,
-        "xform_s__1x": 1, "xform_s__1y": 1, "xform_s__1z": 1,
-        "tpivot_1x": 0, "tpivot_1y": 0, "tpivot_1z": 0,
-        "rpivot_1x": 0, "rpivot_1y": 0, "rpivot_1z": 0,
-        "subdomain_number_1": 1, "elements_1": ""})
-    disp = parent.parm("obstacle_disp1")
-    if disp is not None:
-        disp.revertToDefaults()
+    parent.setParms({"geo_int": 1, "num_geos": 1})
+    revert_instance(parent, (1,))
+    for g in range(1, old_num_geos + 1):
+        key = _mesh_digest_key(g)
+        if parent.userData(key) is not None:
+            parent.destroyUserData(key)
+    for key in [k for k in _LAST_FETCHED_ELEMENTS if k[0] == parent.sessionId()]:
+        _LAST_FETCHED_ELEMENTS.pop(key, None)
     if hou.isUIAvailable():
         sv = hou.ui.curDesktop().paneTabOfType(hou.paneTabType.SceneViewer)
         if sv:
@@ -1530,18 +1542,18 @@ def eval_geo_num(kwargs):
 def clear_geos(kwargs):
     parent = kwargs["node"]
     parent.allowEditingOfContents()
-    num_geos = eval_geo_num(kwargs)
-    parent.setParms({"num_geos": int(num_geos)})
+    num_geos = max(1, int(eval_geo_num(kwargs)))
+    parent.setParms({"num_geos": num_geos})
     for item in parent.children():
         if item.name() in _PROTECTED_NODES:
             continue
         idx = _geo_index_of(item.name())
-        if idx is not None and idx > int(num_geos):
+        if idx is not None and idx > num_geos:
             item.destroy()
     if hou.isUIAvailable():
         pane_tab = hou.ui.curDesktop().paneTabOfType(hou.paneTabType.Parm, 0)
         if pane_tab:
-            pane_tab.setMultiParmTab("num_geos", int(num_geos))
+            pane_tab.setMultiParmTab("num_geos", max(0, num_geos - 1))
 
 
 def fetch_elements(kwargs):
@@ -1551,10 +1563,19 @@ def fetch_elements(kwargs):
     branch = parent.node("branch_" + geo_number)
     if branch is None:
         return
+    # Do not wipe a selection the user just picked or typed for moving into
+    # the chosen target subdomain; only refresh when the field is empty or
+    # still holds the last auto-fetched list.
+    key = (parent.sessionId(), str(geo_number))
+    current = parent.evalParm("elements_" + geo_number).strip()
+    if current and current != _LAST_FETCHED_ELEMENTS.get(key, ""):
+        return
     entity = np.frombuffer(
         branch.geometry().primIntAttribValuesAsString("Entity"), dtype=np.int32)
     elements = np.nonzero(entity == int(entity_number))[0]
-    parent.setParms({"elements_" + geo_number: list_to_space_str(elements)})
+    fetched = list_to_space_str(elements)
+    _LAST_FETCHED_ELEMENTS[key] = fetched.strip()
+    parent.setParms({"elements_" + geo_number: fetched})
 
 
 def update_entities(kwargs, call=None):
@@ -1563,9 +1584,17 @@ def update_entities(kwargs, call=None):
     geo_number = kwargs["script_multiparm_index"]
     if parent.node("geo_" + geo_number) is None:
         return
-    entity_number = parent.evalParm("subdomain_number_" + geo_number)
-    if entity_number < 1:
-        _message("Subdomain numbers start at 1.")
+    entity_number = int(parent.evalParm("subdomain_number_" + geo_number))
+    if entity_number < 1 or entity_number > 999:
+        _message("Subdomain numbers must be between 1 and 999.")
+        return
+
+    raw_elements = parent.evalParm("elements_" + geo_number).strip()
+    elements = list_to_space_str(expand_group_str(raw_elements))
+    if not elements:
+        _message("Select at least one element in 'Elements to Move' first "
+                 "(empty selections are refused so the whole mesh is not "
+                 "overwritten).")
         return
 
     # A brand-new subdomain number must also grow the per-volume UI
@@ -1573,25 +1602,31 @@ def update_entities(kwargs, call=None):
     # subdomain renders grey and has no visible material entry.
     num_vols = parent.evalParm(f"num_volumes{geo_number}")
     if entity_number > num_vols:
-        parent.setParms({f"num_volumes{geo_number}": int(entity_number)})
-        for vol in range(num_vols + 1, int(entity_number) + 1):
+        parent.setParms({f"num_volumes{geo_number}": entity_number})
+        for vol in range(num_vols + 1, entity_number + 1):
             _set_color_tuple(parent, f"color_{geo_number}_{vol}",
                              default_color(geo_number, vol))
 
-    elements = list_to_space_str(
-        expand_group_str(parent.evalParm("elements_" + geo_number)))
     vex_node = parent.node(f"vex_{geo_number}_{entity_number}")
-    new_node = vex_node is None
-    if new_node:
+    branch = parent.node("branch_" + geo_number)
+    if vex_node is None:
         vex_node = parent.createNode(
             "attribwrangle", f"vex_{geo_number}_{entity_number}")
+    else:
+        # Splice an existing wrangle out of its old chain position so this
+        # edit always runs downstream of earlier subdomain edits.
+        old_in = vex_node.inputs()[0] if vex_node.inputs() else None
+        for out_node in list(vex_node.outputs()):
+            for idx, inp in enumerate(out_node.inputs()):
+                if inp == vex_node:
+                    out_node.setInput(idx, old_in)
+        vex_node.setInput(0, None)
     vex_node.setParms({"group": elements, "grouptype": 4, "class": 1,
-                       "snippet": f"i@Entity = {int(entity_number)};"})
-    if new_node:
-        branch = parent.node("branch_" + geo_number)
-        upstream = branch.inputs()[0]
-        vex_node.setInput(0, upstream)
-        branch.setInput(0, vex_node)
+                       "snippet": f"i@Entity = {entity_number};"})
+    upstream = branch.inputs()[0]
+    vex_node.setInput(0, upstream)
+    branch.setInput(0, vex_node)
+    _LAST_FETCHED_ELEMENTS.pop((parent.sessionId(), str(geo_number)), None)
     clear_geo_tree(parent, geo_number)
     create_geo_tree(kwargs)
     _update_subdomain_info(parent, geo_number)
@@ -1749,7 +1784,7 @@ def geo_duplicate(kwargs):
     if hou.isUIAvailable():
         pane_tab = hou.ui.curDesktop().paneTabOfType(hou.paneTabType.Parm, 0)
         if pane_tab:
-            pane_tab.setMultiParmTab("num_geos", dst)
+            pane_tab.setMultiParmTab("num_geos", max(0, dst - 1))
 
     # The mesh first: building its chain sets this geometry's subdomains
     # from the file; everything else is then copied over that.
@@ -2580,6 +2615,7 @@ def _merged_load(conditions, where):
         curves = first
     else:
         curves = []
+        values_out = []
         for axis in range(width):
             parts = []
             for condition in conditions:
@@ -2596,13 +2632,20 @@ def _merged_load(conditions, where):
                         f"dependence with the Time Curve instead, or keep the "
                         f"loads on separate faces.")
                 parts.append((float(value), condition["curves"][axis]))
-            points = np.unique(np.concatenate(
-                [curve.points for _, curve in parts if curve is not None]))
-            total = sum(value * (np.ones(len(points)) if curve is None
-                                 else curve.at(points))
-                        for value, curve in parts)
-            curves.append(TimeCurve(*_compressed_table(points, total)))
-        entry["value"] = [1.0, 1.0, 1.0] if vector else 1.0
+            curve_points = [curve.points for _, curve in parts
+                            if curve is not None]
+            if not curve_points:
+                # Constant axis (no time curve on any load for this component).
+                values_out.append(sum(value for value, _ in parts))
+                curves.append(None)
+            else:
+                points = np.unique(np.concatenate(curve_points))
+                total = sum(value * (np.ones(len(points)) if curve is None
+                                     else curve.at(points))
+                            for value, curve in parts)
+                values_out.append(1.0)
+                curves.append(TimeCurve(*_compressed_table(points, total)))
+        entry["value"] = values_out if vector else values_out[0]
     if vector:
         interpolation = _vector_interpolation(curves)
     else:
@@ -4325,6 +4368,34 @@ def export_per_element_materials(parent, input_dir, output_dir=None):
                             per_element_scalar_file(geo, vol, fam, "kappa")),
                         padded, fmt="%.9g")
 
+    # Disabled geometries still have their material block written to
+    # params.json (so Import restores them); emit valid length-`total`
+    # placeholders for any per-element fiber/kappa files those blocks name
+    # so PolyFEM does not fail with missing files/fields.
+    active_geos = {geo for geo, _, _ in table}
+    for geo in range(1, parent.evalParm("num_geos") + 1):
+        if geo in active_geos or parent.evalParm(f"is_obstacle{geo}"):
+            continue
+        for vol in range(1, parent.evalParm(f"num_volumes{geo}") + 1):
+            for fam, model in material_families(parent, geo, vol):
+                src = _slot_parm(parent, geo, vol, fam, "fib_source")
+                for side in mirror_sides(parent, geo, vol, fam):
+                    if src in ("attribute", "file", "cylindrical", "curve") \
+                            or side:
+                        fiber_fields.setdefault(
+                            fiber_field(geo, vol, fam, side),
+                            np.tile([1.0, 0.0, 0.0], (total, 1)))
+                if model == "HGODispersion" and _slot_parm(
+                        parent, geo, vol, fam, "kappa_source") in (
+                            "attribute", "file"):
+                    padded = np.full(
+                        total, _slot_parm(parent, geo, vol, fam, "kappa"))
+                    np.savetxt(
+                        os.path.join(
+                            input_dir,
+                            per_element_scalar_file(geo, vol, fam, "kappa")),
+                        padded, fmt="%.9g")
+
     if not fiber_fields:
         solver_path = os.path.join(input_dir, FIBER_FILE)
         if os.path.isfile(solver_path):
@@ -4522,10 +4593,28 @@ def _tet_boundary(tets):
     return faces[first[counts == 1]]
 
 
+def _hex_boundary_tris(hexes):
+    """Outward boundary quads of a hexahedral mesh, split into triangles."""
+    quads = np.concatenate((
+        hexes[:, [0, 3, 2, 1]],
+        hexes[:, [4, 5, 6, 7]],
+        hexes[:, [0, 1, 5, 4]],
+        hexes[:, [1, 2, 6, 5]],
+        hexes[:, [2, 3, 7, 6]],
+        hexes[:, [3, 0, 4, 7]],
+    ), axis=0)
+    keys = np.sort(quads, axis=1)
+    _, first, counts = np.unique(keys, axis=0, return_index=True,
+                                 return_counts=True)
+    boundary = quads[first[counts == 1]]
+    return np.concatenate((boundary[:, [0, 1, 2]], boundary[:, [0, 2, 3]]),
+                          axis=0)
+
+
 def obstacle_surface(parent, geo):
     """(vertices, triangles, exact) of an obstacle mesh in its file's own
-    coordinates: float64 from the file for .obj and .msh (the surface of a tet
-    mesh, as PolyFEM extracts it), Houdini's float32 points otherwise."""
+    coordinates: float64 from the file for .obj and .msh (the surface of a
+    volume mesh, as PolyFEM extracts it), Houdini's float32 points otherwise."""
     path = parent.evalParm(f"file_location{geo}")
     extension = os.path.splitext(path)[1].lower()
     if extension == ".obj":
@@ -4535,14 +4624,23 @@ def obstacle_surface(parent, geo):
         reader = hou.nodeType(hou.sopNodeTypeCategory(), "MSH_Reader::3.0")
         mesh = reader.hdaModule().read_msh(path)
         cells = mesh["cells"]
+        parts = []
         if "tet" in cells:
-            faces = _tet_boundary(np.asarray(cells["tet"]["corners"])[:, :4])
-        elif "tri" in cells:
-            faces = np.asarray(cells["tri"]["corners"])[:, :3]
-        else:
+            parts.append(_tet_boundary(np.asarray(cells["tet"]["corners"])[:, :4]))
+        if "hex" in cells:
+            parts.append(_hex_boundary_tris(np.asarray(cells["hex"]["corners"])[:, :8]))
+        if not parts:
+            if "tri" in cells:
+                parts.append(np.asarray(cells["tri"]["corners"])[:, :3])
+            if "quad" in cells:
+                quads = np.asarray(cells["quad"]["corners"])[:, :4]
+                parts.append(np.concatenate((quads[:, [0, 1, 2]],
+                                             quads[:, [0, 2, 3]]), axis=0))
+        if not parts:
             raise hou.NodeError(
-                f"Obstacle {geo}: {os.path.basename(path)} has no triangles "
-                "or tetrahedra.")
+                f"Obstacle {geo}: {os.path.basename(path)} has no surface or "
+                "volume elements (triangles, quads, tetrahedra or hexahedra).")
+        faces = np.concatenate(parts, axis=0)
         used, faces = np.unique(faces, return_inverse=True)
         points = np.asarray(mesh["points"], dtype=np.float64)[used]
         return points, faces.reshape(-1, 3), True
@@ -4703,27 +4801,49 @@ def build_geometry_and_materials(parent, data, input_dir, plans=None,
     return orders
 
 
-def _damping(parent, geo, vol, material):
+_DAMPING_MODELS = frozenset({
+    "NeoHookean", "LinearElasticity", "SaintVenant",
+    "FixedCorotational", "IsochoricNeoHookean"})
+
+INCOMPRESSIBLE_LINEAR_ERROR = (
+    "IncompressibleLinearElasticity requires separate displacement and "
+    "pressure FE space IDs (and forbids contact, pressure loads and "
+    "MaterialSum nesting), which this node does not configure. Use "
+    "NeoHookean, IsochoricNeoHookean or LinearElasticity (with a high "
+    "Poisson's ratio such as 0.49) instead.")
+
+
+def _damping_active(parent, geo, vol):
+    """True only when the subdomain uses a direct material that PolyFEM's
+    ViscousDamping supports and its Damping toggle is on."""
+    if material_token(parent, geo, vol) not in _DAMPING_MODELS:
+        return False
     damping_parm = parent.parm(f"damping{geo}_{vol}")
-    if damping_parm is not None and not damping_parm.isDisabled() \
-            and damping_parm.eval():
+    return damping_parm is not None and bool(damping_parm.eval())
+
+
+def _damping(parent, geo, vol, material):
+    if _damping_active(parent, geo, vol):
         material["phi"] = parent.evalParm(f"phi{geo}_{vol}")
         material["psi"] = parent.evalParm(f"psi{geo}_{vol}")
     return material
 
 
-def _isotropic_model(parent, geo, vol, token):
+def _isotropic_model(parent, geo, vol, token, allow_damping=True):
     """Body of an isotropic model: no id/rho, so it also serves as a
     MaterialSum child (children carry neither)."""
     def ep():
         return (parent.evalParm(f"E{geo}_{vol}"),
                 parent.evalParm(f"nu{geo}_{vol}"))
 
+    if token == "IncompressibleLinearElasticity":
+        raise hou.NodeError(
+            f"{_slot_label(geo, vol, None)}: {INCOMPRESSIBLE_LINEAR_ERROR}")
     if token in ("LinearElasticity", "NeoHookean", "FixedCorotational",
-                 "IsochoricNeoHookean", "IncompressibleLinearElasticity"):
+                 "IsochoricNeoHookean"):
         E, nu = ep()
         model = {"type": token, "E": E, "nu": nu}
-        if token != "IncompressibleLinearElasticity":
+        if allow_damping:
             _damping(parent, geo, vol, model)
         return model
     if token in ("HookeLinearElasticity", "SaintVenant"):
@@ -4734,7 +4854,7 @@ def _isotropic_model(parent, geo, vol, token):
                  "fiber_direction": parse_vector(
                      parent.evalParm(f"material_coord{geo}_{vol}"),
                      "fiber_direction")}
-        if token == "SaintVenant":
+        if allow_damping and token == "SaintVenant":
             _damping(parent, geo, vol, model)
         return model
     if token == "IncompressibleOgden":
@@ -4835,7 +4955,8 @@ def composite_models(parent, geo, vol):
     models = []
     matrix = parent.parm(f"matrix_model{geo}_{vol}").evalAsString()
     if matrix != "None":
-        models.append(_isotropic_model(parent, geo, vol, matrix))
+        models.append(_isotropic_model(parent, geo, vol, matrix,
+                                       allow_damping=False))
     for fam, token in material_families(parent, geo, vol):
         for side in mirror_sides(parent, geo, vol, fam):
             models.append(_fiber_model(parent, geo, vol, fam, token, side))
@@ -5487,12 +5608,11 @@ def _condition_kinds_used(parent):
 
 def _material_damping_used(parent):
     for geo in range(1, parent.evalParm("num_geos") + 1):
-        for vol in range(1, (parent.evalParm(f"num_volumes{geo}")
-                             if not parent.parm(f"is_obstacle{geo}").eval()
-                             else 0) + 1):
-            damping = parent.parm(f"damping{geo}_{vol}")
-            if damping is not None and not damping.isDisabled() \
-                    and damping.eval():
+        if not parent.evalParm(f"is_enabled{geo}") \
+                or parent.evalParm(f"is_obstacle{geo}"):
+            continue
+        for vol in range(1, parent.evalParm(f"num_volumes{geo}") + 1):
+            if _damping_active(parent, geo, vol):
                 return True
     return False
 
@@ -6337,6 +6457,9 @@ def _material_findings(parent, geo, vol, quasistatic, errors):
         models = [matrix] if matrix != "None" else []
     for model in models:
         name = MATERIAL_LABELS.get(model, model).replace(" (recommended)", "")
+        if model == "IncompressibleLinearElasticity":
+            errors.append(f"{where} ({name}): {INCOMPRESSIBLE_LINEAR_ERROR}")
+            continue
         if model in _E_NU_MODELS:
             young = parent.evalParm(f"E{geo}_{vol}")
             nu = parent.evalParm(f"nu{geo}_{vol}")
@@ -6374,26 +6497,48 @@ def _material_findings(parent, geo, vol, quasistatic, errors):
                    for key in ("c1", "c2", "c3")):
                 errors.append(f"{where} ({name}): C1, C2 and C3 are all 0, "
                               "so the material has no shear stiffness.")
-        elif model in ("IncompressibleOgden", "UnconstrainedOgden"):
-            keys = (("ogdenC", "ogdenM") if model == "IncompressibleOgden"
-                    else ("ogden_alphas", "ogden_mus", "ogden_ds"))
-            lists = [_numbers(parent.evalParm(f"{key}{geo}_{vol}"))
-                     for key in keys]
-            if any(entry is None or not entry for entry in lists) \
-                    or len({len(entry) for entry in lists}) != 1:
-                errors.append(f"{where} ({name}): the Ogden coefficient "
-                              "lists must be numbers, one entry per term, "
-                              "all of the same length.")
+        elif model == "IncompressibleOgden":
+            c_vals = _numbers(parent.evalParm(f"ogdenC{geo}_{vol}"))
+            m_vals = _numbers(parent.evalParm(f"ogdenM{geo}_{vol}"))
+            if c_vals is None or m_vals is None or not c_vals \
+                    or len(c_vals) != len(m_vals):
+                errors.append(f"{where} ({name}): the Ogden C and m lists "
+                              "must be non-empty lists of numbers of the same "
+                              "length.")
+            elif any(val == 0 for val in m_vals):
+                errors.append(f"{where} ({name}): Ogden exponents m must all "
+                              "be non-zero (the model divides by m).")
+        elif model == "UnconstrainedOgden":
+            alphas = _numbers(parent.evalParm(f"ogden_alphas{geo}_{vol}"))
+            mus = _numbers(parent.evalParm(f"ogden_mus{geo}_{vol}"))
+            ds = _numbers(parent.evalParm(f"ogden_ds{geo}_{vol}"))
+            if alphas is None or mus is None or ds is None \
+                    or not alphas or not ds or len(alphas) != len(mus):
+                errors.append(f"{where} ({name}): Ogden alphas and mus must "
+                              "be non-empty lists of numbers of the same "
+                              "length, and Ds must be a non-empty list of "
+                              "numbers.")
+            else:
+                if any(val == 0 for val in alphas):
+                    errors.append(f"{where} ({name}): Ogden exponents alpha "
+                                  "must all be non-zero (the model divides by "
+                                  "alpha).")
+                if any(val == 0 for val in ds):
+                    errors.append(f"{where} ({name}): Ogden volumetric "
+                                  "coefficients D must all be non-zero (the "
+                                  "model divides by D).")
     if not quasistatic and not parent.evalParm(f"rho{geo}_{vol}") > 0:
         errors.append(f"{where}: the density must be greater than 0 in a "
                       "dynamic (non-quasistatic) run.")
     try:
         build_material(parent, geo, vol)
     except (hou.Error, ValueError, TypeError) as exc:
-        errors.append(f"{where}: {_error_text(exc)}")
+        msg = _error_text(exc)
+        if not any(msg in existing for existing in errors):
+            errors.append(f"{where}: {msg}")
 
 
-def _transform_determinant(parent, geo):
+def _transform_linear(parent, geo):
     node = parent.node(f"transform_{geo}")
     if node is None:
         return None
@@ -6402,7 +6547,27 @@ def _transform_determinant(parent, geo):
                             dtype=np.float64).reshape(4, 4)
     except (hou.Error, TypeError, ValueError):
         return None
-    return float(np.linalg.det(matrix[:3, :3]))
+    return matrix[:3, :3]
+
+
+def _transform_determinant(parent, geo):
+    linear = _transform_linear(parent, geo)
+    return None if linear is None else float(np.linalg.det(linear))
+
+
+def _transform_has_shear(parent, geo):
+    """True when the geometry's 3x3 transform has non-orthogonal rows after
+    normalizing scale (shear that PolyFEM's S-then-R-then-T cannot represent)."""
+    linear = _transform_linear(parent, geo)
+    if linear is None:
+        return False
+    norms = np.linalg.norm(linear, axis=1)
+    if np.any(norms < 1e-12):
+        return False
+    unit = linear / norms[:, None]
+    gram = unit @ unit.T
+    off_diag = np.abs(gram - np.eye(3))
+    return bool(off_diag.max() > 1e-3)
 
 
 def _vertex_table(geo_data):
@@ -6620,6 +6785,15 @@ def check_setup(parent, purpose="check"):
         elif determinant is not None and abs(determinant) < 1e-12:
             errors.append(f"Geometry {geo}: its transform has a zero scale, "
                           "which flattens the mesh.")
+        elif _transform_has_shear(parent, geo):
+            errors.append(
+                f"Geometry {geo}: its transform introduces shear (for example "
+                "non-uniform scale combined with a non-SRT transform order or "
+                "rotated pivot). PolyFEM applies Scale, then Rotate, then "
+                "Translate without shear, so the simulated shape would differ "
+                "from the viewport. Use Transform Order = Scale Rot Trans "
+                "(SRT) with zero Pivot Rotate, or bake the transform into the "
+                "mesh file.")
         num_vols = parent.evalParm(f"num_volumes{geo}")
         fibers = False
         for vol in range(1, num_vols + 1):
@@ -6697,6 +6871,13 @@ def check_setup(parent, purpose="check"):
         method = _menu_token(parent, "solver_nl")
         if method != "Newton":
             warnings.append(NON_NEWTON_CONTACT_WARNING.format(method=method))
+        if parent.evalParm("barrier_mode") == 0 \
+                and parent.evalParm("gcp_enable"):
+            errors.append(
+                "Geometric Contact (GCP) is not supported with the "
+                "Semi-Implicit barrier mode: PolyFEM refuses this combination "
+                "at start-up. Switch Barrier Stiffness Mode to Adaptive or "
+                "Fixed, or turn off Geometric Contact (GCP) (Contact tab).")
         if parent.evalParm("barrier_mode") == 0 \
                 and not parent.evalParm("gcp_enable") \
                 and parent.evalParm("improved_max"):
@@ -7500,7 +7681,7 @@ def write_launch_script(input_dir, output, args, system=None):
                  "this window.",
                  f"cd /d {bat(input_dir)} || exit /b 1",
                  " ".join(bat(arg) for arg in args),
-                 f"echo %ERRORLEVEL%> {bat(status)}",
+                 f"> {bat(status)} echo %ERRORLEVEL%",
                  "echo.",
                  "echo PolyFEM finished. The Houdini node's Run Status says "
                  "what the exit status means."]
@@ -9527,6 +9708,50 @@ def _restore_timeline(parent, scene):
         pass
 
 
+_GLOBAL_RESET_FOLDERS = frozenset({
+    "Time", "Contact", "Solver", "Output", "Global", "Remeshing"})
+
+
+def _revert_global_parms(parent):
+    """Reset simulation settings outside Main/Geometry to asset defaults so
+    an imported params.json that omits optional keys does not inherit values
+    left over from an earlier scene."""
+    ptg = parent.parmTemplateGroup()
+
+    def reset_folder(folder):
+        for template in folder.parmTemplates():
+            if isinstance(template, hou.FolderParmTemplate):
+                if template.folderType() in (
+                        hou.folderType.MultiparmBlock,
+                        hou.folderType.ScrollingMultiparmBlock,
+                        hou.folderType.TabbedMultiparmBlock):
+                    parm = parent.parm(template.name())
+                    if parm is not None:
+                        parm.revertToDefaults()
+                else:
+                    reset_folder(template)
+            elif template.type() not in (
+                    hou.parmTemplateType.Label,
+                    hou.parmTemplateType.Separator,
+                    hou.parmTemplateType.Button):
+                tuple_parm = parent.parmTuple(template.name())
+                if tuple_parm is not None:
+                    for p in tuple_parm:
+                        if p.keyframes():
+                            p.deleteAllKeyframes()
+                    tuple_parm.revertToDefaults()
+
+    def walk(container):
+        for template in container.parmTemplates():
+            if isinstance(template, hou.FolderParmTemplate):
+                if template.label() in _GLOBAL_RESET_FOLDERS:
+                    reset_folder(template)
+                else:
+                    walk(template)
+
+    walk(ptg)
+
+
 def read_params(kwargs):
     parent = kwargs["node"]
     selected_value = parent.evalParm("old_input_dir").strip()
@@ -9549,6 +9774,15 @@ def read_params(kwargs):
     if not isinstance(data, dict):
         _message("The root of params.json must be a JSON object.")
         return
+    if hou.isUIAvailable() and _has_loaded_geometry(parent):
+        choice = hou.ui.displayMessage(
+            "Importing a previous run replaces the current geometries, "
+            "materials, sidesets and solver settings on this node.",
+            buttons=("Import", "Cancel"),
+            default_choice=0, close_choice=1,
+            severity=hou.severityType.Warning, title="Import params.json")
+        if choice != 0:
+            return
     root_path = data.get("root_path")
     if isinstance(root_path, str) and root_path.strip():
         expanded_root = os.path.expandvars(root_path)
@@ -9565,8 +9799,12 @@ def read_params(kwargs):
             "Older PolyFEM/HDA id schema detected. Compatible values were "
             "mapped to the current controls.")
 
-    clear_all_geos(kwargs)
-    working_dir = os.path.dirname(os.path.normpath(input_dir))
+    clear_all_geos(kwargs, _confirmed=True)
+    _revert_global_parms(parent)
+    norm_input = os.path.normpath(input_dir)
+    working_dir = (os.path.dirname(norm_input)
+                   if os.path.basename(norm_input) == "input"
+                   else norm_input)
     parent.setParms({"working_dir": working_dir + "/"})
     # Writing or running into an imported run's folder must be confirmed
     # again, whatever was approved for this node before.

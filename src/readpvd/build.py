@@ -651,26 +651,34 @@ for (int j = 0; j < 3; j++) {
         && (tensor == "pk2" || tensor == "cauchy")
         ? (vals[j] >= 0 ? {1.0, 0.2, 0.2} : {0.2, 0.4, 1.0})
         : chv("../glyph_color");
-    int a = addpoint(0, v@P - dir * mag * 0.5);
-    int b = addpoint(0, v@P + dir * mag * 0.5);
+    vector pos_a = v@P - dir * mag * 0.5;
+    vector pos_b = v@P + dir * mag * 0.5;
+    int a = addpoint(0, pos_a);
+    int b = addpoint(0, pos_b);
     setpointattrib(0, "Cd", a, color, "set");
     setpointattrib(0, "Cd", b, color, "set");
     int prim = addprim(0, "polyline", a, b);
     setprimgroup(0, "readpvd_glyphs", prim, 1, "set");
     if (chi("../glyph_arrowheads") && mag > 1e-12) {
         vector helper = abs(dir.z) < 0.9 ? {0, 0, 1} : {0, 1, 0};
-        vector side = normalize(cross(dir, helper))
-            * mag * ch("../glyph_arrow_size");
-        vector back = point(0, "P", b) - dir * mag
-            * ch("../glyph_arrow_size") * 2;
-        int c = addpoint(0, back + side);
-        int d = addpoint(0, back - side);
-        setpointattrib(0, "Cd", c, color, "set");
-        setpointattrib(0, "Cd", d, color, "set");
-        int arrow_c = addprim(0, "polyline", b, c);
-        int arrow_d = addprim(0, "polyline", b, d);
-        setprimgroup(0, "readpvd_glyphs", arrow_c, 1, "set");
-        setprimgroup(0, "readpvd_glyphs", arrow_d, 1, "set");
+        float arrow = ch("../glyph_arrow_size");
+        vector side = normalize(cross(dir, helper)) * mag * arrow;
+        vector step = dir * mag * arrow * 2;
+        // Arrowheads at both ends (eigenvectors are unoriented: +dir == -dir).
+        vector back_b = pos_b - step;
+        int cb = addpoint(0, back_b + side);
+        int db = addpoint(0, back_b - side);
+        setpointattrib(0, "Cd", cb, color, "set");
+        setpointattrib(0, "Cd", db, color, "set");
+        setprimgroup(0, "readpvd_glyphs", addprim(0, "polyline", b, cb), 1, "set");
+        setprimgroup(0, "readpvd_glyphs", addprim(0, "polyline", b, db), 1, "set");
+        vector back_a = pos_a + step;
+        int ca = addpoint(0, back_a + side);
+        int da = addpoint(0, back_a - side);
+        setpointattrib(0, "Cd", ca, color, "set");
+        setpointattrib(0, "Cd", da, color, "set");
+        setprimgroup(0, "readpvd_glyphs", addprim(0, "polyline", a, ca), 1, "set");
+        setprimgroup(0, "readpvd_glyphs", addprim(0, "polyline", a, da), 1, "set");
     }
 }
 """

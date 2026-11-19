@@ -46,6 +46,7 @@ hython tests/test_readpvd_hda.py         # result loading incl. Contact block
 hython tests/test_legacy_import.py       # old params.json migration
 hython tests/test_polyfem_materials.py   # fiber models, composites, per-element data
 hython tests/test_readpvd_materials.py   # material fields + fiber visualization
+hython tests/test_patch1_fixes.py        # 2026-11-19 review Patch 1 regressions
 ```
 
 ## MSH_Reader 3.0
@@ -407,6 +408,25 @@ Targets the current build's strict-validated schema — the old fork keys
    viewport overlay legend, and scene gnomon; try both Auto Range buttons;
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
+
+### Pipeline review Patch 1 fixes (2026-11-19)
+
+A full code, math, and schema review across `PolyFEM 2.0`, `Read PVD 1.0`,
+`MSH_Reader 3.0`, and `src/common/` found and repaired these high-severity
+correctness and crash issues (`tests/test_patch1_fixes.py`):
+
+| Asset | What was wrong | Now |
+| --- | --- | --- |
+| Read PVD / `vtu_parser` | After the 2026-11-15 positive-tet fix, every P2/P3/P4 Lagrange sub-tet in `TET10/20/35_SUBDIV` was inverted inside-out (`measuredvolume < 0`, inward normals, negative P3/P4 `element_volumes`); mixed-order Lagrange tets crashed with `IndexError`; 0-cell VTUs crashed with `ValueError` | All three subdivision tables use positive VTK orientation (matching P1); cells are grouped by `(ctype, n_nodes)`; 0-cell VTUs parse cleanly |
+| Read PVD | `Show Glyph Arrowheads` read `point(0, "P", b)` on a newly added point (always `{0,0,0}`), drawing spikes to the world origin on only one end | Arrowheads use local endpoint positions and draw at both ends of each glyph |
+| Read PVD | Viewport Overlay Legend clipped tick labels and title off-screen under the default `Upper Right` corner; 4 of 12 Scene Legend orientations (`YZ ±Z Up`, `XZ ±X Up`) used ZYX instead of XYZ Euler order; `autoplace_legend` clamped scale to 1.0 | Right-side corners place ticks/labels to the left of the bar with right-aligned text; all 12 rotations match Houdini's XYZ order; `autoplace_legend` scales proportionally to cm/mm models |
+| Read PVD | `cache_frame_limit` never measured frame size during forward scrubbing (RAM grew unboundedly); `_mesh_point_field` dropped obstacle-omitted `*_avg` fields; `_TOPOLOGY_CACHE` ignored positions and `body_ids` | `cook_frame` records frame byte size (cleared by `clear_cache`); `_mesh_point_field` zero-pads shorter arrays like `cook_frame`; `_TOPOLOGY_CACHE` hashes points and `body_ids` |
+| Read PVD | Excel export crashed (`IndexError`) on empty region + *Where the Max Is*, converted 3×3 `Tensor Determinant` as `stress^1` instead of `stress^3`, omitted units on per-element/node headers, and let a single `NaN` copy poison `np.bincount` averages | Empty regions emit empty cells cleanly; stress determinants scale by `ratio**3` (`MPa³`); per-item headers include units; unknown-unit integrals are not silently scaled; `np.isfinite` masks `bincount` |
+| PolyFEM | `UnconstrainedOgden` defaulted `alphas` to `[0.0329e6]` and `mus` to `[6.82]` (swapped, causing instant overflow); `Check Setup` rejected multi-term shear with single `D` and missed `alpha == 0` / `m == 0` / `D == 0` | Defaults are `[2]`, `[0.0329e6]`, `[1e-7]`; `Check Setup` allows `len(Ds) >= 1` and refuses zero exponents or `D` |
+| PolyFEM | Mixed-curve vector loads crashed `_merged_load` when any axis was constant; `GCP` + default `Semi-Implicit` passed `Check Setup` then aborted PolyFEM; `IncompressibleLinearElasticity` emitted invalid JSON; disabled geometries with per-element fibers wrote missing `fibers.vtk` references | Constant axes sum directly; `Check Setup` refuses `GCP + Semi-Implicit`, `IncompressibleLinearElasticity`, and transform shear; disabled geometries emit valid placeholders |
+| PolyFEM | `damping` had no `disablewhen`, leaked hidden `phi`/`psi` onto `IsochoricNeoHookean` and bogus `damping_forces` onto other models, and wrote `phi`/`psi` inside `MaterialSum.models[0]` where PolyFEM ignores it | Direct-material damping only (including `IsochoricNeoHookean`), with matching `disablewhen` and explicit token gating |
+| PolyFEM | *Split into Subdomains* wiped user picks when changing target subdomain, overwrote the entire mesh on empty `Elements to Move`, and left reused wrangles upstream of newer edits; static hex/quad `.msh` obstacles crashed `Write`; Windows `.bat` wrote `echo %ERRORLEVEL%>` (corrupting codes 0–9); `Clear All` / `Import` leaked stale parms and wiped scenes without asking; flat-folder `Import` set `working_dir` to parent | Selection preserved unless auto-fetched; empty selections refused; reused wrangles rewired downstream (`1..999`); hex/quad `.msh` obstacles supported; Windows uses `> status echo %ERRORLEVEL%`; UI confirms `Clear All`/`Import`; `clear_all_geos` reverts Geometry 1 and `read_params` resets global parms and keeps flat folders |
+| `msh_parser` / `xlsx_writer` | Truncated binary MSH 2.2 looped infinitely until OOM; negative `ntags` raised `ZeroDivisionError`; MSH 2.2 kept signed physical tags; `write_moved_nodes` refused parametric MSH 4.1; `xlsx_writer.py` embedded raw U+FFFE/U+FFFF bytes and missed UTF-16 surrogates / `.tmp` cleanup | Truncation and negative `ntags` raise `MshParseError`; MSH 2.2 strips tag sign; parametric MSH 4.1 writes cleanly; `xlsx_writer` uses ASCII escapes, strips surrogates, refuses 0-sheet saves, and cleans `.tmp` on error |
 
 ### PolyFEM node review fixes (2026-11-14)
 

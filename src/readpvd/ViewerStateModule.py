@@ -40,7 +40,7 @@ def _bar_geometry(node, left, bottom, width, height, segments=48):
     return geo
 
 
-def _tick_geometry(node, left, bottom, width, height):
+def _tick_geometry(node, left, bottom, width, height, labels_on_left=False):
     """Tick marks as open polylines (drawn by the Line drawable)."""
     geo = hou.Geometry()
     geo.addAttrib(hou.attribType.Point, "Cd", (1.0, 1.0, 1.0),
@@ -48,11 +48,12 @@ def _tick_geometry(node, left, bottom, width, height):
     tick_color = tuple(float(c) for c in node.evalParmTuple(
         "legend_text_color"))
     n_ticks = max(2, int(node.evalParm("legend_ticks")))
+    x0, x1 = ((left, left - _TICK_LEN) if labels_on_left
+              else (left + width, left + width + _TICK_LEN))
     for index in range(n_ticks):
         y = bottom + height * (index / (n_ticks - 1))
         polyline = geo.createPolygon(is_closed=False)
-        for position in ((left + width, y, 0),
-                         (left + width + _TICK_LEN, y, 0)):
+        for position in ((x0, y, 0), (x1, y, 0)):
             point = geo.createPoint()
             point.setPosition(hou.Vector3(position))
             point.setAttribValue("Cd", tick_color)
@@ -167,6 +168,7 @@ class State:
 
         (viewport_width, viewport_height,
          left, bottom, width, height) = self._layout()
+        labels_on_left = self.node.evalParm("overlay_corner") in (1, 3)
         # screen_space covers the whole viewport; geometry is in pixels.
         full_viewport = (0, 0, viewport_width, viewport_height, 0, 0)
         self.bar.setGeometry(
@@ -177,7 +179,8 @@ class State:
             "backface_culling": False,
         })
         self.ticks.setGeometry(
-            _tick_geometry(self.node, left, bottom, width, height))
+            _tick_geometry(self.node, left, bottom, width, height,
+                           labels_on_left=labels_on_left))
         self.ticks.draw(handle, {
             "screen_space": full_viewport,
             "use_cd": True,
@@ -189,7 +192,16 @@ class State:
         notation = self.node.parm("legend_number_format").evalAsString()
         color = hou.Color(self.node.evalParmTuple("legend_text_color"))
         # legend_values runs high -> low; the bar runs low (bottom) -> high.
-        text_x = left + width + _TICK_LEN + _LABEL_GAP
+        if labels_on_left:
+            text_x = left - _TICK_LEN - _LABEL_GAP
+            tick_origin = hou.drawableTextOrigin.RightCenter
+            title_x = left + width
+            title_origin = hou.drawableTextOrigin.BottomRight
+        else:
+            text_x = left + width + _TICK_LEN + _LABEL_GAP
+            tick_origin = hou.drawableTextOrigin.LeftCenter
+            title_x = left
+            title_origin = hou.drawableTextOrigin.BottomLeft
         n = len(values)
         for index, value in enumerate(values):
             fraction = index / max(1, n - 1)
@@ -197,14 +209,14 @@ class State:
             self.text.draw(handle, {
                 "text": module._format_number(value, digits, notation),
                 "translate": hou.Vector3(text_x, y, 0),
-                "origin": hou.drawableTextOrigin.LeftCenter,
+                "origin": tick_origin,
                 "color1": color,
             })
 
         self.text.draw(handle, {
             "text": f"<b>{module.legend_title_text(self.node)}</b>",
-            "translate": hou.Vector3(left, bottom + height + _TITLE_GAP, 0),
-            "origin": hou.drawableTextOrigin.BottomLeft,
+            "translate": hou.Vector3(title_x, bottom + height + _TITLE_GAP, 0),
+            "origin": title_origin,
             "color1": color,
         })
 

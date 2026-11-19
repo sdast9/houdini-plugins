@@ -178,9 +178,14 @@ def main():
         "fib_dir1_1").parmTemplate().scriptCallback()
     assert not node.parmTuple(
         "xform_r__1").parmTemplate().scriptCallback()
-    damping_condition = node.parm(
-        "damping1_1").parmTemplate().conditionals()[hou.parmCondType.HideWhen]
-    assert "matrix_model1_1 != FixedCorotational" in damping_condition
+    damping_conds = node.parm(
+        "damping1_1").parmTemplate().conditionals()
+    assert "materials1_1 != FixedCorotational" in damping_conds[
+        hou.parmCondType.HideWhen]
+    assert "materials1_1 != IsochoricNeoHookean" in damping_conds[
+        hou.parmCondType.HideWhen]
+    assert hou.parmCondType.DisableWhen in damping_conds
+    assert "matrix_model1_1" not in damping_conds[hou.parmCondType.HideWhen]
 
     # params.json stores an effective, pivot-compensated TRS. Import must clear
     # the automatic centroid pivot so that the affine matrix round-trips.

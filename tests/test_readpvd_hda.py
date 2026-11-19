@@ -963,7 +963,8 @@ def main():
     node.setParms({"glyph_arrowheads": 1})
     out.cook(force=True)
     arrow_count = len(out.geometry().findPrimGroup("readpvd_glyphs").prims())
-    assert arrow_count == plain_count * 3
+    # 1 shaft + 2 arrowhead barbs at each end = 5 polylines per glyph
+    assert arrow_count == plain_count * 5, (arrow_count, plain_count)
     node.setParms({"glyph_direction_first": 0, "glyph_direction_second": 0,
                    "glyph_direction_third": 0})
     out.cook(force=True)

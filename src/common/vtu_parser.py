@@ -34,40 +34,39 @@ VTK_CELLS = {
 
 # Higher-order Lagrange tet subdivision tables: each row indexes the element's
 # node array (corners, then edge, then face, then interior nodes, in VTK
-# Lagrange order) to build one P1 sub-tet. These tables are the readPVD 0.26
-# subdivisions, regenerated verbatim from that asset's hand-built tables, so
-# tetra10/20/35 (P2/P3/P4) all render with their curvature instead of
-# collapsing to a corner tet.
+# Lagrange order) to build one P1 sub-tet with positive VTK orientation (same
+# convention as a P1 tet [0, 1, 2, 3], so BUILD_PRIMS_VEX's [1, 2, 3, 0]
+# produces positive Houdini tetrahedra for P1 through P4 alike).
 TET10_SUBDIV = np.array([          # P2 (10 nodes) -> 8 sub-tets
-    [0, 4, 7, 6], [4, 1, 8, 5], [5, 6, 2, 9], [8, 7, 9, 3],
-    [6, 5, 8, 9], [7, 6, 8, 9], [8, 6, 7, 4], [8, 6, 4, 5]], dtype=np.int64)
+    [0, 4, 6, 7], [4, 1, 5, 8], [5, 6, 9, 2], [8, 7, 3, 9],
+    [6, 5, 9, 8], [7, 6, 9, 8], [8, 6, 4, 7], [8, 6, 5, 4]], dtype=np.int64)
 
 TET20_SUBDIV = np.array([          # P3 (20 nodes) -> 27 sub-tets
-    [0, 4, 10, 9], [3, 15, 11, 13], [1, 5, 6, 12], [2, 7, 8, 14],
-    [10, 16, 11, 18], [10, 9, 4, 18], [10, 16, 18, 4], [4, 16, 18, 19],
-    [4, 9, 19, 18], [8, 9, 18, 19], [4, 5, 16, 19], [5, 6, 12, 19],
-    [5, 16, 19, 12], [15, 11, 13, 17], [16, 19, 17, 18], [13, 11, 16, 17],
-    [13, 12, 17, 16], [19, 12, 16, 17], [19, 6, 12, 17], [16, 11, 18, 17],
-    [11, 15, 18, 17], [15, 14, 18, 17], [8, 14, 17, 18], [8, 19, 18, 17],
-    [7, 8, 14, 17], [7, 8, 17, 19], [6, 7, 17, 19]], dtype=np.int64)
+    [0, 4, 9, 10], [3, 15, 13, 11], [1, 5, 12, 6], [2, 7, 14, 8],
+    [10, 16, 18, 11], [10, 9, 18, 4], [10, 16, 4, 18], [4, 16, 19, 18],
+    [4, 9, 18, 19], [8, 9, 19, 18], [4, 5, 19, 16], [5, 6, 19, 12],
+    [5, 16, 12, 19], [15, 11, 17, 13], [16, 19, 18, 17], [13, 11, 17, 16],
+    [13, 12, 16, 17], [19, 12, 17, 16], [19, 6, 17, 12], [16, 11, 17, 18],
+    [11, 15, 17, 18], [15, 14, 17, 18], [8, 14, 18, 17], [8, 19, 17, 18],
+    [7, 8, 17, 14], [7, 8, 19, 17], [6, 7, 19, 17]], dtype=np.int64)
 
 TET35_SUBDIV = np.array([          # P4 (35 nodes) -> 64 sub-tets
-    [2, 10, 18, 9], [18, 20, 30, 31], [10, 9, 30, 18], [20, 32, 21, 29],
-    [21, 3, 17, 15], [10, 31, 18, 30], [20, 31, 32, 30], [20, 32, 29, 30],
-    [17, 32, 29, 21], [15, 21, 32, 17], [17, 26, 32, 15], [17, 29, 32, 26],
-    [26, 32, 15, 14], [25, 32, 26, 14], [25, 33, 32, 14], [25, 33, 14, 13],
-    [25, 33, 13, 4], [33, 13, 4, 12], [0, 12, 4, 13], [22, 33, 4, 12],
-    [22, 11, 33, 12], [23, 11, 33, 22], [31, 11, 33, 23], [31, 10, 11, 23],
-    [30, 10, 31, 23], [30, 9, 10, 23], [30, 34, 23, 31], [31, 34, 23, 33],
-    [32, 34, 31, 33], [31, 34, 32, 30], [29, 34, 30, 32], [29, 34, 32, 26],
-    [26, 34, 32, 25], [25, 34, 32, 33], [25, 4, 22, 33], [25, 34, 33, 22],
-    [22, 34, 33, 23], [4, 5, 25, 22], [34, 5, 22, 25], [34, 5, 24, 22],
-    [34, 23, 22, 24], [34, 30, 23, 24], [8, 30, 24, 23], [9, 30, 8, 23],
-    [24, 30, 8, 28], [28, 30, 34, 24], [29, 30, 34, 28], [28, 16, 34, 29],
-    [29, 16, 34, 26], [26, 16, 17, 29], [26, 16, 34, 27], [27, 25, 34, 26],
-    [25, 27, 34, 5], [27, 24, 34, 5], [28, 24, 34, 27], [27, 16, 34, 28],
-    [27, 19, 16, 28], [27, 6, 19, 28], [27, 5, 6, 24], [27, 24, 6, 28],
-    [6, 24, 7, 28], [7, 24, 8, 28], [7, 19, 6, 28], [6, 19, 7, 1]],
+    [2, 10, 9, 18], [18, 20, 31, 30], [10, 9, 18, 30], [20, 32, 29, 21],
+    [21, 3, 15, 17], [10, 31, 30, 18], [20, 31, 30, 32], [20, 32, 30, 29],
+    [17, 32, 21, 29], [15, 21, 17, 32], [17, 26, 15, 32], [17, 29, 26, 32],
+    [26, 32, 14, 15], [25, 32, 14, 26], [25, 33, 14, 32], [25, 33, 13, 14],
+    [25, 33, 4, 13], [33, 13, 12, 4], [0, 12, 13, 4], [22, 33, 12, 4],
+    [22, 11, 12, 33], [23, 11, 22, 33], [31, 11, 23, 33], [31, 10, 23, 11],
+    [30, 10, 23, 31], [30, 9, 23, 10], [30, 34, 31, 23], [31, 34, 33, 23],
+    [32, 34, 33, 31], [31, 34, 30, 32], [29, 34, 32, 30], [29, 34, 26, 32],
+    [26, 34, 25, 32], [25, 34, 33, 32], [25, 4, 33, 22], [25, 34, 22, 33],
+    [22, 34, 23, 33], [4, 5, 22, 25], [34, 5, 25, 22], [34, 5, 22, 24],
+    [34, 23, 24, 22], [34, 30, 24, 23], [8, 30, 23, 24], [9, 30, 23, 8],
+    [24, 30, 28, 8], [28, 30, 24, 34], [29, 30, 28, 34], [28, 16, 29, 34],
+    [29, 16, 26, 34], [26, 16, 29, 17], [26, 16, 27, 34], [27, 25, 26, 34],
+    [25, 27, 5, 34], [27, 24, 5, 34], [28, 24, 27, 34], [27, 16, 28, 34],
+    [27, 19, 28, 16], [27, 6, 28, 19], [27, 5, 24, 6], [27, 24, 28, 6],
+    [6, 24, 28, 7], [7, 24, 28, 8], [7, 19, 28, 6], [6, 19, 1, 7]],
     dtype=np.int64)
 
 
@@ -335,8 +334,12 @@ def _mesh_from_arrays(points, connectivity, offsets, types, point_data,
         if len(offsets) != len(types):
             raise VtuParseError(
                 "VTU offsets and cell types have different lengths")
-        starts = np.concatenate(([0], offsets[:-1]))
-        sizes = offsets - starts
+        if len(offsets) == 0:
+            starts = np.empty(0, dtype=np.int64)
+            sizes = np.empty(0, dtype=np.int64)
+        else:
+            starts = np.concatenate(([0], offsets[:-1]))
+            sizes = offsets - starts
 
     cells = {}
     cell_sources = {}
@@ -345,36 +348,31 @@ def _mesh_from_arrays(points, connectivity, offsets, types, point_data,
         if info is None:
             continue  # skip exotic cells rather than fail
         family, n_corners = info
-        mask = types == ctype
-        source_indices = np.flatnonzero(mask)
-        c_starts = starts[mask]
-        c_sizes = sizes[mask]
-        n_nodes = int(c_sizes[0])
-        if not np.all(c_sizes == n_nodes):
-            # ragged same-type cells: fall back per-cell (rare)
-            conn = np.vstack([
-                connectivity[s:s + n_corners]
-                for s, sz in zip(c_starts, c_sizes)])
-        else:
+        type_mask = types == ctype
+        for n_nodes in np.unique(sizes[type_mask]):
+            n_nodes = int(n_nodes)
+            mask = type_mask & (sizes == n_nodes)
+            source_indices = np.flatnonzero(mask)
+            c_starts = starts[mask]
             conn = connectivity[
                 c_starts[:, None] + np.arange(n_nodes)[None, :]]
-        subdiv = (TET10_SUBDIV if family == "tet" and n_nodes == 10 else
-                  TET20_SUBDIV if family == "tet" and n_nodes == 20 else
-                  TET35_SUBDIV if family == "tet" and n_nodes == 35 else None)
-        if subdiv is not None:
-            # vectorized higher-order tet -> P1 sub-tets (P2/P3/P4)
-            conn = conn[:, subdiv].reshape(-1, 4)
-            source_indices = np.repeat(source_indices, len(subdiv))
-        elif family == "tet" and n_nodes > 4:
-            conn = conn[:, :4]  # other high orders: corner tet fallback
-        else:
-            conn = conn[:, :n_corners]
-        prev = cells.get(family)
-        cells[family] = conn if prev is None else np.vstack([prev, conn])
-        prev_sources = cell_sources.get(family)
-        cell_sources[family] = (
-            source_indices if prev_sources is None
-            else np.concatenate((prev_sources, source_indices)))
+            subdiv = (TET10_SUBDIV if family == "tet" and n_nodes == 10 else
+                      TET20_SUBDIV if family == "tet" and n_nodes == 20 else
+                      TET35_SUBDIV if family == "tet" and n_nodes == 35 else None)
+            if subdiv is not None:
+                # vectorized higher-order tet -> P1 sub-tets (P2/P3/P4)
+                conn = conn[:, subdiv].reshape(-1, 4)
+                source_indices = np.repeat(source_indices, len(subdiv))
+            elif family == "tet" and n_nodes > 4:
+                conn = conn[:, :4]  # other high orders: corner tet fallback
+            else:
+                conn = conn[:, :n_corners]
+            prev = cells.get(family)
+            cells[family] = conn if prev is None else np.vstack([prev, conn])
+            prev_sources = cell_sources.get(family)
+            cell_sources[family] = (
+                source_indices if prev_sources is None
+                else np.concatenate((prev_sources, source_indices)))
 
     cell_data = {}
     for name, raw in raw_cell_data.items():
