@@ -97,7 +97,7 @@ def check_interface(node, mod):
     assert dict(zip(materials.menuItems(), materials.menuLabels()))[
         "NeoHookean"] == "Neo-Hookean (recommended)"
     assert list(node.parm("matrix_model1_1").parmTemplate().menuItems()) == \
-        list(mod.MATERIAL_TOKENS[:12]) + ["None"]
+        list(mod.MATRIX_MODEL_TOKENS)
 
     # Hiding never changes what is exported.
     node.setParms({"expert_mode": 0})

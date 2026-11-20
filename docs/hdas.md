@@ -411,6 +411,18 @@ Targets the current build's strict-validated schema — the old fork keys
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
 
+### PolyFEM Fork Controls (2026-11-20)
+
+Selective PolyFEM fork constitutive models, nodal force BCs, and expert
+solver/contact robustness controls exposed on `PolyFEM 2.0`
+(`tests/test_polyfem_fork_controls.py`):
+
+| Area | Controls |
+| --- | --- |
+| Materials | **`GrowthNeoHookean`**, **`InversionBarrier`**, and **`AMIPS`** added to *Material* (and `GrowthNeoHookean`/`AMIPS` to `MaterialSum` *Matrix Model*; existing menu indices preserved). `GrowthNeoHookean` exposes symmetric 3×3 natural-configuration inputs (`g11..g33`, `g12..g23`, numbers or TinyExpr) with Sylvester SPD validation; `InversionBarrier` exposes `JBarrierThreshold` both standalone and as an *Add Inversion Barrier* toggle inside `MaterialSum`; `AMIPS` exposes `weight` and `use_rest_pose`. |
+| Boundary Conditions | **Nodal Force (`nodal_neumann_boundary`)** added to *Boundary Type* (index 5) for **Points** sidesets (`grouptype == 1`) with 3-axis expression boxes and time curves; refused cleanly on Faces sidesets while keeping face tractions refused on Points sidesets. |
+| Solver & Contact (Expert Mode) | **AL Phase Budget (`RB-07`)** under *Solver ▸ Augmented Lagrangian* (`solver.augmented_lagrangian.budget`), **Generalized Stall Restart (`D8`) & Line-Search Failure Restarts** under *Solver ▸ Advanced* (`solver.advanced.stall_restart`, `line_search_failure_restarts`), and **Semi-Implicit Controller Options** under *Contact ▸ Barrier ▸ Semi-Implicit Options* (`clamped_contacts`, `gradient_balance_dofs`). All emit only when non-default so untouched scenes keep identical `params.json`, surface in *Check Setup* notes when modified while hidden, and round-trip cleanly on import. |
+
 ### Read PVD & MSH Reader Batch (2026-11-20)
 
 Live run monitoring, higher-order hexahedral subdivision, and Gmsh mesh

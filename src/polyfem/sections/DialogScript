@@ -1499,8 +1499,11 @@
                             "HGODispersion" "HGO Dispersion (GOH)"
                             "ActiveFiber" "Active Fiber (muscle)"
                             "MaterialSum" "Composite (Matrix + Fiber Families)"
+                            "GrowthNeoHookean" "Growth Neo-Hookean (3D)"
+                            "InversionBarrier" "Inversion Barrier"
+                            "AMIPS" "AMIPS (Distortion Energy)"
                         }
-                        help    "Constitutive model of this subdomain, i.e. how the material resists deformation. NeoHookean is the usual choice for soft, rubber-like or biological tissue; LinearElasticity is only valid for very small strains. The HGO / Active Fiber models add a stiff fiber direction; Composite lets you sum a matrix model with several fiber families."
+                        help    "Constitutive model of this subdomain, i.e. how the material resists deformation. NeoHookean is the usual choice for soft, rubber-like or biological tissue; LinearElasticity is only valid for very small strains. The HGO / Active Fiber models add a stiff fiber direction; Composite lets you sum a matrix model with several fiber families, a volume penalty, and/or an inversion barrier. Growth Neo-Hookean adds a 3x3 natural-configuration tensor G; Inversion Barrier prevents element inversion below a J threshold; AMIPS penalizes element distortion."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -1524,6 +1527,8 @@
                             "FixedCorotational" "Fixed Corotational"
                             "IsochoricNeoHookean" "Isochoric Neo-Hookean"
                             "None"                              "None (fiber only)"
+                            "GrowthNeoHookean" "Growth Neo-Hookean (3D)"
+                            "AMIPS" "AMIPS (Distortion Energy)"
                         }
                         help    "Isotropic base material of a Composite (the 'ground substance' the fibers are embedded in). Choose None to have only the fiber families and a volume penalty."
                         parmtag { "script_callback_language" "python" }
@@ -1543,8 +1548,8 @@
                         label   "Young's Modulus E"
                         type    float
                         default { "100000" }
-                        disablewhen "@SHOW_FOR(NeoHookean LinearElasticity IncompressibleLinearElasticity FixedCorotational IsochoricNeoHookean)@"
-                        hidewhen "@SHOW_FOR(NeoHookean LinearElasticity IncompressibleLinearElasticity FixedCorotational IsochoricNeoHookean)@"
+                        disablewhen "@SHOW_FOR(NeoHookean LinearElasticity IncompressibleLinearElasticity FixedCorotational IsochoricNeoHookean GrowthNeoHookean InversionBarrier)@"
+                        hidewhen "@SHOW_FOR(NeoHookean LinearElasticity IncompressibleLinearElasticity FixedCorotational IsochoricNeoHookean GrowthNeoHookean InversionBarrier)@"
                         range   { 0 1e+07 }
                         help    "Young's modulus: the material's stiffness (stress per unit strain), in your force/area units (Pa if you use SI). Soft tissue is roughly 1e3-1e6 Pa, rubber ~1e6, steel ~2e11. Larger values make the body harder to deform and the solve stiffer."
                         parmtag { "script_callback_language" "python" }
@@ -1555,10 +1560,64 @@
                         label   "Poisson's Ratio"
                         type    float
                         default { "0.45" }
-                        disablewhen "@SHOW_FOR(NeoHookean LinearElasticity IncompressibleLinearElasticity FixedCorotational IsochoricNeoHookean)@"
-                        hidewhen "@SHOW_FOR(NeoHookean LinearElasticity IncompressibleLinearElasticity FixedCorotational IsochoricNeoHookean)@"
+                        disablewhen "@SHOW_FOR(NeoHookean LinearElasticity IncompressibleLinearElasticity FixedCorotational IsochoricNeoHookean GrowthNeoHookean InversionBarrier)@"
+                        hidewhen "@SHOW_FOR(NeoHookean LinearElasticity IncompressibleLinearElasticity FixedCorotational IsochoricNeoHookean GrowthNeoHookean InversionBarrier)@"
                         range   { -1 0.5 }
                         help    "Poisson's ratio: how much the material contracts sideways when stretched. 0 = no coupling, 0.5 = perfectly incompressible (volume preserving). Rubber and soft tissue are close to 0.45-0.49; values very near 0.5 make the solve harder."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "growth_diag#_#"
+                        label   "Growth Diagonal [g11, g22, g33]"
+                        type    string
+                        size    3
+                        default { "1" "1" "1" }
+                        disablewhen "@SHOW_FOR(GrowthNeoHookean)@"
+                        hidewhen "@SHOW_FOR(GrowthNeoHookean)@"
+                        help    "Diagonal entries (g11, g22, g33) of the symmetric positive-definite 3x3 natural-configuration (growth) tensor G in F_e = F G^{-1}. Enter a number or a PolyFEM TinyExpr formula of x, y, z, t (quotes optional), e.g. 1 + 0.1*t. Default [1, 1, 1] is no growth."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "growth_offdiag#_#"
+                        label   "Growth Off-Diag [g12, g13, g23]"
+                        type    string
+                        size    3
+                        default { "0" "0" "0" }
+                        disablewhen "@SHOW_FOR(GrowthNeoHookean)@"
+                        hidewhen "@SHOW_FOR(GrowthNeoHookean)@"
+                        help    "Off-diagonal entries (g12, g13, g23) of the symmetric 3x3 natural-configuration tensor G (g21=g12, g31=g13, g32=g23). Enter a number or a PolyFEM TinyExpr formula of x, y, z, t (quotes optional). G must remain positive definite."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "inv_barrier_thresh#_#"
+                        label   "J Barrier Threshold"
+                        type    float
+                        default { "0.5" }
+                        disablewhen "@SHOW_FOR_DIRECT(InversionBarrier)@"
+                        hidewhen "@SHOW_FOR_DIRECT(InversionBarrier)@"
+                        range   { 1e-06! 10 }
+                        help    "Jacobian determinant threshold below which the inversion barrier activates (inactive for J >= threshold, blows up as J -> 0+). Default 0.5."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "amips_weight#_#"
+                        label   "AMIPS Weight"
+                        type    float
+                        default { "1" }
+                        disablewhen "@SHOW_FOR(AMIPS)@"
+                        hidewhen "@SHOW_FOR(AMIPS)@"
+                        range   { 1e-09! 1e+06 }
+                        help    "Positive scalar weight multiplying the AMIPS distortion energy density. Default 1."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "amips_use_rest_pose#_#"
+                        label   "AMIPS Use Rest Pose"
+                        type    toggle
+                        default { "0" }
+                        disablewhen "@SHOW_FOR(AMIPS)@"
+                        hidewhen "@SHOW_FOR(AMIPS)@"
+                        help    "Off (default): penalize distortion relative to an ideal regular element. On: penalize distortion relative to the input mesh's rest shape."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -2354,6 +2413,49 @@
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
+                        name    "add_inv_barrier#_#"
+                        label   "Add Inversion Barrier"
+                        type    toggle
+                        default { "0" }
+                        disablewhen "{ materials#_# != MaterialSum }"
+                        hidewhen "{ materials#_# != MaterialSum }"
+                        help    "Add an InversionBarrier term to the composite to prevent element inversion (J -> 0+) without altering the response when J >= threshold."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "comp_inv_E#_#"
+                        label   "Inversion Barrier E"
+                        type    float
+                        default { "100000" }
+                        disablewhen "{ materials#_# != MaterialSum } { add_inv_barrier#_# != 1 }"
+                        hidewhen "{ materials#_# != MaterialSum } { add_inv_barrier#_# != 1 }"
+                        range   { 0 1e+07 }
+                        help    "Young's modulus scaling the composite's InversionBarrier term (stress units)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "comp_inv_nu#_#"
+                        label   "Inversion Barrier nu"
+                        type    float
+                        default { "0.45" }
+                        disablewhen "{ materials#_# != MaterialSum } { add_inv_barrier#_# != 1 }"
+                        hidewhen "{ materials#_# != MaterialSum } { add_inv_barrier#_# != 1 }"
+                        range   { -1 0.5 }
+                        help    "Poisson's ratio for the composite's InversionBarrier term (-1 < nu < 0.5)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "comp_inv_thresh#_#"
+                        label   "Inversion Barrier J Threshold"
+                        type    float
+                        default { "0.5" }
+                        disablewhen "{ materials#_# != MaterialSum } { add_inv_barrier#_# != 1 }"
+                        hidewhen "{ materials#_# != MaterialSum } { add_inv_barrier#_# != 1 }"
+                        range   { 1e-06! 10 }
+                        help    "Jacobian determinant threshold below which the composite's InversionBarrier activates (inactive for J >= threshold). Default 0.5."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
                         name    "extra_models_json#_#"
                         label   "Extra Models (JSON)"
                         type    string
@@ -2489,8 +2591,9 @@
                                     "Normal_Aligned_Neumann"    "Normal Aligned Neumann"
                                     "Pressure_Boundary"         "Pressure Boundary"
                                     "Pressure_Cavity"           "Pressure Cavity"
+                                    "Nodal_Neumann"             "Nodal Force (Nodal Neumann)"
                                 }
-                                help    "What is imposed on this sideset. Dirichlet = prescribed displacement (fixes or moves the surface). Neumann = applied traction (force per area) with a fixed direction. Normal Aligned Neumann = traction along the surface normal (positive pushes inward). Pressure Boundary = pressure following the deforming surface. Pressure Cavity = pressure inside a closed cavity. All conditions of a sideset act on all of its faces: Dirichlet components are combined (a component set twice must have the same value), loads of one kind are added, and a Neumann and a Normal Aligned Neumann cannot share faces (PolyFEM would keep only the second)."
+                                help    "What is imposed on this sideset. Dirichlet = prescribed displacement (fixes or moves the surface or points). Neumann = applied traction (force per area) with a fixed direction. Normal Aligned Neumann = traction along the surface normal (positive pushes inward). Pressure Boundary = pressure following the deforming surface. Pressure Cavity = pressure inside a closed cavity. Nodal Force (Nodal Neumann) = concentrated force vector applied directly to selected mesh nodes (requires Group Type = Points). All conditions of a sideset act on all of its members: Dirichlet components are combined (a component set twice must have the same value), loads of one kind are added, and a Neumann and a Normal Aligned Neumann cannot share faces (PolyFEM would keep only the second)."
                                 parmtag { "script_callback_language" "python" }
                             }
                             parm {
@@ -2499,9 +2602,9 @@
                                 type    string
                                 size    3
                                 default { "0" "0" "0" }
-                                disablewhen "{ boundary_type#_#_#_# != Neumann boundary_type#_#_#_# != Dirichlet }"
-                                hidewhen "{ boundary_type#_#_#_# != Neumann boundary_type#_#_#_# != Dirichlet }"
-                                help    "Displacement (Dirichlet, length units) or traction (Neumann, force per area) for X, Y, Z. Enter a plain number (0, -0.01) or any PolyFEM TinyExpr formula of x, y, z, t without quotes (quotes are also accepted): e.g. -0.01*t, 1000*smoothstep(t)*sin(pi*x), if(t-0.5, -0.02, -0.04*t). Functions: sin, cos, tan, exp, ln, log, log10, pow, sqrt, abs, ceil, floor, pi, e, min, max, smoothstep, half_smoothstep, deg2rad, rotate_2D_x, rotate_2D_y, if, compare, smooth_abs, sign. Use ^ for powers (not **)."
+                                disablewhen "{ boundary_type#_#_#_# != Neumann boundary_type#_#_#_# != Dirichlet boundary_type#_#_#_# != Nodal_Neumann }"
+                                hidewhen "{ boundary_type#_#_#_# != Neumann boundary_type#_#_#_# != Dirichlet boundary_type#_#_#_# != Nodal_Neumann }"
+                                help    "Displacement (Dirichlet, length units), traction (Neumann, force per area), or concentrated nodal force (Nodal Force, force units) for X, Y, Z. Enter a plain number (0, -0.01) or any PolyFEM TinyExpr formula of x, y, z, t without quotes (quotes are also accepted): e.g. -0.01*t, 1000*smoothstep(t)*sin(pi*x), if(t-0.5, -0.02, -0.04*t). Functions: sin, cos, tan, exp, ln, log, log10, pow, sqrt, abs, ceil, floor, pi, e, min, max, smoothstep, half_smoothstep, deg2rad, rotate_2D_x, rotate_2D_y, if, compare, smooth_abs, sign. Use ^ for powers (not **)."
                                 parmtag { "script_callback" "hou.pwd().hm().sync_expr_vector(kwargs)" }
                                 parmtag { "script_callback_language" "python" }
                             }
@@ -2511,8 +2614,8 @@
                                 type    string
                                 invisible
                                 default { "[\"0*t\",\"0*t\",\"0*t\"]" }
-                                disablewhen "{ boundary_type#_#_#_# != Neumann boundary_type#_#_#_# != Dirichlet }"
-                                hidewhen "{ boundary_type#_#_#_# != Neumann boundary_type#_#_#_# != Dirichlet }"
+                                disablewhen "{ boundary_type#_#_#_# != Neumann boundary_type#_#_#_# != Dirichlet boundary_type#_#_#_# != Nodal_Neumann }"
+                                hidewhen "{ boundary_type#_#_#_# != Neumann boundary_type#_#_#_# != Dirichlet boundary_type#_#_#_# != Nodal_Neumann }"
                                 help    "Legacy JSON-list storage kept hidden for compatibility with older scenes."
                                 parmtag { "script_callback_language" "python" }
                             }
@@ -2532,7 +2635,7 @@
                                 type    toggle
                                 joinnext
                                 default { "1" }
-                                hidewhen "{ boundary_type#_#_#_# == Neumann } { boundary_type#_#_#_# == Normal_Aligned_Neumann } { boundary_type#_#_#_# == Pressure_Boundary } { boundary_type#_#_#_# == Pressure_Cavity }"
+                                hidewhen "{ boundary_type#_#_#_# == Neumann } { boundary_type#_#_#_# == Normal_Aligned_Neumann } { boundary_type#_#_#_# == Pressure_Boundary } { boundary_type#_#_#_# == Pressure_Cavity } { boundary_type#_#_#_# == Nodal_Neumann }"
                                 help    "Apply the Dirichlet condition to the x component. Turn off to leave x free (e.g. a roller support that only constrains z)."
                                 parmtag { "script_callback_language" "python" }
                             }
@@ -2542,7 +2645,7 @@
                                 type    toggle
                                 joinnext
                                 default { "1" }
-                                hidewhen "{ boundary_type#_#_#_# == Neumann } { boundary_type#_#_#_# == Normal_Aligned_Neumann } { boundary_type#_#_#_# == Pressure_Boundary } { boundary_type#_#_#_# == Pressure_Cavity }"
+                                hidewhen "{ boundary_type#_#_#_# == Neumann } { boundary_type#_#_#_# == Normal_Aligned_Neumann } { boundary_type#_#_#_# == Pressure_Boundary } { boundary_type#_#_#_# == Pressure_Cavity } { boundary_type#_#_#_# == Nodal_Neumann }"
                                 help    "Apply the Dirichlet condition to the y component. Turn off to leave y free."
                                 parmtag { "script_callback_language" "python" }
                             }
@@ -2551,7 +2654,7 @@
                                 label   "z"
                                 type    toggle
                                 default { "1" }
-                                hidewhen "{ boundary_type#_#_#_# == Neumann } { boundary_type#_#_#_# == Normal_Aligned_Neumann } { boundary_type#_#_#_# == Pressure_Boundary } { boundary_type#_#_#_# == Pressure_Cavity }"
+                                hidewhen "{ boundary_type#_#_#_# == Neumann } { boundary_type#_#_#_# == Normal_Aligned_Neumann } { boundary_type#_#_#_# == Pressure_Boundary } { boundary_type#_#_#_# == Pressure_Cavity } { boundary_type#_#_#_# == Nodal_Neumann }"
                                 help    "Apply the Dirichlet condition to the z component. Turn off to leave z free."
                                 parmtag { "script_callback_language" "python" }
                             }
@@ -2614,7 +2717,7 @@
                                 label   "Multiplier"
                                 type    float
                                 default { "1" }
-                                hidewhen "{ time_curve#_#_#_# != animated } { boundary_type#_#_#_# == Dirichlet } { boundary_type#_#_#_# == Neumann }"
+                                hidewhen "{ time_curve#_#_#_# != animated } { boundary_type#_#_#_# == Dirichlet } { boundary_type#_#_#_# == Neumann } { boundary_type#_#_#_# == Nodal_Neumann }"
                                 range   { -1 1 }
                                 help    "Keyframe this on the timeline: it multiplies Value at every time step (a load or pressure curve). Bezier, ease and linear keys, expressions and CHOP exports all work: the channel itself is evaluated at each step. A curve on Pressure Boundary or Pressure Cavity needs PolyFEM ddb4579a3 or later."
                                 parmtag { "script_callback_language" "python" }
@@ -3278,6 +3381,31 @@
                     default { "0" }
                     range   { 0 1e+12 }
                     help    "Absolute lower bound on every per-contact stiffness coefficient (in the units the log reports for the refresh batch), applied after the batch cap and floor. 0 = no user floor; the relative floor from Stiffness Spread Cap usually makes this unnecessary."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_clamped_contacts"
+                    label   "Clamped Contacts Handling"
+                    type    ordinal
+                    default { "0" }
+                    menu {
+                        "exclude_statistics"    "Exclude from Statistics (default)"
+                        "keep"                  "Keep (historical)"
+                        "exclude_collisions"    "Exclude Collisions"
+                    }
+                    help    "How fully-clamped (all-Dirichlet) contact pairs are handled by the semi-implicit controller. Exclude from Statistics (default): keep the barrier active but omit clamped pairs from controller gap statistics. Keep: include them in statistics (historical). Exclude Collisions: drop fully-clamped collision candidates altogether."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_gradient_balance_dofs"
+                    label   "Gradient Balance DOFs"
+                    type    ordinal
+                    default { "0" }
+                    menu {
+                        "all"   "All DOFs (default)"
+                        "free"  "Free DOFs Only"
+                    }
+                    help    "Which degrees of freedom are included when estimating semi-implicit contact stiffness by gradient balance. All DOFs (default): full system gradient. Free DOFs Only: zero out Dirichlet rows so clamped boundaries do not skew the stiffness estimate."
                     parmtag { "script_callback_language" "python" }
                 }
             }
@@ -4538,6 +4666,61 @@
                 help    "Newton iteration limit used during the boundary-condition (augmented Lagrangian) phase. Same as Max Iterations unless you change it."
                 parmtag { "script_callback_language" "python" }
             }
+            parm {
+                name    "al_budget_heading"
+                label   "AL Phase Budget (RB-07)"
+                type    label
+                default { "AL Phase Budget (RB-07)" }
+                parmtag { "sidefx::look" "heading" }
+            }
+            parm {
+                name    "al_max_passes"
+                label   "Max AL Passes"
+                type    integer
+                default { "0" }
+                range   { 0 100 }
+                help    "Maximum number of augmented Lagrangian passes before declaring the AL phase failed. 0 = unlimited (PolyFEM default)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_stagnation_window"
+                label   "Stagnation Window"
+                type    integer
+                default { "0" }
+                range   { 0 20 }
+                help    "Number of consecutive AL passes at the max-weight ceiling without sufficient error reduction before stopping the stage. 0 = disabled (PolyFEM default)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_progress_tol"
+                label   "Progress Tolerance"
+                type    float
+                default { "0.01" }
+                disablewhen "{ al_stagnation_window == 0 }"
+                range   { 0 1 }
+                help    "Minimum relative AL error reduction over the stagnation window to count as making progress (default 0.01 = 1%)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_snap_tol"
+                label   "Snap Tolerance"
+                type    float
+                default { "0.01" }
+                disablewhen "{ al_stagnation_window == 0 }"
+                range   { 0 1 }
+                help    "Maximum AL error considered close enough to snap-converge when stagnated at the weight ceiling (default 0.01)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_drift_tol"
+                label   "Drift Tolerance"
+                type    float
+                default { "0.01" }
+                disablewhen "{ al_stagnation_window == 0 }"
+                range   { 0 1 }
+                help    "Maximum relative displacement drift over the stagnation window used to detect plateaued AL passes (default 0.01)."
+                parmtag { "script_callback_language" "python" }
+            }
         }
 
         group {
@@ -4666,6 +4849,127 @@
                 default { "0" }
                 range   { 0 10 }
                 help    "Elements whose Jacobian determinant falls below this value are treated as inverted (0 = only truly flipped elements). Raise it to reject nearly degenerate elements earlier."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "labelparm_stall_restart"
+                label   "Stall Restart & Line-Search Recovery (D8)"
+                type    label
+                default { "Stall Restart & Line-Search Recovery (D8)" }
+                hidewhen "{ expert_mode == 0 }"
+                parmtag { "sidefx::look" "heading" }
+            }
+            parm {
+                name    "adv_stall_restart_enabled"
+                label   "Enable General Stall Restarts"
+                type    toggle
+                default { "1" }
+                hidewhen "{ expert_mode == 0 }"
+                help    "Enable generalized nonlinear stall detection and restart recovery (D8) for solves without semi-implicit contact (non-contact, adaptive, or fixed-barrier solves). On by default in PolyFEM."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adv_stall_alpha_threshold"
+                label   "Stall Step-Size Threshold"
+                type    log
+                default { "0.01" }
+                disablewhen "{ adv_stall_restart_enabled == 0 }"
+                hidewhen "{ expert_mode == 0 }"
+                range   { 1e-08 1 }
+                help    "Line-search step size below which a Newton iteration counts as stalled (default 0.01)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adv_stall_patience"
+                label   "Stall Patience"
+                type    integer
+                default { "5" }
+                disablewhen "{ adv_stall_restart_enabled == 0 }"
+                hidewhen "{ expert_mode == 0 }"
+                range   { 1 100 }
+                help    "Consecutive stalled iterations before triggering a restart (default 5)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adv_stall_min_iterations"
+                label   "Stall Min Iterations"
+                type    integer
+                default { "5" }
+                disablewhen "{ adv_stall_restart_enabled == 0 }"
+                hidewhen "{ expert_mode == 0 }"
+                range   { 0 100 }
+                help    "Minimum Newton iterations before stall detection can trigger a restart (default 5)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adv_stall_soft_limit"
+                label   "Stall Soft Iteration Limit"
+                type    integer
+                default { "-1" }
+                disablewhen "{ adv_stall_restart_enabled == 0 }"
+                hidewhen "{ expert_mode == 0 }"
+                range   { -1 1000 }
+                help    "Soft iteration cap after which a stalled subsolve restarts early (-1 = disabled, default)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adv_stall_max_restarts"
+                label   "Stall Max Restarts"
+                type    integer
+                default { "20" }
+                disablewhen "{ adv_stall_restart_enabled == 0 }"
+                hidewhen "{ expert_mode == 0 }"
+                range   { 0 200 }
+                help    "Maximum generalized stall restarts per solve (default 20)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adv_stall_alpha_basis"
+                label   "Stall Alpha Basis"
+                type    ordinal
+                default { "0" }
+                disablewhen "{ adv_stall_restart_enabled == 0 }"
+                hidewhen "{ expert_mode == 0 }"
+                menu {
+                    "feasible_bound"    "Feasible Bound (default)"
+                    "absolute"          "Absolute"
+                }
+                help    "How the line-search step size is measured against Stall Step-Size Threshold: relative to the feasible step bound (default) or absolute alpha."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adv_stall_feasible_ratio"
+                label   "Stall Feasible Ratio Threshold"
+                type    float
+                default { "0.999" }
+                disablewhen "{ adv_stall_restart_enabled == 0 } { adv_stall_alpha_basis != feasible_bound }"
+                hidewhen "{ expert_mode == 0 }"
+                range   { 0 1 }
+                help    "Ratio of alpha to the feasible bound below which a step is treated as stalled when Stall Alpha Basis is Feasible Bound (default 0.999)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adv_stall_remedy"
+                label   "Stall Remedy"
+                type    ordinal
+                default { "0" }
+                disablewhen "{ adv_stall_restart_enabled == 0 }"
+                hidewhen "{ expert_mode == 0 }"
+                menu {
+                    "force_psd_projection"  "Force PSD Projection (default)"
+                    "none"                  "None (restart only)"
+                }
+                help    "Action applied on a generalized stall restart: Force PSD Projection (default) enables positive-definite Hessian projection on the restarted solve; None restarts without forcing PSD projection."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "ls_failure_restarts"
+                label   "Line-Search Failure Restarts"
+                type    integer
+                default { "1" }
+                hidewhen "{ expert_mode == 0 }"
+                range   { 0 20 }
+                help    "Number of recovery restarts allowed when line search fails outright while stall restarts are inactive (default 1; 0 = disabled)."
                 parmtag { "script_callback_language" "python" }
             }
             parm {

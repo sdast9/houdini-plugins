@@ -2821,10 +2821,14 @@ def suggest_dhat(kwargs):
 
 
 _BC_TYPE_NAMES = ("Dirichlet", "Neumann", "Normal Aligned Neumann",
-                  "Pressure Boundary", "Pressure Cavity")
+                  "Pressure Boundary", "Pressure Cavity",
+                  "Nodal Force (Nodal Neumann)")
 _BC_LIST_KEYS = ("dirichlet_boundary", "neumann_boundary",
                  "normal_aligned_neumann_boundary", "pressure_boundary",
-                 "pressure_cavity")
+                 "pressure_cavity", "nodal_neumann_boundary")
+# Boundary types whose value is a 3-component vector [x, y, z]:
+# 0 = Dirichlet, 1 = Neumann, 5 = Nodal Force (Nodal Neumann).
+_VECTOR_BC_KINDS = (0, 1, 5)
 # Written next to params.json: the sidesets as entered (patterns, group
 # types, conditions) so Import can restore them exactly. PolyFEM never reads
 # it.
@@ -3137,8 +3141,8 @@ def _vector_interpolation(curves, dims=None):
 
 def _condition_curves(parent, suffix, kind, lazy_timeline, label):
     """The time function of every component of one condition (None =
-    constant 1): three for Dirichlet/Neumann, one for the scalar kinds."""
-    width = 3 if kind in (0, 1) else 1
+    constant 1): three for Dirichlet/Neumann/Nodal Neumann, one for the scalar kinds."""
+    width = 3 if kind in _VECTOR_BC_KINDS else 1
     parm = parent.parm(f"time_curve{suffix}")
     mode = parm.evalAsString() if parm is not None else "entered"
     if mode == "ramp":
@@ -3212,7 +3216,7 @@ def _curve_record(parent, suffix, kind):
             for name in ("ramp_custom", "ramp_start", "ramp_end")}
     elif mode == "animated":
         parms = list(parent.parmTuple(f"curve_multiplier{suffix}")) \
-            if kind in (0, 1) else [parent.parm(f"curve_scale{suffix}")]
+            if kind in _VECTOR_BC_KINDS else [parent.parm(f"curve_scale{suffix}")]
         record["multiplier"] = [_keyframes_record(p) for p in parms]
     return record
 
@@ -3235,7 +3239,7 @@ def _restore_curve_record(parent, suffix, kind, record):
                 ramp.set(value)
     elif mode == "animated":
         parms = list(parent.parmTuple(f"curve_multiplier{suffix}")) \
-            if kind in (0, 1) else [parent.parm(f"curve_scale{suffix}")]
+            if kind in _VECTOR_BC_KINDS else [parent.parm(f"curve_scale{suffix}")]
         for component, data in zip(parms, record.get("multiplier") or []):
             _restore_keyframes(component, data)
 
@@ -3391,7 +3395,7 @@ def _set_curve_from_functions(parent, suffix, kind, functions, line):
     parm = parent.parm(f"time_curve{suffix}")
     if parm is None:
         return
-    width = 3 if kind in (0, 1) else 1
+    width = 3 if kind in _VECTOR_BC_KINDS else 1
     functions = (list(functions) + [None] * width)[:width]
     if all(function is None for function in functions):
         parm.set(TIME_CURVE_TOKENS.index("entered"))
@@ -3444,7 +3448,7 @@ def _sideset_conditions(parent, geo, vol, sideset, lazy_timeline=None):
             raise hou.NodeError(f"Unknown boundary type {kind} on {suffix}")
         label = (f"geo {geo} subdomain {vol} sideset {sideset} "
                  f"condition {k} ({_BC_TYPE_NAMES[kind]})")
-        if kind in (0, 1):
+        if kind in _VECTOR_BC_KINDS:
             parsed_val = _read_expr_vector(
                 parent, f"bc_vec{suffix}", f"vector_{suffix}",
                 f"BC {geo}/{vol}/{sideset}/{k}")
@@ -3568,12 +3572,12 @@ def _added(conditions):
 
 
 def _merged_load(conditions, where):
-    """One entry for the loads of one kind acting on the same faces: their
-    values added, with their time curves. Loads whose curves differ are added
-    into one table per component (value 1 x table), which needs their values
-    to be numbers."""
+    """One entry for the loads of one kind acting on the same faces or nodes:
+    their values added, with their time curves. Loads whose curves differ are
+    added into one table per component (value 1 x table), which needs their
+    values to be numbers."""
     kind = conditions[0]["type"]
-    vector = kind == 1
+    vector = kind in _VECTOR_BC_KINDS
     width = 3 if vector else 1
     entry = {"value": _added(conditions)}
     first = conditions[0]["curves"]
@@ -3635,7 +3639,8 @@ def merge_conditions(conditions, where):
     [(list key, entry without id)].
     """
     by_kind = [[condition for condition in conditions
-                if condition["type"] == kind] for kind in range(5)]
+                if condition["type"] == kind]
+               for kind in range(len(_BC_TYPE_NAMES))]
     entries = []
     dirichlet = by_kind[0]
     if len(dirichlet) == 1:
@@ -3710,6 +3715,9 @@ def merge_conditions(conditions, where):
             f"{where}: a cavity has a single pressure.")
     if cavities:
         entries.append(("pressure_cavity", _merged_load(cavities, where)))
+    if by_kind[5]:
+        entries.append(("nodal_neumann_boundary",
+                        _merged_load(by_kind[5], where)))
     return entries
 
 
@@ -3807,13 +3815,15 @@ def resolve_sidesets(parent, geo, num_vols):
                     f"the viewport, or type * or an axis/box/sphere/plane "
                     f"selection.")
         if grouptype == 1:  # nodes
-            loads = [c for c in conditions if c["type"] != 0]
-            if loads:
+            face_loads = [c for c in conditions if c["type"] not in (0, 5)]
+            if face_loads:
                 raise hou.NodeError(
-                    f"{loads[0]['label']}: sideset {j} of geo {geo}/vol "
-                    f"{vol} selects points, and PolyFEM applies tractions "
-                    f"and pressures to faces only, so this load would do "
-                    f"nothing. Set its Group Type to Primitives.")
+                    f"{face_loads[0]['label']}: sideset {j} of geo {geo}/vol "
+                    f"{vol} selects points, and PolyFEM applies surface "
+                    f"tractions and pressures to faces only, so this load "
+                    f"would do nothing. Set its Group Type to Primitives, or "
+                    f"use Nodal Force (Nodal Neumann) for concentrated nodal "
+                    f"forces.")
             if vol not in volume_points:
                 touched = corners[vol_faces]
                 volume_points[vol] = np.unique(touched[touched >= 0])
@@ -3838,6 +3848,14 @@ def resolve_sidesets(parent, geo, num_vols):
                 raise hou.NodeError(
                     f"Sideset {j} of geo {geo}/vol {vol} selects nothing")
             return "nodes", members
+
+        nodal_loads = [c for c in conditions if c["type"] == 5]
+        if nodal_loads:
+            raise hou.NodeError(
+                f"{nodal_loads[0]['label']}: sideset {j} of geo {geo}/vol "
+                f"{vol} selects faces (Primitives), and Nodal Force (Nodal "
+                f"Neumann) applies to mesh nodes (Points) only. Set its Group "
+                f"Type to Points.")
 
         if text == "*":
             members = vol_faces
@@ -4083,7 +4101,7 @@ def export_sidesets(parent, geo, num_vols, input_dir, plans=None, cache=None):
 def _condition_summary(record):
     kind = record.get("type", 0)
     name = _BC_TYPE_NAMES[kind] if 0 <= kind < len(_BC_TYPE_NAMES) else "?"
-    text = record.get("vector") if kind in (0, 1) else record.get("value")
+    text = record.get("vector") if kind in _VECTOR_BC_KINDS else record.get("value")
     if kind == 0:
         axes = "".join(axis for axis, flag in zip(
             "xyz", record.get("dimension", [1, 1, 1])) if flag)
@@ -4150,7 +4168,12 @@ MATERIAL_TOKENS = (
     "NeoHookean", "IncompressibleOgden", "UnconstrainedOgden", "MooneyRivlin",
     "MooneyRivlin3Param", "MooneyRivlin3ParamSymbolic", "SaintVenant",
     "FixedCorotational", "IsochoricNeoHookean", "HGOFiber", "HGODispersion",
-    "ActiveFiber", "MaterialSum",
+    "ActiveFiber", "MaterialSum", "GrowthNeoHookean", "InversionBarrier",
+    "AMIPS",
+)
+# Matrix model menu tokens for MaterialSum (indices 0..12 preserved).
+MATRIX_MODEL_TOKENS = (
+    MATERIAL_TOKENS[:12] + ("None", "GrowthNeoHookean", "AMIPS")
 )
 FIBER_MODELS = ("HGOFiber", "HGODispersion", "ActiveFiber")
 # What the Material menus show for each PolyFEM type (the DialogScript menus
@@ -4172,6 +4195,9 @@ MATERIAL_LABELS = {
     "HGODispersion": "HGO Dispersion (GOH)",
     "ActiveFiber": "Active Fiber (muscle)",
     "MaterialSum": "Composite (Matrix + Fiber Families)",
+    "GrowthNeoHookean": "Growth Neo-Hookean (3D)",
+    "InversionBarrier": "Inversion Barrier",
+    "AMIPS": "AMIPS (Distortion Energy)",
 }
 
 # Volume-level parameter names that differ from their family-level base.
@@ -5901,6 +5927,53 @@ def _damping(parent, geo, vol, material):
     return material
 
 
+def _read_growth_tensor(parent, geo, vol):
+    """Read GrowthNeoHookean symmetric 3x3 natural-configuration entries."""
+    diag_tuple = parent.parmTuple(f"growth_diag{geo}_{vol}")
+    off_tuple = parent.parmTuple(f"growth_offdiag{geo}_{vol}")
+    diag_raw = list(diag_tuple.eval()) if diag_tuple is not None \
+        else ["1", "1", "1"]
+    off_raw = list(off_tuple.eval()) if off_tuple is not None \
+        else ["0", "0", "0"]
+    out = {}
+    for key, raw in zip(("g11", "g22", "g33"), diag_raw):
+        text = str(raw).strip()
+        out[key] = 1.0 if not text else _parse_expr_component(text, key)
+    for key, raw in zip(("g12", "g13", "g23"), off_raw):
+        text = str(raw).strip()
+        out[key] = 0.0 if not text else _parse_expr_component(text, key)
+    return out
+
+
+def _check_growth_tensor(entries, where):
+    """Validate GrowthNeoHookean G entries: TinyExpr syntax, plus Sylvester's
+    positive-definiteness criterion when all 6 entries are plain numbers."""
+    errors = []
+    for key in ("g11", "g22", "g33", "g12", "g13", "g23"):
+        val = entries[key]
+        err = _validate_tinyexpr(val, f"{where} {key}")
+        if err:
+            errors.append(err)
+    if errors:
+        return errors
+    if all(isinstance(entries[k], (int, float)) and not isinstance(entries[k], bool)
+           for k in ("g11", "g22", "g33", "g12", "g13", "g23")):
+        g11, g22, g33 = float(entries["g11"]), float(entries["g22"]), float(entries["g33"])
+        g12, g13, g23 = float(entries["g12"]), float(entries["g13"]), float(entries["g23"])
+        mat = np.array([[g11, g12, g13],
+                        [g12, g22, g23],
+                        [g13, g23, g33]], dtype=np.float64)
+        m1 = g11
+        m2 = g11 * g22 - g12 * g12
+        m3 = float(np.linalg.det(mat))
+        if not (np.all(np.isfinite(mat)) and m1 > 0.0 and m2 > 0.0 and m3 > 0.0):
+            errors.append(
+                f"{where}: natural-configuration tensor G must be symmetric "
+                f"positive definite (leading principal minors are "
+                f"{m1:g}, {m2:g}, {m3:g}; all three must be > 0).")
+    return errors
+
+
 def _isotropic_model(parent, geo, vol, token, allow_damping=True):
     """Body of an isotropic model: no id/rho, so it also serves as a
     MaterialSum child (children carry neither)."""
@@ -5918,6 +5991,33 @@ def _isotropic_model(parent, geo, vol, token, allow_damping=True):
         if allow_damping:
             _damping(parent, geo, vol, model)
         return model
+    if token == "GrowthNeoHookean":
+        E, nu = ep()
+        entries = _read_growth_tensor(parent, geo, vol)
+        errs = _check_growth_tensor(entries, _slot_label(geo, vol, None))
+        if errs:
+            raise hou.NodeError(errs[0])
+        model = {"type": token, "E": E, "nu": nu}
+        model.update(entries)
+        return model
+    if token == "InversionBarrier":
+        E, nu = ep()
+        thresh = parent.evalParm(f"inv_barrier_thresh{geo}_{vol}")
+        if not thresh > 0:
+            raise hou.NodeError(
+                f"{_slot_label(geo, vol, None)}: JBarrierThreshold must be "
+                f"greater than 0 (got {thresh:g}).")
+        return {"type": token, "E": E, "nu": nu,
+                "JBarrierThreshold": float(thresh)}
+    if token == "AMIPS":
+        weight = parent.evalParm(f"amips_weight{geo}_{vol}")
+        if not weight > 0:
+            raise hou.NodeError(
+                f"{_slot_label(geo, vol, None)}: AMIPS weight must be greater "
+                f"than 0 (got {weight:g}).")
+        return {"type": token, "weight": float(weight),
+                "use_rest_pose": bool(
+                    parent.evalParm(f"amips_use_rest_pose{geo}_{vol}"))}
     if token in ("HookeLinearElasticity", "SaintVenant"):
         model = {"type": token,
                  "elasticity_tensor": _read_elast_tensor(parent, geo, vol),
@@ -6033,6 +6133,18 @@ def composite_models(parent, geo, vol):
     if parent.evalParm(f"volume_penalty{geo}_{vol}"):
         models.append({"type": "VolumePenalty",
                        "k": parent.evalParm(f"vp_k{geo}_{vol}")})
+    if parent.parm(f"add_inv_barrier{geo}_{vol}") is not None \
+            and parent.evalParm(f"add_inv_barrier{geo}_{vol}"):
+        inv_E = parent.evalParm(f"comp_inv_E{geo}_{vol}")
+        inv_nu = parent.evalParm(f"comp_inv_nu{geo}_{vol}")
+        inv_thresh = parent.evalParm(f"comp_inv_thresh{geo}_{vol}")
+        if not inv_thresh > 0:
+            raise hou.NodeError(
+                f"{_slot_label(geo, vol, None)}: composite InversionBarrier "
+                f"JBarrierThreshold must be greater than 0 (got {inv_thresh:g}).")
+        models.append({"type": "InversionBarrier",
+                       "E": inv_E, "nu": inv_nu,
+                       "JBarrierThreshold": float(inv_thresh)})
     extra = parent.evalParm(f"extra_models_json{geo}_{vol}").strip()
     if extra:
         try:
@@ -6504,6 +6616,24 @@ def build_solver(parent, data):
     if parent.evalParm("al_max_iterations") != nonlinear["max_iterations"]:
         al["nonlinear"] = {
             "max_iterations": parent.evalParm("al_max_iterations")}
+    # AL phase budget (RB-07): emit only when non-default so untouched scenes
+    # keep identical params.json.
+    if parent.parm("al_max_passes") is not None:
+        al_max_passes = int(parent.evalParm("al_max_passes"))
+        al_stag_win = int(parent.evalParm("al_stagnation_window"))
+        al_prog_tol = float(parent.evalParm("al_progress_tol"))
+        al_snap_tol = float(parent.evalParm("al_snap_tol"))
+        al_drift_tol = float(parent.evalParm("al_drift_tol"))
+        if (al_max_passes > 0 or al_stag_win > 0
+                or not math.isclose(al_prog_tol, 0.01, rel_tol=1e-9, abs_tol=1e-12)
+                or not math.isclose(al_snap_tol, 0.01, rel_tol=1e-9, abs_tol=1e-12)
+                or not math.isclose(al_drift_tol, 0.01, rel_tol=1e-9, abs_tol=1e-12)):
+            al["budget"] = {
+                "max_passes": al_max_passes,
+                "stagnation_window": al_stag_win,
+                "progress_tolerance": al_prog_tol,
+                "snap_tolerance": al_snap_tol,
+                "drift_tolerance": al_drift_tol}
 
     # contact solver block -- current-branch schema
     broad_phase_dict = {0: "hash_grid", 1: "brute_force", 2: "spatial_hash",
@@ -6570,6 +6700,14 @@ def build_solver(parent, data):
         # band loops on contact-dense scenes.
         if contact["semi_implicit"]["band_statistic"] == "force_weighted":
             contact["semi_implicit"]["collapse_guard_basis"] = "pair"
+        if parent.parm("si_clamped_contacts") is not None:
+            clamped = _menu_token(parent, "si_clamped_contacts")
+            if clamped != "exclude_statistics":
+                contact["semi_implicit"]["clamped_contacts"] = clamped
+        if parent.parm("si_gradient_balance_dofs") is not None:
+            gb_dofs = _menu_token(parent, "si_gradient_balance_dofs")
+            if gb_dofs != "all":
+                contact["semi_implicit"]["gradient_balance_dofs"] = gb_dofs
     elif barrier_mode == 1:  # classic adaptive
         contact["barrier_stiffness"] = "adaptive"
         contact["initial_barrier_stiffness"] = \
@@ -6585,21 +6723,54 @@ def build_solver(parent, data):
             "stiffness_ratio": parent.evalParm(f"stiffness_ratio{i}"),
             "lagging_iterations": parent.evalParm(f"rayleigh_lagging{i}")})
 
+    advanced = {
+        "cache_size": parent.evalParm("cache_size"),
+        "lump_mass_matrix": bool(parent.evalParm("lump_mass_matrix")),
+        "lagged_regularization_weight":
+            parent.evalParm("lagged_regularization_weight"),
+        "lagged_regularization_iterations":
+            parent.evalParm("lagged_regularization_iterations"),
+        "check_inversion": _menu_token(parent, "inversion_method"),
+        "jacobian_threshold": parent.evalParm("jacobian_threshold")}
+    # Generalized stall restart (D8) and line-search failure recovery:
+    # emit only when non-default so untouched scenes keep identical JSON.
+    if parent.parm("adv_stall_restart_enabled") is not None:
+        sr_enabled = bool(parent.evalParm("adv_stall_restart_enabled"))
+        sr_alpha = float(parent.evalParm("adv_stall_alpha_threshold"))
+        sr_patience = int(parent.evalParm("adv_stall_patience"))
+        sr_min_iters = int(parent.evalParm("adv_stall_min_iterations"))
+        sr_soft_limit = int(parent.evalParm("adv_stall_soft_limit"))
+        sr_max_restarts = int(parent.evalParm("adv_stall_max_restarts"))
+        sr_basis = _menu_token(parent, "adv_stall_alpha_basis")
+        sr_ratio = float(parent.evalParm("adv_stall_feasible_ratio"))
+        sr_remedy = _menu_token(parent, "adv_stall_remedy")
+        if (not sr_enabled
+                or not math.isclose(sr_alpha, 0.01, rel_tol=1e-9, abs_tol=1e-12)
+                or sr_patience != 5 or sr_min_iters != 5
+                or sr_soft_limit != -1 or sr_max_restarts != 20
+                or sr_basis != "feasible_bound"
+                or not math.isclose(sr_ratio, 0.999, rel_tol=1e-9, abs_tol=1e-12)
+                or sr_remedy != "force_psd_projection"):
+            advanced["stall_restart"] = {
+                "enabled": sr_enabled,
+                "alpha_threshold": sr_alpha,
+                "patience": sr_patience,
+                "min_iterations": sr_min_iters,
+                "soft_iteration_limit": sr_soft_limit,
+                "max_restarts": sr_max_restarts,
+                "alpha_basis": sr_basis,
+                "feasible_ratio_threshold": sr_ratio,
+                "remedy": sr_remedy}
+    if parent.parm("ls_failure_restarts") is not None:
+        ls_restarts = int(parent.evalParm("ls_failure_restarts"))
+        if ls_restarts != 1:
+            advanced["line_search_failure_restarts"] = ls_restarts
+
     solver = {"max_threads": parent.evalParm("max_threads"),
               "nonlinear": nonlinear,
               "augmented_lagrangian": al,
               "contact": contact,
-              "advanced": {
-                  "cache_size": parent.evalParm("cache_size"),
-                  "lump_mass_matrix":
-                      bool(parent.evalParm("lump_mass_matrix")),
-                  "lagged_regularization_weight":
-                      parent.evalParm("lagged_regularization_weight"),
-                  "lagged_regularization_iterations":
-                      parent.evalParm("lagged_regularization_iterations"),
-                  "check_inversion": _menu_token(parent, "inversion_method"),
-                  "jacobian_threshold":
-                      parent.evalParm("jacobian_threshold")}}
+              "advanced": advanced}
     linear = build_linear_solver(parent)
     if linear is not None:
         solver["linear"] = linear
@@ -6699,7 +6870,7 @@ def force_field_names(parent):
         gravity = None
     no_gravity = isinstance(gravity, list) and all(
         isinstance(v, (int, float)) and v == 0 for v in gravity)
-    if kinds & {1, 2} or not no_gravity:
+    if kinds & {1, 2, 5} or not no_gravity:
         names.append("body_forces")
     if kinds & {3, 4}:
         names.append("pressure_forces")
@@ -7508,7 +7679,8 @@ def _prepare_inputs(parent, purpose):
 # =============================================================================
 
 _E_NU_MODELS = ("LinearElasticity", "NeoHookean", "FixedCorotational",
-                "IsochoricNeoHookean", "IncompressibleLinearElasticity")
+                "IsochoricNeoHookean", "IncompressibleLinearElasticity",
+                "GrowthNeoHookean", "InversionBarrier")
 _TENSOR_MODELS = ("HookeLinearElasticity", "SaintVenant")
 # Entry counts PolyFEM accepts for a 3D elasticity tensor
 # (assembler/MatParams.cpp: transversely isotropic, orthotropic, full).
@@ -7565,6 +7737,21 @@ def _material_findings(parent, geo, vol, quasistatic, errors):
                     f"{where} ({name}): Poisson's ratio must lie between -1 "
                     f"and 0.5, both excluded (it is {nu:g}); 0.5 itself "
                     "makes the bulk modulus infinite.")
+            if model == "GrowthNeoHookean":
+                entries = _read_growth_tensor(parent, geo, vol)
+                errors.extend(_check_growth_tensor(entries, f"{where} ({name})"))
+            elif model == "InversionBarrier":
+                thresh = parent.evalParm(f"inv_barrier_thresh{geo}_{vol}")
+                if not thresh > 0:
+                    errors.append(
+                        f"{where} ({name}): J Barrier Threshold must be "
+                        f"greater than 0 (it is {thresh:g}).")
+        elif model == "AMIPS":
+            weight = parent.evalParm(f"amips_weight{geo}_{vol}")
+            if not weight > 0:
+                errors.append(
+                    f"{where} ({name}): AMIPS Weight must be greater than 0 "
+                    f"(it is {weight:g}).")
         elif model in _TENSOR_MODELS:
             if _use_raw_elast_tensor(parent, geo, vol):
                 text = parent.evalParm(f"elast_tensor{geo}_{vol}")
@@ -7631,6 +7818,24 @@ def _material_findings(parent, geo, vol, quasistatic, errors):
                     errors.append(f"{where} ({name}): Ogden volumetric "
                                   "coefficients D must all be non-zero (the "
                                   "model divides by D).")
+    if token == "MaterialSum" \
+            and parent.parm(f"add_inv_barrier{geo}_{vol}") is not None \
+            and parent.evalParm(f"add_inv_barrier{geo}_{vol}"):
+        inv_E = parent.evalParm(f"comp_inv_E{geo}_{vol}")
+        inv_nu = parent.evalParm(f"comp_inv_nu{geo}_{vol}")
+        inv_thresh = parent.evalParm(f"comp_inv_thresh{geo}_{vol}")
+        if not inv_E > 0:
+            errors.append(
+                f"{where} (Inversion Barrier): Young's modulus E must be "
+                f"greater than 0 (it is {inv_E:g}).")
+        if not -1.0 < inv_nu < 0.5:
+            errors.append(
+                f"{where} (Inversion Barrier): Poisson's ratio must lie "
+                f"between -1 and 0.5, both excluded (it is {inv_nu:g}).")
+        if not inv_thresh > 0:
+            errors.append(
+                f"{where} (Inversion Barrier): J Barrier Threshold must be "
+                f"greater than 0 (it is {inv_thresh:g}).")
     if not quasistatic and not parent.evalParm(f"rho{geo}_{vol}") > 0:
         errors.append(f"{where}: the density must be greater than 0 in a "
                       "dynamic (non-quasistatic) run.")
@@ -8203,7 +8408,7 @@ def _timeline_findings(parent, obstacles, errors, notes, cache=None):
                     if mode != "animated":
                         continue
                     parms = list(parent.parmTuple(
-                        f"curve_multiplier{suffix}")) if kind in (0, 1) \
+                        f"curve_multiplier{suffix}")) if kind in _VECTOR_BC_KINDS \
                         else [parent.parm(f"curve_scale{suffix}")]
                     if not any(p.isTimeDependent() for p in parms):
                         notes.append(
@@ -8257,6 +8462,13 @@ _EXPERT_PARMS = (
       "wolfe_max_evaluations", "wolfe_max_objective_restarts",
       "wolfe_approximate_epsilon"), "Solver > Line Search > Wolfe",
      lambda p: _menu_token(p, "method") == "Wolfe"),
+    (("adv_stall_restart_enabled", "adv_stall_alpha_threshold",
+      "adv_stall_patience", "adv_stall_min_iterations",
+      "adv_stall_soft_limit", "adv_stall_max_restarts",
+      "adv_stall_alpha_basis", "adv_stall_feasible_ratio",
+      "adv_stall_remedy", "ls_failure_restarts"),
+     "Solver > Advanced > Stall Restart",
+     lambda p: True),
     (("apply_gradient_fd", "gradient_fd_eps"), "Solver > Advanced > Debugging",
      lambda p: True),
 )
@@ -9697,7 +9909,8 @@ def _restore_sidesets_from_ids(parent, geo, conditions, faces_by_id,
                 where = f"geo {geo} subdomain {vol} sideset {j} condition {k}"
                 try:
                     functions, note = _interpolation_functions(
-                        entry["interpolation"], 3 if kind in (0, 1) else 1,
+                        entry["interpolation"],
+                        3 if kind in _VECTOR_BC_KINDS else 1,
                         line)
                     if note:
                         notes.append(f"{where}: {note}")
@@ -9709,8 +9922,8 @@ def _restore_sidesets_from_ids(parent, geo, conditions, faces_by_id,
                                  f"restored ({exc})")
             _set_condition_parms(
                 parent, f"{geo}_{vol}_{j}_{k}", kind,
-                vector=value if kind in (0, 1) else None,
-                value=value if kind not in (0, 1) else None,
+                vector=value if kind in _VECTOR_BC_KINDS else None,
+                value=value if kind not in _VECTOR_BC_KINDS else None,
                 dimension=entry.get("dimension", [True, True, True])
                 if kind == 0 else None, functions=functions, line=line)
 
@@ -9873,12 +10086,8 @@ def _restore_legacy_scene(parent, data, geometry, input_dir, material_slots):
         return skipped
     if "rhs" in bc:
         _set_expr_vector(parent, "rhs_vec", "RHS", bc["rhs"])
-    type_names = (
-        "dirichlet_boundary", "neumann_boundary",
-        "normal_aligned_neumann_boundary", "pressure_boundary",
-        "pressure_cavity")
     next_bc = {}
-    for type_index, key in enumerate(type_names):
+    for type_index, key in enumerate(_BC_LIST_KEYS):
         for entry in bc.get(key, []):
             sid = int(entry.get("id", 0))
             direct = legacy_target(sid)
@@ -9901,7 +10110,7 @@ def _restore_legacy_scene(parent, data, geometry, input_dir, material_slots):
                     count.set(index)
                 suffix = f"{geo}_{vol}_{sideset}_{index}"
                 parms = {f"boundary_type{suffix}": type_index}
-                if type_index in (0, 1):
+                if type_index in _VECTOR_BC_KINDS:
                     if type_index == 0:
                         for axis, flag in zip(
                                 "xyz", entry.get(
@@ -9927,9 +10136,41 @@ def _import_isotropic(parent, geo, vol, model):
     parms = {}
     for key, base in (("E", "E"), ("nu", "nu"), ("c1", "c1"), ("c2", "c2"),
                       ("c3", "c3"), ("d1", "d1"), ("k", "bulk"),
-                      ("phi", "phi"), ("psi", "psi")):
+                      ("phi", "phi"), ("psi", "psi"),
+                      ("JBarrierThreshold", "inv_barrier_thresh"),
+                      ("weight", "amips_weight"),
+                      ("use_rest_pose", "amips_use_rest_pose")):
         if key in model and parent.parm(f"{base}{geo}_{vol}") is not None:
-            parms[f"{base}{geo}_{vol}"] = model[key]
+            parms[f"{base}{geo}_{vol}"] = (
+                int(bool(model[key])) if key == "use_rest_pose"
+                else model[key])
+    if model.get("type") == "GrowthNeoHookean" \
+            or any(k in model for k in ("g11", "g22", "g33")):
+        diag_tuple = parent.parmTuple(f"growth_diag{geo}_{vol}")
+        if diag_tuple is not None:
+            diag_tuple.set([
+                _format_expr_box(model.get("g11", 1)),
+                _format_expr_box(model.get("g22", 1)),
+                _format_expr_box(model.get("g33", 1))])
+    if model.get("type") == "GrowthNeoHookean" \
+            or any(k in model for k in ("g12", "g13", "g23")):
+        off_tuple = parent.parmTuple(f"growth_offdiag{geo}_{vol}")
+        if off_tuple is not None:
+            off_tuple.set([
+                _format_expr_box(model.get("g12", 0)),
+                _format_expr_box(model.get("g13", 0)),
+                _format_expr_box(model.get("g23", 0))])
+    if model.get("type") == "InversionBarrier" \
+            and "JBarrierThreshold" not in model \
+            and parent.parm(f"inv_barrier_thresh{geo}_{vol}") is not None:
+        parms[f"inv_barrier_thresh{geo}_{vol}"] = 0.5
+    if model.get("type") == "AMIPS":
+        if "weight" not in model \
+                and parent.parm(f"amips_weight{geo}_{vol}") is not None:
+            parms[f"amips_weight{geo}_{vol}"] = 1.0
+        if "use_rest_pose" not in model \
+                and parent.parm(f"amips_use_rest_pose{geo}_{vol}") is not None:
+            parms[f"amips_use_rest_pose{geo}_{vol}"] = 0
     if "phi" in model or "psi" in model:
         parms[f"damping{geo}_{vol}"] = 1
     for keys, base in (
@@ -10052,25 +10293,38 @@ def _import_composite(parent, geo, vol, models, params_dir, warnings=None):
     kept verbatim in the extra-models field so the round trip stays lossless.
     """
     matrix = "None"
-    families, extra, penalty = [], [], None
+    families, extra, penalty, inv_barrier = [], [], None, None
     for model in models:
         token = model.get("type")
         if token in FIBER_MODELS:
             families.append(model)
         elif token == "VolumePenalty" and penalty is None:
             penalty = model
-        elif token in MATERIAL_TOKENS and token != "MaterialSum" \
+        elif token == "InversionBarrier" and inv_barrier is None \
+                and parent.parm(f"add_inv_barrier{geo}_{vol}") is not None:
+            inv_barrier = model
+        elif token in MATRIX_MODEL_TOKENS and token != "None" \
                 and matrix == "None" and not families:
             matrix = token
             _import_isotropic(parent, geo, vol, model)
         else:
             extra.append(model)
 
-    parent.setParms({
+    comp_parms = {
         f"matrix_model{geo}_{vol}": matrix,
         f"num_fiber_families{geo}_{vol}": len(families),
         f"volume_penalty{geo}_{vol}": 1 if penalty else 0,
-        f"extra_models_json{geo}_{vol}": json.dumps(extra) if extra else ""})
+        f"extra_models_json{geo}_{vol}": json.dumps(extra) if extra else ""}
+    if parent.parm(f"add_inv_barrier{geo}_{vol}") is not None:
+        comp_parms[f"add_inv_barrier{geo}_{vol}"] = 1 if inv_barrier else 0
+        if inv_barrier:
+            if "E" in inv_barrier:
+                comp_parms[f"comp_inv_E{geo}_{vol}"] = inv_barrier["E"]
+            if "nu" in inv_barrier:
+                comp_parms[f"comp_inv_nu{geo}_{vol}"] = inv_barrier["nu"]
+            comp_parms[f"comp_inv_thresh{geo}_{vol}"] = \
+                inv_barrier.get("JBarrierThreshold", 0.5)
+    parent.setParms(comp_parms)
     if penalty and parent.parm(f"vp_k{geo}_{vol}") is not None:
         parent.setParms({f"vp_k{geo}_{vol}": penalty.get("k", 1e8)})
     for index, model in enumerate(families, start=1):
@@ -10572,6 +10826,18 @@ def _restore_solver(parent, data, legacy, warnings):
                 if semi.get("band_statistic") in band_statistics:
                     parms["si_band_statistic"] = \
                         band_statistics[semi["band_statistic"]]
+                clamped_modes = {
+                    "exclude_statistics": 0, "keep": 1,
+                    "exclude_collisions": 2}
+                if semi.get("clamped_contacts") in clamped_modes \
+                        and parent.parm("si_clamped_contacts") is not None:
+                    parms["si_clamped_contacts"] = \
+                        clamped_modes[semi["clamped_contacts"]]
+                gb_dofs_modes = {"all": 0, "free": 1}
+                if semi.get("gradient_balance_dofs") in gb_dofs_modes \
+                        and parent.parm("si_gradient_balance_dofs") is not None:
+                    parms["si_gradient_balance_dofs"] = \
+                        gb_dofs_modes[semi["gradient_balance_dofs"]]
                 if semi.get("collapse_guard_basis", "pair") != "pair":
                     warnings.append(
                         "collapse_guard_basis {!r} is not supported by the asset: "
@@ -10636,6 +10902,17 @@ def _restore_solver(parent, data, legacy, warnings):
             # earlier value must not survive the import.
             parms["al_max_iterations"] = parms.get(
                 "max_iterations", parent.evalParm("max_iterations"))
+        al_budget = al.get("budget", {})
+        if isinstance(al_budget, dict) \
+                and parent.parm("al_max_passes") is not None:
+            for key, parm in (
+                    ("max_passes", "al_max_passes"),
+                    ("stagnation_window", "al_stagnation_window"),
+                    ("progress_tolerance", "al_progress_tol"),
+                    ("snap_tolerance", "al_snap_tol"),
+                    ("drift_tolerance", "al_drift_tol")):
+                if key in al_budget:
+                    parms[parm] = al_budget[key]
 
     advanced = solver.get("advanced", {})
     if isinstance(advanced, dict):
@@ -10652,6 +10929,30 @@ def _restore_solver(parent, data, legacy, warnings):
         inversion = {"Discrete": 0, "Conservative": 1}
         if advanced.get("check_inversion") in inversion:
             parms["inversion_method"] = inversion[advanced["check_inversion"]]
+        stall_restart = advanced.get("stall_restart", {})
+        if isinstance(stall_restart, dict) \
+                and parent.parm("adv_stall_restart_enabled") is not None:
+            for key, parm in (
+                    ("enabled", "adv_stall_restart_enabled"),
+                    ("alpha_threshold", "adv_stall_alpha_threshold"),
+                    ("patience", "adv_stall_patience"),
+                    ("min_iterations", "adv_stall_min_iterations"),
+                    ("soft_iteration_limit", "adv_stall_soft_limit"),
+                    ("max_restarts", "adv_stall_max_restarts"),
+                    ("feasible_ratio_threshold", "adv_stall_feasible_ratio")):
+                if key in stall_restart:
+                    parms[parm] = stall_restart[key]
+            alpha_bases = {"feasible_bound": 0, "absolute": 1}
+            if stall_restart.get("alpha_basis") in alpha_bases:
+                parms["adv_stall_alpha_basis"] = \
+                    alpha_bases[stall_restart["alpha_basis"]]
+            remedies = {"force_psd_projection": 0, "none": 1}
+            if stall_restart.get("remedy") in remedies:
+                parms["adv_stall_remedy"] = remedies[stall_restart["remedy"]]
+        if "line_search_failure_restarts" in advanced \
+                and parent.parm("ls_failure_restarts") is not None:
+            parms["ls_failure_restarts"] = \
+                advanced["line_search_failure_restarts"]
 
     linear = solver.get("linear", {})
     bfgs = isinstance(nonlinear, dict) and nonlinear.get("solver") == "BFGS"
