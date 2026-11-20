@@ -28,7 +28,7 @@ _VTK_TO_NP = {
 VTK_CELLS = {
     3: ("line", 2), 5: ("tri", 3), 9: ("quad", 4),
     10: ("tet", 4), 24: ("tet", 4), 71: ("tet", 4),
-    12: ("hex", 8), 25: ("hex", 8), 72: ("hex", 8),
+    12: ("hex", 8), 25: ("hex", 8), 29: ("hex", 8), 72: ("hex", 8),
     21: ("line", 2), 68: ("line", 2), 22: ("tri", 3), 69: ("tri", 3),
     23: ("quad", 4), 70: ("quad", 4), 1: ("point", 1),
 }
@@ -68,6 +68,40 @@ TET35_SUBDIV = np.array([          # P4 (35 nodes) -> 64 sub-tets
     [25, 27, 5, 34], [27, 24, 5, 34], [28, 24, 27, 34], [27, 16, 28, 34],
     [27, 19, 28, 16], [27, 6, 28, 19], [27, 5, 24, 6], [27, 24, 28, 6],
     [6, 24, 28, 7], [7, 24, 28, 8], [7, 19, 28, 6], [6, 19, 1, 7]],
+    dtype=np.int64)
+
+# Higher-order Lagrange/TriQuadratic hexahedron subdivision tables: each row
+# indexes the element's node array to build one positive-orientation P1
+# sub-hex in VTK hex corner order [0..7] (matching BUILD_PRIMS_VEX's
+# [0,1,3,2,4,5,7,6] Houdini hex order). Verified against PolyFEM's Q2/Q3 VTU
+# exports (cell type 72 = VTK_LAGRANGE_HEXAHEDRON).
+HEX27_SUBDIV = np.array([          # Q2 Lagrange (27 nodes) -> 8 sub-hexes
+    [0, 8, 24, 11, 16, 22, 26, 20], [8, 1, 9, 24, 22, 17, 21, 26],
+    [11, 24, 10, 3, 20, 26, 23, 18], [24, 9, 2, 10, 26, 21, 19, 23],
+    [16, 22, 26, 20, 4, 12, 25, 15], [22, 17, 21, 26, 12, 5, 13, 25],
+    [20, 26, 23, 18, 15, 25, 14, 7], [26, 21, 19, 23, 25, 13, 6, 14]],
+    dtype=np.int64)
+
+# VTK_TRIQUADRATIC_HEXAHEDRON (type 29) uses the same 27 nodes as Q2 Lagrange
+# except vertical mid-edge nodes 18 and 19 are swapped.
+HEX27_TRIQUAD_SUBDIV = np.where(
+    HEX27_SUBDIV == 18, 19, np.where(HEX27_SUBDIV == 19, 18, HEX27_SUBDIV))
+
+HEX64_SUBDIV = np.array([          # Q3 Lagrange (64 nodes) -> 27 sub-hexes
+    [0, 8, 48, 15, 16, 40, 56, 35], [8, 9, 50, 48, 40, 42, 60, 56],
+    [9, 1, 10, 50, 42, 19, 36, 60], [15, 48, 49, 14, 35, 56, 58, 33],
+    [48, 50, 51, 49, 56, 60, 62, 58], [50, 10, 11, 51, 60, 36, 38, 62],
+    [14, 49, 13, 3, 33, 58, 44, 23], [49, 51, 12, 13, 58, 62, 46, 44],
+    [51, 11, 2, 12, 62, 38, 21, 46], [16, 40, 56, 35, 17, 41, 57, 34],
+    [40, 42, 60, 56, 41, 43, 61, 57], [42, 19, 36, 60, 43, 18, 37, 61],
+    [35, 56, 58, 33, 34, 57, 59, 32], [56, 60, 62, 58, 57, 61, 63, 59],
+    [60, 36, 38, 62, 61, 37, 39, 63], [33, 58, 44, 23, 32, 59, 45, 22],
+    [58, 62, 46, 44, 59, 63, 47, 45], [62, 38, 21, 46, 63, 39, 20, 47],
+    [17, 41, 57, 34, 4, 24, 52, 31], [41, 43, 61, 57, 24, 25, 54, 52],
+    [43, 18, 37, 61, 25, 5, 26, 54], [34, 57, 59, 32, 31, 52, 53, 30],
+    [57, 61, 63, 59, 52, 54, 55, 53], [61, 37, 39, 63, 54, 26, 27, 55],
+    [32, 59, 45, 22, 30, 53, 29, 7], [59, 63, 47, 45, 53, 55, 28, 29],
+    [63, 39, 20, 47, 55, 27, 6, 28]],
     dtype=np.int64)
 
 
@@ -445,12 +479,19 @@ def _mesh_from_arrays(points, connectivity, offsets, types, point_data,
             c_starts = starts[mask]
             conn = connectivity[
                 c_starts[:, None] + np.arange(n_nodes)[None, :]]
-            subdiv = (TET10_SUBDIV if family == "tet" and n_nodes == 10 else
-                      TET20_SUBDIV if family == "tet" and n_nodes == 20 else
-                      TET35_SUBDIV if family == "tet" and n_nodes == 35 else None)
+            if family == "tet":
+                subdiv = (TET10_SUBDIV if n_nodes == 10 else
+                          TET20_SUBDIV if n_nodes == 20 else
+                          TET35_SUBDIV if n_nodes == 35 else None)
+            elif family == "hex":
+                subdiv = (HEX27_TRIQUAD_SUBDIV if int(ctype) == 29 and n_nodes == 27 else
+                          HEX27_SUBDIV if n_nodes == 27 else
+                          HEX64_SUBDIV if n_nodes == 64 else None)
+            else:
+                subdiv = None
             if subdiv is not None:
-                # vectorized higher-order tet -> P1 sub-tets (P2/P3/P4)
-                conn = conn[:, subdiv].reshape(-1, 4)
+                # vectorized higher-order tet/hex -> P1 sub-elements
+                conn = conn[:, subdiv].reshape(-1, n_corners)
                 source_indices = np.repeat(source_indices, len(subdiv))
             elif family == "tet" and n_nodes > 4:
                 conn = conn[:, :4]  # other high orders: corner tet fallback

@@ -41,10 +41,13 @@ def build(out_dir):
 
     cleanup = asset.createNode("attribdelete", "cleanup_arrays")
     cleanup.setParms({
-        "dtldel": "tet_conn tet_entity tet_physical hex_conn hex_entity "
-                  "hex_physical tri_conn tri_entity tri_physical quad_conn "
-                  "quad_entity quad_physical line_conn line_entity "
-                  "line_physical mesh_dim",
+        "ptdel": "__msh_loose",
+        "dtldel": "tet_conn tet_entity tet_physical tet_order tet_group "
+                  "hex_conn hex_entity hex_physical hex_order hex_group "
+                  "tri_conn tri_entity tri_physical tri_order tri_group "
+                  "quad_conn quad_entity quad_physical quad_order quad_group "
+                  "line_conn line_entity line_physical line_order line_group "
+                  "mesh_dim",
     })
     cleanup.setNextInput(element_attrs)
 
@@ -75,14 +78,32 @@ def build(out_dir):
              "the same name.")
     surf_parm = hou.ToggleParmTemplate(
         "import_surfaces", "Import Physical Surfaces", default_value=False,
-        help="For a 3D mesh, also load any 2D physical groups (surface "
-             "patches you tagged in Gmsh, e.g. for boundary conditions) as "
-             "polygons carrying a 'surface_entity' attribute, so you can see "
-             "and select them in Houdini. 2D meshes always load their "
+        help="Also load lower-dimensional physical boundary groups tagged in "
+             "Gmsh (2D surfaces on 3D meshes, or 1D boundary edges on 2D "
+             "meshes) as primitives carrying a 'surface_entity' attribute "
+             "(-1 on primary elements). 2D meshes always load their "
              "triangles/quads as the main elements.")
+    groups_parm = hou.ToggleParmTemplate(
+        "create_groups", "Create Physical Groups", default_value=False,
+        help="Create named Houdini primitive groups for each Gmsh physical "
+             "group (phys_<name> for primary elements, surf_<name> for "
+             "imported boundary patches).")
+    summary_parm = hou.StringParmTemplate(
+        "mesh_summary", "Mesh Summary", 1,
+        default_expression=(
+            "hou.pwd().hdaModule().mesh_summary_text(hou.pwd())",),
+        default_expression_language=(hou.scriptLanguage.Python,),
+        tags={"editor": "1", "editorlines": "2-4"},
+        help="Read-only summary of the loaded Gmsh mesh: format version, "
+             "dimension, node and element counts, physical groups, loose "
+             "higher-order nodes, and basic inverted-tet quality check.")
+    summary_parm.setConditional(
+        hou.parmCondType.DisableWhen, "{ File != __msh_read_only_sentinel__ }")
     ptg.append(file_parm)
     ptg.append(reload_parm)
     ptg.append(surf_parm)
+    ptg.append(groups_parm)
+    ptg.append(summary_parm)
 
     # ---- PythonModule: embed the native parser ----------------------------
     parser_src = hda_build.read_source("common", "msh_parser.py")

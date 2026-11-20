@@ -1556,6 +1556,22 @@ def _parms():
         help="Update Houdini's playbar range when loading a PVD or pressing "
              "Refresh. Turn off when you have several Read PVD nodes or a "
              "PolyFEM animation timeline you do not want overwritten."))
+    main.addParmTemplate(hou.ToggleParmTemplate(
+        "follow_running", "Follow Running Simulation", default_value=False,
+        join_with_next=True,
+        script_callback="hou.phm().toggle_follow_running(kwargs)",
+        script_callback_language=hou.scriptLanguage.Python,
+        help="Periodically check the PVD file for new output steps while "
+             "PolyFEM is running, refresh the display, and jump to the "
+             "latest step. Turns itself off automatically when "
+             "run-manifest.json reports that the run has finished."))
+    follow_interval = hou.FloatParmTemplate(
+        "follow_interval", "Poll Interval (s)", 1, default_value=(3.0,),
+        min=0.5, max=60.0, min_is_strict=True,
+        help="Seconds between checks while Follow Running Simulation is on.")
+    follow_interval.setConditional(
+        hou.parmCondType.DisableWhen, "{ follow_running == 0 }")
+    main.addParmTemplate(follow_interval)
     main.addParmTemplate(hou.MenuParmTemplate(
         "time_mapping", "Time Mapping", TIME_MAPPING_TOKENS,
         menu_labels=("Automatic", "One Frame per Output Step",

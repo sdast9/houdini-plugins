@@ -27,6 +27,7 @@ import itertools
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 
 import numpy as np
@@ -3013,6 +3014,10 @@ def start(kwargs=None):
     # other Read PVD nodes warm) and cooked frames, then jump to first frame
     # when Set Playbar Range on Refresh is enabled.
     node = hou.pwd() if kwargs is None else kwargs["node"]
+    watcher = _FOLLOW_WATCHERS.get(node.sessionId())
+    if watcher is not None:
+        watcher["last_pvd_key"] = None
+        watcher["last_count"] = 0
     _invalidate_pvd_caches(node.evalParm("PVD_file"))
     refresh(kwargs, force_clear_cache=True)
     _autocenter_clip(node)
@@ -3025,6 +3030,133 @@ def start(kwargs=None):
     auto_range_default(node)
     update_color_status({"node": node})
     _frame_result(node)
+
+
+# =============================================================================
+# Follow Running Simulation (periodic auto-refresh while PolyFEM is writing)
+# =============================================================================
+
+_FOLLOW_WATCHERS = {}
+
+
+def _stop_following(node_or_id):
+    """Unregister any active Follow Running Simulation watcher for a node."""
+    sid = node_or_id if isinstance(node_or_id, int) else node_or_id.sessionId()
+    watcher = _FOLLOW_WATCHERS.pop(sid, None)
+    if watcher is None:
+        return
+    callback = watcher.get("callback")
+    if callback is not None and hou.isUIAvailable():
+        try:
+            hou.ui.removeEventLoopCallback(callback)
+        except Exception:
+            pass
+
+
+def poll_running_simulation(node, force=False, jump_frame=None):
+    """Check once whether a running simulation wrote new steps or finished.
+
+    Returns {"action": "noop" | "refreshed" | "finished" | "stopped", "steps": int}.
+    Rate-limited by follow_interval unless force=True.
+    """
+    try:
+        sid = node.sessionId()
+        enabled = bool(node.evalParm("follow_running"))
+        pvd_path = node.evalParm("PVD_file").strip()
+        interval = max(0.5, float(node.evalParm("follow_interval")))
+    except hou.ObjectWasDeleted:
+        _stop_following(node)
+        return {"action": "stopped", "steps": 0}
+    if not enabled or not pvd_path:
+        _stop_following(sid)
+        return {"action": "stopped", "steps": 0}
+
+    watcher = _FOLLOW_WATCHERS.setdefault(sid, {
+        "node": node, "last_poll": 0.0, "last_pvd_key": None,
+        "last_count": 0, "callback": None,
+    })
+    now = time.monotonic()
+    if not force and (now - watcher["last_poll"]) < interval:
+        return {"action": "noop", "steps": watcher["last_count"]}
+    watcher["last_poll"] = now
+
+    if not os.path.isfile(pvd_path):
+        return {"action": "noop", "steps": watcher["last_count"]}
+    try:
+        pvd_key = _file_key(pvd_path)
+    except OSError:
+        return {"action": "noop", "steps": watcher["last_count"]}
+
+    manifest = run_manifest(pvd_path)
+    finished = bool(isinstance(manifest, dict) and manifest.get("completion"))
+    action = "noop"
+    steps = watcher["last_count"]
+
+    if pvd_key != watcher["last_pvd_key"]:
+        try:
+            entries = read_pvd(pvd_path)
+        except Exception:
+            # Mid-write PVD file: skip this tick and retry next interval.
+            return {"action": "noop", "steps": steps}
+        if entries:
+            prev_count = watcher["last_count"]
+            watcher["last_pvd_key"] = pvd_key
+            watcher["last_count"] = len(entries)
+            steps = len(entries)
+            refresh({"node": node})
+            do_jump = hou.isUIAvailable() if jump_frame is None else bool(jump_frame)
+            if do_jump and (len(entries) != prev_count or force):
+                hou.setFrame(int(entry_frame(node, len(entries) - 1)))
+            action = "refreshed"
+
+    if finished:
+        if node.parm("follow_running") is not None:
+            node.parm("follow_running").set(0)
+        _stop_following(sid)
+        if hou.isUIAvailable():
+            hou.ui.setStatusMessage(
+                f"Run finished ({steps} steps) — stopped following.",
+                hou.severityType.Message)
+        return {"action": "finished", "steps": steps}
+    return {"action": action, "steps": steps}
+
+
+def toggle_follow_running(kwargs):
+    """Callback for Follow Running Simulation toggle."""
+    node = kwargs["node"]
+    sid = node.sessionId()
+    if not node.evalParm("follow_running"):
+        _stop_following(sid)
+        return
+    pvd_path = node.evalParm("PVD_file").strip()
+    if not pvd_path:
+        node.parm("follow_running").set(0)
+        _message("Select a PVD file before enabling Follow Running Simulation.")
+        return
+    _stop_following(sid)
+    try:
+        pvd_key = _file_key(pvd_path) if os.path.isfile(pvd_path) else None
+        count = len(read_pvd(pvd_path)) if pvd_key is not None else 0
+    except Exception:
+        pvd_key, count = None, 0
+
+    def _tick():
+        try:
+            poll_running_simulation(node, force=False)
+        except Exception:
+            _stop_following(sid)
+
+    watcher = {
+        "node": node,
+        "last_poll": time.monotonic(),
+        "last_pvd_key": pvd_key,
+        "last_count": count,
+        "callback": _tick if hou.isUIAvailable() else None,
+    }
+    _FOLLOW_WATCHERS[sid] = watcher
+    if hou.isUIAvailable():
+        hou.ui.addEventLoopCallback(_tick)
+    poll_running_simulation(node, force=True)
 
 
 def _frame_result(node):

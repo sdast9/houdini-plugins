@@ -1,14 +1,55 @@
-// Detail wrangle: build primary elements and optional 3D surface prims from
-// the connectivity arrays written by the Python SOP. Vertex orderings: tets
-// [1,2,3,0] (positive by Houdini's convention, measuredvolume > 0; until
-// 2026-11-15 [1,3,2,0], inside out), hexes [0,1,3,2,4,5,7,6]. The PolyFEM
-// node walks tet faces in the order 0,2,1,3 so its surface keeps the face
-// numbering of the old order (sideset picks store those numbers).
+// Detail wrangle: build primary elements and optional lower-dim boundary prims
+// from the connectivity arrays written by the Python SOP. Vertex orderings:
+// tets [1,2,3,0] (positive by Houdini's convention, measuredvolume > 0),
+// hexes [0,1,3,2,4,5,7,6].
 int mesh_dim = detail(0, "mesh_dim");
 
 int tet[] = detail(0, "tet_conn");
 int tet_ent[] = detail(0, "tet_entity");
 int tet_phys[] = detail(0, "tet_physical");
+int tet_ord[] = detail(0, "tet_order");
+string tet_grp[] = detail(0, "tet_group");
+int has_tet_ord = len(tet_ord) > 0;
+int has_tet_grp = len(tet_grp) > 0;
+
+int hex[] = detail(0, "hex_conn");
+int hex_ent[] = detail(0, "hex_entity");
+int hex_phys[] = detail(0, "hex_physical");
+int hex_ord[] = detail(0, "hex_order");
+string hex_grp[] = detail(0, "hex_group");
+int has_hex_ord = len(hex_ord) > 0;
+int has_hex_grp = len(hex_grp) > 0;
+
+int tri[] = detail(0, "tri_conn");
+int tri_ent[] = detail(0, "tri_entity");
+int tri_phys[] = detail(0, "tri_physical");
+int tri_ord[] = detail(0, "tri_order");
+string tri_grp[] = detail(0, "tri_group");
+int has_tri_ord = len(tri_ord) > 0;
+int has_tri_grp = len(tri_grp) > 0;
+
+int quad[] = detail(0, "quad_conn");
+int quad_ent[] = detail(0, "quad_entity");
+int quad_phys[] = detail(0, "quad_physical");
+int quad_ord[] = detail(0, "quad_order");
+string quad_grp[] = detail(0, "quad_group");
+int has_quad_ord = len(quad_ord) > 0;
+int has_quad_grp = len(quad_grp) > 0;
+
+int line[] = detail(0, "line_conn");
+int line_ent[] = detail(0, "line_entity");
+int line_phys[] = detail(0, "line_physical");
+int line_ord[] = detail(0, "line_order");
+string line_grp[] = detail(0, "line_group");
+int has_line_ord = len(line_ord) > 0;
+int has_line_grp = len(line_grp) > 0;
+
+int has_boundary = (mesh_dim == 3 && (len(tri) > 0 || len(quad) > 0))
+    || (mesh_dim == 2 && len(line) > 0);
+if (has_boundary)
+    addprimattrib(0, "surface_entity", -1);
+addprimattrib(0, "msh_element_order", -1);
+
 int n_tet = len(tet) / 4;
 for (int i = 0; i < n_tet; i++) {
     int prim = addprim(0, "tet",
@@ -16,11 +57,12 @@ for (int i = 0; i < n_tet; i++) {
     setprimattrib(0, "Entity", prim, tet_ent[i], "set");
     setprimattrib(0, "msh_physical_tag", prim, tet_phys[i], "set");
     setprimattrib(0, "is_volume", prim, 1, "set");
+    if (has_tet_ord)
+        setprimattrib(0, "msh_element_order", prim, tet_ord[i], "set");
+    if (has_tet_grp)
+        setprimgroup(0, tet_grp[i], prim, 1, "set");
 }
 
-int hex[] = detail(0, "hex_conn");
-int hex_ent[] = detail(0, "hex_entity");
-int hex_phys[] = detail(0, "hex_physical");
 int n_hex = len(hex) / 8;
 for (int i = 0; i < n_hex; i++) {
     int prim = addprim(0, "hex",
@@ -29,11 +71,12 @@ for (int i = 0; i < n_hex; i++) {
     setprimattrib(0, "Entity", prim, hex_ent[i], "set");
     setprimattrib(0, "msh_physical_tag", prim, hex_phys[i], "set");
     setprimattrib(0, "is_volume", prim, 1, "set");
+    if (has_hex_ord)
+        setprimattrib(0, "msh_element_order", prim, hex_ord[i], "set");
+    if (has_hex_grp)
+        setprimgroup(0, hex_grp[i], prim, 1, "set");
 }
 
-int tri[] = detail(0, "tri_conn");
-int tri_ent[] = detail(0, "tri_entity");
-int tri_phys[] = detail(0, "tri_physical");
 int n_tri = len(tri) / 3;
 for (int i = 0; i < n_tri; i++) {
     int prim = addprim(0, "poly", tri[i*3+0], tri[i*3+1], tri[i*3+2]);
@@ -41,15 +84,16 @@ for (int i = 0; i < n_tri; i++) {
         setprimattrib(0, "Entity", prim, tri_ent[i], "set");
         setprimattrib(0, "msh_physical_tag", prim, tri_phys[i], "set");
         setprimattrib(0, "is_volume", prim, 1, "set");
+        if (has_tri_ord)
+            setprimattrib(0, "msh_element_order", prim, tri_ord[i], "set");
     } else {
         setprimattrib(0, "surface_entity", prim, tri_ent[i], "set");
         setprimattrib(0, "is_volume", prim, 0, "set");
     }
+    if (has_tri_grp)
+        setprimgroup(0, tri_grp[i], prim, 1, "set");
 }
 
-int quad[] = detail(0, "quad_conn");
-int quad_ent[] = detail(0, "quad_entity");
-int quad_phys[] = detail(0, "quad_physical");
 int n_quad = len(quad) / 4;
 for (int i = 0; i < n_quad; i++) {
     int prim = addprim(0, "poly",
@@ -58,20 +102,39 @@ for (int i = 0; i < n_quad; i++) {
         setprimattrib(0, "Entity", prim, quad_ent[i], "set");
         setprimattrib(0, "msh_physical_tag", prim, quad_phys[i], "set");
         setprimattrib(0, "is_volume", prim, 1, "set");
+        if (has_quad_ord)
+            setprimattrib(0, "msh_element_order", prim, quad_ord[i], "set");
     } else {
         setprimattrib(0, "surface_entity", prim, quad_ent[i], "set");
         setprimattrib(0, "is_volume", prim, 0, "set");
     }
+    if (has_quad_grp)
+        setprimgroup(0, quad_grp[i], prim, 1, "set");
 }
 
-int line[] = detail(0, "line_conn");
-int line_ent[] = detail(0, "line_entity");
-int line_phys[] = detail(0, "line_physical");
 int n_line = len(line) / 2;
 for (int i = 0; i < n_line; i++) {
     int prim = addprim(0, "polyline", line[i*2+0], line[i*2+1]);
-    setprimattrib(0, "Entity", prim, line_ent[i], "set");
-    if (len(line_phys))
-        setprimattrib(0, "msh_physical_tag", prim, line_phys[i], "set");
-    setprimattrib(0, "is_volume", prim, 1, "set");
+    if (mesh_dim == 1) {
+        setprimattrib(0, "Entity", prim, line_ent[i], "set");
+        if (len(line_phys))
+            setprimattrib(0, "msh_physical_tag", prim, line_phys[i], "set");
+        setprimattrib(0, "is_volume", prim, 1, "set");
+        if (has_line_ord)
+            setprimattrib(0, "msh_element_order", prim, line_ord[i], "set");
+    } else {
+        setprimattrib(0, "surface_entity", prim, line_ent[i], "set");
+        setprimattrib(0, "is_volume", prim, 0, "set");
+    }
+    if (has_line_grp)
+        setprimgroup(0, line_grp[i], prim, 1, "set");
+}
+
+if (haspointattrib(0, "__msh_loose")) {
+    int n_pts = npoints(0);
+    for (int pt = 0; pt < n_pts; pt++) {
+        int is_loose = point(0, "__msh_loose", pt);
+        if (is_loose)
+            setpointgroup(0, "msh_loose_nodes", pt, 1, "set");
+    }
 }

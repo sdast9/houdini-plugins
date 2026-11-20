@@ -24,6 +24,7 @@
 #   with prim surface_entity (enables gmsh-authored sidesets downstream).
 
 import json
+import re
 
 import numpy as np
 
@@ -42,6 +43,36 @@ PRIMARY_FAMILIES = {
     2: ("tri", "quad"),
     3: ("tet", "hex"),
 }
+
+
+def _sanitize_group_name(prefix, tag, name):
+    """Build a valid Houdini group name from a physical group tag and name."""
+    raw = name.strip() if name else str(int(tag))
+    cleaned = re.sub(r"[^A-Za-z0-9_]+", "_", raw).strip("_")
+    if not cleaned:
+        cleaned = str(int(tag))
+    return f"{prefix}_{cleaned}"
+
+
+def mesh_summary_text(node):
+    """Read-only Mesh Summary string for the MSH Reader parameter pane."""
+    path = node.evalParm("File").strip()
+    if node.parm("import_surfaces") is not None:
+        node.evalParm("import_surfaces")
+    if not path:
+        return "Select a .msh file."
+    inner = node.node("read_msh")
+    if inner is None:
+        return "Not loaded yet."
+    try:
+        if inner.needsToCook():
+            inner.cook(force=False)
+        geo = inner.geometry()
+        if geo is not None and geo.findGlobalAttrib("msh_summary") is not None:
+            return str(geo.attribValue("msh_summary"))
+    except hou.Error:
+        pass
+    return "Mesh failed to load; check node errors."
 
 
 def cook(node):
@@ -102,18 +133,47 @@ def cook(node):
         geo.addArrayAttrib(hou.attribType.Global, name, hou.attribData.Int, tuple_size)
         geo.setGlobalAttribValue(name, np.ascontiguousarray(array, dtype=np.int64).ravel().tolist())
 
+    def put_strings(name, values):
+        geo.addArrayAttrib(hou.attribType.Global, name, hou.attribData.String, 1)
+        geo.setGlobalAttribValue(name, list(values))
+
+    create_groups = (asset.parm("create_groups") is not None
+                     and bool(asset.evalParm("create_groups")))
+    import_surfaces = bool(asset.evalParm("import_surfaces"))
+    all_names = mesh.get("physical_names", {})
+
+    used_points = np.zeros(n_points, dtype=bool)
     for family in primary:
-        put(f"{family}_conn", cells[family]["corners"], 1)
+        corners = cells[family]["corners"]
+        used_points[corners] = True
+        put(f"{family}_conn", corners, 1)
         put(f"{family}_entity", cells[family]["entity"] + shift, 1)
         put(f"{family}_physical", cells[family]["entity"], 1)
+        if "order" in cells[family]:
+            put(f"{family}_order", cells[family]["order"], 1)
+        if create_groups:
+            ent = cells[family]["entity"]
+            lut = {
+                int(t): _sanitize_group_name(
+                    "phys", t, all_names.get((mesh_dim, int(t)), ""))
+                for t in np.unique(ent)}
+            put_strings(f"{family}_group", [lut[int(t)] for t in ent.tolist()])
 
     names = {str(tag): name for (dim, tag), name in
-             mesh.get("physical_names", {}).items() if dim == mesh_dim}
+             all_names.items() if dim == mesh_dim}
     geo.addAttrib(hou.attribType.Global, "msh_physical_names", "",
                   create_local_variable=False)
     geo.setGlobalAttribValue("msh_physical_names", json.dumps(names))
 
-    if mesh_dim == 3 and asset.evalParm("import_surfaces"):
+    surf_dim = mesh_dim - 1
+    surf_names = {str(tag): name for (dim, tag), name in
+                  all_names.items() if dim == surf_dim and surf_dim >= 1}
+    geo.addAttrib(hou.attribType.Global, "msh_surface_physical_names", "",
+                  create_local_variable=False)
+    geo.setGlobalAttribValue("msh_surface_physical_names", json.dumps(surf_names))
+
+    imported_surface_counts = {}
+    if mesh_dim == 3 and import_surfaces:
         for family, conn_name, ent_name in (
                 ("tri", "tri_conn", "tri_entity"),
                 ("quad", "quad_conn", "quad_entity")):
@@ -121,8 +181,57 @@ def cook(node):
                 # only import surfaces that belong to a physical group
                 keep = cells[family]["entity"] != 0
                 if keep.any():
-                    put(conn_name, cells[family]["corners"][keep], 1)
-                    put(ent_name, cells[family]["entity"][keep], 1)
+                    s_corners = cells[family]["corners"][keep]
+                    s_ent = cells[family]["entity"][keep]
+                    used_points[s_corners] = True
+                    put(conn_name, s_corners, 1)
+                    put(ent_name, s_ent, 1)
+                    imported_surface_counts[family] = int(keep.sum())
+                    if create_groups:
+                        lut = {
+                            int(t): _sanitize_group_name(
+                                "surf", t, all_names.get((2, int(t)), ""))
+                            for t in np.unique(s_ent)}
+                        put_strings(f"{family}_group",
+                                    [lut[int(t)] for t in s_ent.tolist()])
+    elif mesh_dim == 2 and import_surfaces and "line" in cells:
+        keep = cells["line"]["entity"] != 0
+        if keep.any():
+            s_corners = cells["line"]["corners"][keep]
+            s_ent = cells["line"]["entity"][keep]
+            used_points[s_corners] = True
+            put("line_conn", s_corners, 1)
+            put("line_entity", s_ent, 1)
+            imported_surface_counts["line"] = int(keep.sum())
+            if create_groups:
+                lut = {
+                    int(t): _sanitize_group_name(
+                        "surf", t, all_names.get((1, int(t)), ""))
+                    for t in np.unique(s_ent)}
+                put_strings("line_group",
+                            [lut[int(t)] for t in s_ent.tolist()])
+
+    n_loose = int((~used_points).sum())
+    geo.addAttrib(hou.attribType.Global, "msh_loose_node_count", 0,
+                  create_local_variable=False)
+    geo.setGlobalAttribValue("msh_loose_node_count", n_loose)
+    if n_loose > 0:
+        geo.addAttrib(hou.attribType.Point, "__msh_loose", 0,
+                      create_local_variable=False)
+        geo.setPointIntAttribValuesFromString(
+            "__msh_loose",
+            np.ascontiguousarray((~used_points).astype(np.int32)).tobytes(),
+            int_type=hou.numericData.Int32)
+
+    n_inverted_tets = 0
+    if "tet" in primary:
+        tc = cells["tet"]["corners"]
+        v0 = points[tc[:, 0]]
+        vol6 = np.einsum(
+            "ij,ij->i",
+            np.cross(points[tc[:, 1]] - v0, points[tc[:, 2]] - v0),
+            points[tc[:, 3]] - v0)
+        n_inverted_tets = int((vol6 <= 0.0).sum())
 
     supported = set(primary)
     if mesh_dim == 3:
@@ -145,9 +254,8 @@ def cook(node):
     # one group, the first; MSH 2.2 also writes such an element once per
     # group, and those copies were left out above.
     shown_dims = {mesh_dim}
-    if mesh_dim == 3 and asset.evalParm("import_surfaces"):
-        shown_dims.add(2)
-    all_names = mesh.get("physical_names", {})
+    if mesh_dim in (2, 3) and import_surfaces:
+        shown_dims.add(mesh_dim - 1)
 
     def label(dim, tag):
         name = all_names.get((dim, tag))
@@ -166,6 +274,40 @@ def cook(node):
     geo.addAttrib(hou.attribType.Global, "msh_duplicate_elements", 0,
                   create_local_variable=False)
     geo.setGlobalAttribValue("msh_duplicate_elements", duplicates)
+
+    # Human-readable mesh summary for the Mesh Summary readout.
+    elem_parts = [f"{len(cells[f]['entity']):,} {f}" for f in primary]
+    prim_tags = sorted({int(t) for f in primary for t in np.unique(cells[f]["entity"])})
+    group_labels = [
+        f"{t}:{all_names[(mesh_dim, t)]}" if (mesh_dim, t) in all_names else str(t)
+        for t in prim_tags[:8]]
+    if len(prim_tags) > 8:
+        group_labels.append(f"+{len(prim_tags) - 8} more")
+    version_txt = mesh.get("version", "?")
+    summary_lines = [
+        f"MSH {version_txt} | {mesh_dim}D | {n_points:,} nodes | "
+        + ", ".join(elem_parts),
+        f"Physical groups ({len(prim_tags)}): " + ", ".join(group_labels),
+    ]
+    flags = []
+    if imported_surface_counts:
+        flags.append(
+            "imported boundaries: "
+            + ", ".join(f"{c:,} {f}" for f, c in imported_surface_counts.items()))
+    elif surf_names:
+        flags.append(f"{len(surf_names)} named boundary group(s) available")
+    if n_loose:
+        flags.append(f"{n_loose:,} loose/higher-order nodes (group: msh_loose_nodes)")
+    if n_inverted_tets:
+        flags.append(f"WARNING: {n_inverted_tets:,} inverted/zero-volume tets")
+    if duplicates:
+        flags.append(f"WARNING: {duplicates:,} duplicate MSH 2.2 elements")
+    if flags:
+        summary_lines.append(" | ".join(flags))
+    geo.addAttrib(hou.attribType.Global, "msh_summary", "",
+                  create_local_variable=False)
+    geo.setGlobalAttribValue("msh_summary", "\n".join(summary_lines))
+
     if duplicates:
         warnings.append(
             f"This MSH 2.2 file writes {duplicates} elements twice or more "

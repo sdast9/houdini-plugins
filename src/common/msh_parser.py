@@ -669,6 +669,7 @@ def _read_msh_data(data):
     lookup = _tag_index_map(node_tags)
     finalized = _finalize_cells(cells, lookup, notes)
     return {
+        "version": fmt[0].decode("ascii", "replace"),
         "points": points,
         "node_tags": node_tags,
         "cells": finalized,

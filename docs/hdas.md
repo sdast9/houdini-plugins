@@ -411,6 +411,18 @@ Targets the current build's strict-validated schema — the old fork keys
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
 
+### Read PVD & MSH Reader Batch (2026-11-20)
+
+Live run monitoring, higher-order hexahedral subdivision, and Gmsh mesh
+introspection for `Read PVD 1.0`, `MSH_Reader 3.0`, `vtu_parser.py`, and
+`msh_parser.py` (`tests/test_readpvd_msh_batch.py`):
+
+| Asset | Improvement |
+| --- | --- |
+| Read PVD (`F7`) | **Follow Running Simulation:** new *Main ▸ Follow Running Simulation* toggle (`follow_running`) and *Poll Interval (s)* (`follow_interval`) periodically watch the PVD file for new timesteps, refresh the reader, jump the playbar to the latest completed step, and automatically stop when `run-manifest.json` reports completion |
+| Read PVD / `vtu_parser` (`F11`) | **Q2/Q3 hexahedral subdivision:** vectorized positive-orientation subdivision tables (`HEX27_SUBDIV` → 8 sub-hexes, `HEX64_SUBDIV` → 27 sub-hexes for VTK type 72 `VTK_LAGRANGE_HEXAHEDRON`, plus `HEX27_TRIQUAD_SUBDIV` for VTK type 29 `VTK_TRIQUADRATIC_HEXAHEDRON`) render higher-order hex meshes curved instead of linear corner hexes |
+| MSH Reader / `msh_parser` (`F10`) | **File order, surface metadata, groups & summary:** stamps `msh_element_order` (0-based file element index across mixed families), preserves lower-dimensional `$PhysicalNames` in `msh_surface_physical_names`, defaults `surface_entity` to `-1` on primary elements, supports 1D physical boundary lines on 2D meshes when *Import Physical Surfaces* is on, adds optional *Create Physical Groups* (`phys_<name>` / `surf_<name>`), tags loose/higher-order nodes in point group `msh_loose_nodes`, and adds a read-only *Mesh Summary* (version, dimension, counts, physical groups, loose nodes, and inverted-tet check) |
+
 ### PolyFEM Workflow Batch B (2026-11-20)
 
 Direct Houdini SOP workflow, display-network upgrades, smart defaults, and
