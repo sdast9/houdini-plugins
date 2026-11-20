@@ -411,6 +411,19 @@ Targets the current build's strict-validated schema — the old fork keys
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
 
+### PolyFEM Workflow Batch A (2026-11-20)
+
+Workflow usability and mesh-integration upgrades for `PolyFEM 2.0`
+(`tests/test_polyfem_batch_a.py`):
+
+| Feature | Details |
+| --- | --- |
+| **Time tab `Define Run By` menu** | Replaces the 3-checkbox matrix (`end_time_bool`, `time_inc_bool`, `num_timesteps_bool`, now hidden for script/scene compatibility) with a single 3-way **Define Run By** dropdown (*End Time & Time Increment (dt)*, *End Time & # of Timesteps*, *Time Increment (dt) & # of Timesteps*). `OnLoaded` migrates legacy scenes and *Import* restores the dropdown automatically |
+| **Structured orthotropic elasticity** | `HookeLinearElasticity` and `SaintVenant` default to structured **Orthotropic (E1..E3, nu, G)** float tuples (`ortho_E`, `ortho_nu`, `ortho_G`) with positive-definite isotropic defaults (`E = 1e5`, `nu = 0.3`, `G = 38461.5`) instead of an unparseable placeholder string. `Check Setup` verifies compliance-matrix positive definiteness; **Raw Tensor List** mode remains available for 5-, 9-, or 21-number lists, and *Import* round-trips both modes |
+| **Unit-aware Gravity (`-Y`) helper** | **Set Gravity (-Y)** and **Clear Body Load** buttons next to *Body Load (rhs = minus acceleration)* fill `[0, +g, 0]` (automatically scaled to *Global ▸ Units*, e.g. `9.81 m/s²`, `9810 mm/s²`, `981 cm/s²`, `0.00981 mm/ms²`) using PolyFEM's `rhs = -acceleration` sign convention |
+| **Extra `params.json` overrides (`F6`)** | Collapsible **Global ▸ Extra JSON Overrides (Advanced)** multiline field deep-merges any JSON object into `params.json` at export time without overwriting sibling keys, with syntax/type validation in `Check Setup` |
+| **Gmsh Physical Surfaces → Sidesets (`F2`)** | **Create Sidesets from Gmsh Surfaces** button on each non-obstacle Geometry reads 2D physical surface groups (`tri`/`quad` + `$PhysicalNames`) from the `.msh` file, matches them to boundary faces on `null_<geo>` by Gmsh node-tag sets, groups by subdomain, and creates sidesets idempotently |
+
 ### Pipeline review Patch 3 — Performance & Memory (2026-11-20)
 
 Performance and memory optimizations across `Read PVD 1.0`, `PolyFEM 2.0`,

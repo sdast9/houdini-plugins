@@ -387,6 +387,393 @@ def migrate_legacy_expr_vectors(parent):
                             and lp is not None and not lp.isAtDefault():
                         _set_expr_vector(parent, f"bc_vec{suffix}",
                                          f"vector_{suffix}", lp.eval())
+            # Migrate legacy orthotropic raw elast_tensor to structured inputs
+            mode_parm = parent.parm(f"elast_mode{geo}_{vol}")
+            et_parm = parent.parm(f"elast_tensor{geo}_{vol}")
+            if mode_parm is not None and et_parm is not None \
+                    and mode_parm.isAtDefault() and not et_parm.isAtDefault() \
+                    and _ortho_parms_at_default(parent, geo, vol):
+                vals = _numbers(et_parm.eval())
+                if vals is not None and len(vals) == 9:
+                    _set_ortho_parms(parent, geo, vol, vals)
+                elif vals is not None:
+                    mode_parm.set(1)  # raw mode (5 or 21 numbers)
+    migrate_legacy_time_mode(parent)
+
+
+_TIME_MODE_FLAGS = {
+    "tend_dt": (True, True, False),
+    "tend_steps": (True, False, True),
+    "dt_steps": (False, True, True),
+}
+
+
+def sync_time_mode(kwargs):
+    """Callback for Define Run By menu: mirror selection into legacy bools."""
+    parent = kwargs["node"]
+    parm = parent.parm("define_run_by")
+    if parm is None:
+        return
+    token = parm.evalAsString()
+    flags = _TIME_MODE_FLAGS.get(token)
+    if flags is None:
+        return
+    parent.setParms({
+        "end_time_bool": int(flags[0]),
+        "time_inc_bool": int(flags[1]),
+        "num_timesteps_bool": int(flags[2]),
+    })
+
+
+def _time_flags(parent):
+    """Return (tend_on, dt_on, steps_on), honoring Define Run By and legacy
+    toggles alike."""
+    tend_on = bool(parent.evalParm("end_time_bool"))
+    dt_on = bool(parent.evalParm("time_inc_bool"))
+    steps_on = bool(parent.evalParm("num_timesteps_bool"))
+    mode_parm = parent.parm("define_run_by")
+    if mode_parm is not None:
+        token = mode_parm.evalAsString()
+        if token != "tend_dt" and (tend_on, dt_on, steps_on) == (True, True, False):
+            return _TIME_MODE_FLAGS.get(token, (tend_on, dt_on, steps_on))
+    return tend_on, dt_on, steps_on
+
+
+def migrate_legacy_time_mode(parent):
+    """Sync Define Run By from legacy Time toggles on reopened scenes."""
+    mode_parm = parent.parm("define_run_by")
+    if mode_parm is None or not mode_parm.isAtDefault():
+        return
+    flags = (bool(parent.evalParm("end_time_bool")),
+             bool(parent.evalParm("time_inc_bool")),
+             bool(parent.evalParm("num_timesteps_bool")))
+    if flags == (True, False, True):
+        mode_parm.set(1)
+    elif flags == (False, True, True):
+        mode_parm.set(2)
+
+
+_LENGTH_PER_METER = {
+    "m": 1.0, "cm": 100.0, "mm": 1000.0, "um": 1e6,
+    "in": 1.0 / 0.0254, "ft": 1.0 / 0.3048,
+}
+_SECONDS_PER_TIME = {
+    "s": 1.0, "ms": 1e-3, "us": 1e-6, "min": 60.0,
+}
+
+
+def set_gravity_y(kwargs):
+    """Set Body Load to standard gravity along -Y (rhs = -a = +g in +Y),
+    automatically scaled to Global > Units when Units is enabled."""
+    parent = kwargs["node"]
+    g = 9.81
+    unit_note = "m/s^2"
+    if parent.parm("units") is not None and parent.evalParm("units"):
+        length = parent.evalParm("length").strip().lower()
+        time_u = parent.evalParm("time").strip().lower()
+        l_scale = _LENGTH_PER_METER.get(length)
+        t_scale = _SECONDS_PER_TIME.get(time_u)
+        if l_scale is not None and t_scale is not None:
+            g = 9.81 * l_scale * (t_scale ** 2)
+            unit_note = f"{length}/{time_u}^2"
+        else:
+            unit_note = f"{length or '?'}/{time_u or '?'}^2 (unrecognized unit; used 9.81)"
+    g_clean = float(f"{g:.8g}")
+    _set_expr_vector(parent, "rhs_vec", "RHS", [0, g_clean, 0])
+    _status(
+        f"Body Load set to [0, {g_clean:g}, 0] ({unit_note}, gravity pulling "
+        "along -Y; PolyFEM uses rhs = -acceleration).")
+
+
+def clear_body_load(kwargs):
+    """Reset Body Load (rhs) to zero."""
+    parent = kwargs["node"]
+    _set_expr_vector(parent, "rhs_vec", "RHS", [0, 0, 0])
+    _status("Body Load cleared to [0, 0, 0].")
+
+
+def _ortho_parms_at_default(parent, geo, vol):
+    for base in ("ortho_E", "ortho_nu", "ortho_G"):
+        pt = parent.parmTuple(f"{base}{geo}_{vol}")
+        if pt is not None and not pt.isAtDefault():
+            return False
+    return True
+
+
+def _set_ortho_parms(parent, geo, vol, vals):
+    """Populate structured orthotropic tuples from 9 constants."""
+    if len(vals) != 9:
+        return
+    e_pt = parent.parmTuple(f"ortho_E{geo}_{vol}")
+    nu_pt = parent.parmTuple(f"ortho_nu{geo}_{vol}")
+    g_pt = parent.parmTuple(f"ortho_G{geo}_{vol}")
+    if e_pt is not None:
+        e_pt.set(tuple(float(v) for v in vals[0:3]))
+    if nu_pt is not None:
+        nu_pt.set(tuple(float(v) for v in vals[3:6]))
+    if g_pt is not None:
+        g_pt.set(tuple(float(v) for v in vals[6:9]))
+
+
+def _orthotropic_values(parent, geo, vol):
+    e = parent.parmTuple(f"ortho_E{geo}_{vol}").eval()
+    nu = parent.parmTuple(f"ortho_nu{geo}_{vol}").eval()
+    g = parent.parmTuple(f"ortho_G{geo}_{vol}").eval()
+    return [float(e[0]), float(e[1]), float(e[2]),
+            float(nu[0]), float(nu[1]), float(nu[2]),
+            float(g[0]), float(g[1]), float(g[2])]
+
+
+def sync_ortho_tensor(kwargs):
+    """Keep elast_tensor synced whenever structured orthotropic inputs edit."""
+    parent = kwargs["node"]
+    geo = kwargs.get("script_multiparm_index2")
+    vol = kwargs.get("script_multiparm_index")
+    if not (geo and vol):
+        return
+    mode_parm = parent.parm(f"elast_mode{geo}_{vol}")
+    if mode_parm is None or mode_parm.evalAsString() != "orthotropic":
+        return
+    et_parm = parent.parm(f"elast_tensor{geo}_{vol}")
+    if et_parm is not None and parent.parmTuple(f"ortho_E{geo}_{vol}") is not None:
+        vals = _orthotropic_values(parent, geo, vol)
+        et_parm.set(json.dumps(vals))
+
+
+def _check_orthotropic_pd(values):
+    """Return an error string if 9 orthotropic constants are not positive
+    definite, or None when physically valid."""
+    e1, e2, e3, nu12, nu13, nu23, g23, g31, g12 = [float(v) for v in values]
+    if not (e1 > 0 and e2 > 0 and e3 > 0):
+        return (f"Young's moduli E1, E2, E3 must all be > 0 "
+                f"(got {e1:g}, {e2:g}, {e3:g}).")
+    if not (g23 > 0 and g31 > 0 and g12 > 0):
+        return (f"Shear moduli G23, G31, G12 must all be > 0 "
+                f"(got {g23:g}, {g31:g}, {g12:g}).")
+    nu21 = nu12 * e2 / e1
+    nu31 = nu13 * e3 / e1
+    nu32 = nu23 * e3 / e2
+    if not (1.0 - nu12 * nu21 > 0 and 1.0 - nu13 * nu31 > 0
+            and 1.0 - nu23 * nu32 > 0):
+        return (
+            "Orthotropic Poisson's ratios violate positive definiteness "
+            "(1 - nu_ij * nu_ji <= 0); lower |nu12|, |nu13|, or |nu23|.")
+    delta = (1.0 - nu12 * nu21 - nu23 * nu32 - nu13 * nu31
+             - 2.0 * nu21 * nu32 * nu13)
+    if not delta > 0:
+        return (
+            f"Orthotropic compliance matrix is not positive definite "
+            f"(det factor = {delta:.4g} <= 0); adjust Poisson's ratios or "
+            "Young's moduli.")
+    return None
+
+
+def _use_raw_elast_tensor(parent, geo, vol):
+    """True when Hooke/SaintVenant should read elast_tensor string instead of
+    structured ortho_E/nu/G tuples."""
+    mode_parm = parent.parm(f"elast_mode{geo}_{vol}")
+    if mode_parm is None or parent.parmTuple(f"ortho_E{geo}_{vol}") is None:
+        return True
+    if mode_parm.evalAsString() == "raw":
+        return True
+    et_parm = parent.parm(f"elast_tensor{geo}_{vol}")
+    if et_parm is not None and not et_parm.isAtDefault() \
+            and _ortho_parms_at_default(parent, geo, vol):
+        return True
+    return False
+
+
+def _read_elast_tensor(parent, geo, vol):
+    """Return elasticity_tensor list from structured orthotropic inputs or raw
+    elast_tensor string."""
+    if _use_raw_elast_tensor(parent, geo, vol):
+        return parse_vector(
+            parent.evalParm(f"elast_tensor{geo}_{vol}"), "elasticity_tensor")
+    return _orthotropic_values(parent, geo, vol)
+
+
+def _deep_merge_json(dst, src):
+    """Recursively merge dict src into dict dst in place."""
+    for key, val in src.items():
+        if isinstance(val, dict) and isinstance(dst.get(key), dict):
+            _deep_merge_json(dst[key], val)
+        else:
+            dst[key] = val
+    return dst
+
+
+def _parse_extra_params_json(parent):
+    """Parse optional Global > Extra params.json override object (or None)."""
+    parm = parent.parm("extra_params_json")
+    if parm is None:
+        return None
+    text = parm.eval().strip()
+    if not text:
+        return None
+    try:
+        parsed = json.loads(text)
+    except ValueError as exc:
+        raise hou.NodeError(
+            f"Global > Extra params.json is not valid JSON: {exc}")
+    if not isinstance(parsed, dict):
+        raise hou.NodeError(
+            "Global > Extra params.json must be a JSON object ({...}).")
+    return parsed
+
+
+def _compact_index_ranges(indices):
+    """Compress sorted/unsorted integer indices into Houdini range syntax
+    (e.g. [0,1,2,5,7,8] -> '0-2 5 7-8')."""
+    ordered = sorted({int(i) for i in indices})
+    if not ordered:
+        return ""
+    parts = []
+    start = prev = ordered[0]
+    for idx in ordered[1:]:
+        if idx == prev + 1:
+            prev = idx
+        else:
+            parts.append(f"{start}" if start == prev else f"{start}-{prev}")
+            start = prev = idx
+    parts.append(f"{start}" if start == prev else f"{start}-{prev}")
+    return " ".join(parts)
+
+
+def create_gmsh_sidesets(kwargs):
+    """Create PolyFEM sidesets from 2D physical surface groups in a .msh file.
+
+    Matches each Gmsh 2D physical surface (tri/quad elements with entity != 0)
+    to this geometry's boundary faces in null_<geo> by sorted Gmsh node-tag
+    sets, groups them by (subdomain, physical tag), and appends any sideset
+    that is not already present.
+    """
+    parent = kwargs["node"]
+    geo = int(kwargs.get("script_multiparm_index", 1))
+    if parent.parm(f"is_obstacle{geo}") is not None \
+            and parent.evalParm(f"is_obstacle{geo}"):
+        _message("Obstacles take a displacement, not sidesets.")
+        return []
+    null_node = parent.node(f"null_{geo}")
+    if parent.node(f"geo_{geo}") is None or null_node is None:
+        _message(f"Geometry {geo}: load a mesh file first.")
+        return []
+    path = parent.evalParm(f"file_location{geo}").strip()
+    if not path or not os.path.isfile(path):
+        _message(f"Geometry {geo}: mesh file not found: {path}")
+        return []
+    if os.path.splitext(path)[1].lower() != ".msh":
+        _message(f"Geometry {geo}: Gmsh physical surfaces require a .msh file.")
+        return []
+    reader = hou.nodeType(hou.sopNodeTypeCategory(), "MSH_Reader::3.0")
+    if reader is None:
+        _message("MSH_Reader::3.0 is not installed.")
+        return []
+    try:
+        mesh = reader.hdaModule().read_msh(path)
+    except Exception as exc:
+        _message(f"Geometry {geo}: could not read {path}: {exc}")
+        return []
+    cells = mesh.get("cells", {})
+    node_tags = np.asarray(mesh["node_tags"], dtype=np.int64)
+    phys_names = mesh.get("physical_names", {})
+
+    # Build lookup: sorted 0-based gmsh node-tag tuple -> (surface prim, Entity)
+    surf_geo = null_node.geometry()
+    surf_entity, face_keys = _surface_arrays(surf_geo)
+    face_lookup = {}
+    for prim_idx in range(len(face_keys)):
+        row = face_keys[prim_idx]
+        key = tuple(sorted(int(k) for k in row if k >= 0))
+        if key:
+            face_lookup[key] = (prim_idx, int(surf_entity[prim_idx]))
+
+    grouped = {}
+    unmatched = 0
+    for family in ("tri", "quad"):
+        if family not in cells:
+            continue
+        corners = cells[family]["corners"]
+        entities = cells[family]["entity"]
+        for row_idx in range(len(entities)):
+            tag = int(entities[row_idx])
+            if tag == 0:
+                continue
+            key = tuple(sorted(int(node_tags[c]) - 1 for c in corners[row_idx]))
+            hit = face_lookup.get(key)
+            if hit is None:
+                unmatched += 1
+                continue
+            prim_idx, vol = hit
+            grouped.setdefault((vol, tag), []).append(prim_idx)
+
+    if not grouped:
+        _message(
+            f"Geometry {geo}: no 2D physical surface groups matched boundary "
+            f"faces in {os.path.basename(path)}."
+            + (f" ({unmatched} interior/unmatched surface elements skipped.)"
+               if unmatched else ""))
+        return []
+
+    parent.allowEditingOfContents()
+    created = []
+    skipped = 0
+    for (vol, tag), prims in sorted(grouped.items()):
+        ss_parm = parent.parm(f"sideset_selection{geo}_{vol}")
+        if ss_parm is None:
+            continue
+        target_set = set(prims)
+        pattern = _compact_index_ranges(prims)
+        existing_count = int(ss_parm.eval())
+        already = False
+        for s_idx in range(1, existing_count + 1):
+            gt = parent.parm(f"grouptype{geo}_{vol}_{s_idx}")
+            bg = parent.parm(f"basegroup{geo}_{vol}_{s_idx}")
+            if gt is not None and gt.eval() == 0 and bg is not None:
+                raw_pat = bg.eval().strip()
+                if raw_pat == pattern:
+                    already = True
+                    break
+                if raw_pat:
+                    try:
+                        parsed = set(expand_group_str(raw_pat))
+                        if parsed == target_set:
+                            already = True
+                            break
+                    except Exception:
+                        pass
+        if already:
+            skipped += 1
+            continue
+        new_idx = existing_count + 1
+        ss_parm.set(new_idx)
+        _rebuild_group_chain(parent, str(geo), str(vol), default_condition=True)
+        parent.setParms({
+            f"grouptype{geo}_{vol}_{new_idx}": 0,
+            f"basegroup{geo}_{vol}_{new_idx}": pattern,
+        })
+        name = phys_names.get((2, tag), "")
+        created.append({
+            "geometry": geo, "subdomain": vol, "sideset": new_idx,
+            "tag": tag, "name": name, "faces": len(target_set),
+            "pattern": pattern,
+        })
+
+    if created:
+        parts = []
+        for item in created:
+            label = f"'{item['name']}' (tag {item['tag']})" if item["name"] \
+                else f"tag {item['tag']}"
+            parts.append(
+                f"Subdomain {item['subdomain']} Sideset {item['sideset']} = "
+                f"{label} ({item['faces']} faces)")
+        note = (f"; {skipped} already present" if skipped else "")
+        _status(f"Geometry {geo}: created {len(created)} sideset(s) from Gmsh "
+                f"surfaces — " + "; ".join(parts) + note)
+    elif skipped:
+        _status(
+            f"Geometry {geo}: all {skipped} Gmsh physical surface sideset(s) "
+            "already exist.")
+    return created
 
 
 def colors():
@@ -2313,9 +2700,7 @@ def simulation_steps(parent):
     tend = float(parent.evalParm("tend"))
     dt = float(parent.evalParm("dt"))
     steps = int(parent.evalParm("num_timesteps"))
-    tend_on = bool(parent.evalParm("end_time_bool"))
-    dt_on = bool(parent.evalParm("time_inc_bool"))
-    steps_on = bool(parent.evalParm("num_timesteps_bool"))
+    tend_on, dt_on, steps_on = _time_flags(parent)
     if int(tend_on) + int(dt_on) + int(steps_on) < 2:
         raise hou.NodeError(
             "The Time tab does not define a run: turn on two of End Time, "
@@ -5270,9 +5655,7 @@ def _isotropic_model(parent, geo, vol, token, allow_damping=True):
         return model
     if token in ("HookeLinearElasticity", "SaintVenant"):
         model = {"type": token,
-                 "elasticity_tensor": parse_vector(
-                     parent.evalParm(f"elast_tensor{geo}_{vol}"),
-                     "elasticity_tensor"),
+                 "elasticity_tensor": _read_elast_tensor(parent, geo, vol),
                  "fiber_direction": parse_vector(
                      parent.evalParm(f"material_coord{geo}_{vol}"),
                      "fiber_direction")}
@@ -5439,9 +5822,7 @@ def build_time(parent, data):
         integrator = integrator_dict[integrator]
 
     time = {"t0": t0, "integrator": integrator, "quasistatic": quasistatic}
-    tend_on = bool(parent.evalParm("end_time_bool"))
-    dt_on = bool(parent.evalParm("time_inc_bool"))
-    steps_on = bool(parent.evalParm("num_timesteps_bool"))
+    tend_on, dt_on, steps_on = _time_flags(parent)
     if int(tend_on) + int(dt_on) + int(steps_on) < 2:
         raise hou.NodeError(
             "The Time tab does not define a run: turn on two of End Time, "
@@ -6244,6 +6625,9 @@ def build_params(parent, cache=None):
     build_solver(parent, data)
     build_output(parent, data)
     build_provenance(parent, data)
+    extra_params = _parse_extra_params_json(parent)
+    if extra_params:
+        _deep_merge_json(data, extra_params)
 
     params_path = os.path.join(input_dir, "params.json")
     with open(params_path, "w") as f:
@@ -6917,15 +7301,25 @@ def _material_findings(parent, geo, vol, quasistatic, errors):
                     f"and 0.5, both excluded (it is {nu:g}); 0.5 itself "
                     "makes the bulk modulus infinite.")
         elif model in _TENSOR_MODELS:
-            text = parent.evalParm(f"elast_tensor{geo}_{vol}")
-            entries = _numbers(text)
-            if entries is None or len(entries) not in _TENSOR_SIZES:
-                errors.append(
-                    f"{where} ({name}): Elasticity Tensor must be a list of 9 "
-                    "numbers [E1, E2, E3, nu12, nu13, nu23, G23, G31, G12] "
-                    "(orthotropic), or 5 (transversely isotropic) or 21 "
-                    f"(full); it is {text!r}. Replace the placeholder names "
-                    "with values.")
+            if _use_raw_elast_tensor(parent, geo, vol):
+                text = parent.evalParm(f"elast_tensor{geo}_{vol}")
+                entries = _numbers(text)
+                if entries is None or len(entries) not in _TENSOR_SIZES:
+                    errors.append(
+                        f"{where} ({name}): Elasticity Tensor must be a list of 9 "
+                        "numbers [E1, E2, E3, nu12, nu13, nu23, G23, G31, G12] "
+                        "(orthotropic), or 5 (transversely isotropic) or 21 "
+                        f"(full); it is {text!r}. Replace the placeholder names "
+                        "with values.")
+                elif len(entries) == 9:
+                    pd_err = _check_orthotropic_pd(entries)
+                    if pd_err:
+                        errors.append(f"{where} ({name}): {pd_err}")
+            else:
+                pd_err = _check_orthotropic_pd(
+                    _orthotropic_values(parent, geo, vol))
+                if pd_err:
+                    errors.append(f"{where} ({name}): {pd_err}")
             axes = _numbers(parent.evalParm(f"material_coord{geo}_{vol}"))
             if axes is None or len(axes) != 9:
                 errors.append(
@@ -7424,17 +7818,21 @@ def check_setup(parent, purpose="check", cache=None):
         errors.append(_error_text(exc))
 
     t0, tend = parent.evalParm("t0"), parent.evalParm("tend")
+    tend_on, dt_on, steps_on = _time_flags(parent)
     if t0 < 0:
         errors.append(f"Start Time ({t0:g}) cannot be negative (Time tab).")
-    if parent.evalParm("end_time_bool") and not tend > t0:
+    if tend_on and not tend > t0:
         errors.append(f"End Time ({tend:g}) must be after Start Time "
                       f"({t0:g}) (Time tab).")
-    if parent.evalParm("time_inc_bool") and not parent.evalParm("dt") > 0:
+    if dt_on and not parent.evalParm("dt") > 0:
         errors.append("The time step dt must be greater than 0 (Time tab).")
-    if parent.evalParm("num_timesteps_bool") \
-            and not parent.evalParm("num_timesteps") >= 1:
+    if steps_on and not parent.evalParm("num_timesteps") >= 1:
         errors.append("The number of time steps must be at least 1 "
                       "(Time tab).")
+    try:
+        _parse_extra_params_json(parent)
+    except hou.Error as exc:
+        errors.append(_error_text(exc))
 
     _timeline_findings(parent, obstacles, errors, notes, cache=cache)
 
@@ -9277,6 +9675,15 @@ def _import_isotropic(parent, geo, vol, model):
         key = next((candidate for candidate in keys if candidate in model), None)
         if key is not None and parent.parm(f"{base}{geo}_{vol}") is not None:
             parms[f"{base}{geo}_{vol}"] = json.dumps(model[key])
+            if base == "elast_tensor" \
+                    and parent.parm(f"elast_mode{geo}_{vol}") is not None:
+                vals = model[key]
+                if isinstance(vals, list) and len(vals) == 9 \
+                        and all(isinstance(v, (int, float)) for v in vals):
+                    parms[f"elast_mode{geo}_{vol}"] = 0
+                    _set_ortho_parms(parent, geo, vol, vals)
+                else:
+                    parms[f"elast_mode{geo}_{vol}"] = 1
     if "fiber_direction" in model and isinstance(model["fiber_direction"], list) \
             and parent.parm(f"material_coord{geo}_{vol}") is not None:
         parms[f"material_coord{geo}_{vol}"] = json.dumps(model["fiber_direction"])
@@ -9585,6 +9992,13 @@ def _restore_time(parent, data):
     parms["end_time_bool"] = int("tend" in time)
     parms["time_inc_bool"] = int("dt" in time)
     parms["num_timesteps_bool"] = int("time_steps" in time)
+    if parent.parm("define_run_by") is not None:
+        if "tend" in time and "dt" in time:
+            parms["define_run_by"] = 0
+        elif "tend" in time and "time_steps" in time:
+            parms["define_run_by"] = 1
+        elif "dt" in time and "time_steps" in time:
+            parms["define_run_by"] = 2
     for key, parm in (
             ("tend", "tend"), ("dt", "dt"),
             ("time_steps", "num_timesteps")):

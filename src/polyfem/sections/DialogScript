@@ -1318,6 +1318,17 @@
                 parmtag { "sidefx::look" "blank" }
             }
             parm {
+                name    "create_gmsh_sidesets#"
+                label   "Create Sidesets from Gmsh Surfaces"
+                type    button
+                default { "0" }
+                disablewhen "{ is_obstacle# != 0 }"
+                hidewhen "{ is_obstacle# != 0 }"
+                help    "Automatically create boundary sidesets from the 2D physical surface groups in this geometry's .msh file, matching each surface group to this mesh's boundary faces and subdomains."
+                parmtag { "script_callback" "hou.pwd().hm().create_gmsh_sidesets(kwargs)" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
                 name    "geo_sep2_#"
                 label   "Spacer"
                 type    separator
@@ -1613,13 +1624,67 @@
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
+                        name    "elast_mode#_#"
+                        label   "Elasticity Input Mode"
+                        type    ordinal
+                        default { "0" }
+                        disablewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@"
+                        hidewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@"
+                        menu {
+                            "orthotropic" "Orthotropic (E1..E3, nu, G)"
+                            "raw"         "Raw Tensor List (5, 9, or 21 numbers)"
+                        }
+                        help    "Choose how to enter Hooke / Saint Venant stiffness constants: Orthotropic provides structured engineering constants (E1..E3, nu12/13/23, G23/31/12); Raw Tensor List accepts a 5-, 9-, or 21-number JSON list for transversely isotropic or general anisotropic materials."
+                        parmtag { "script_callback" "hou.pwd().hm().sync_ortho_tensor(kwargs)" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "ortho_E#_#"
+                        label   "Young's Moduli (E1, E2, E3)"
+                        type    float
+                        size    3
+                        default { "100000" "100000" "100000" }
+                        disablewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@ { elast_mode#_# != orthotropic }"
+                        hidewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@ { elast_mode#_# != orthotropic }"
+                        range   { 1e-12! 1e+12 }
+                        help    "Orthotropic Young's moduli E1, E2, E3 along the three material axes (stress units, all > 0)."
+                        parmtag { "script_callback" "hou.pwd().hm().sync_ortho_tensor(kwargs)" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "ortho_nu#_#"
+                        label   "Poisson's Ratios (nu12, nu13, nu23)"
+                        type    float
+                        size    3
+                        default { "0.3" "0.3" "0.3" }
+                        disablewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@ { elast_mode#_# != orthotropic }"
+                        hidewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@ { elast_mode#_# != orthotropic }"
+                        range   { -0.99 0.499 }
+                        help    "Orthotropic Poisson's ratios nu12, nu13, nu23 (dimensionless; must keep the compliance matrix positive definite)."
+                        parmtag { "script_callback" "hou.pwd().hm().sync_ortho_tensor(kwargs)" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "ortho_G#_#"
+                        label   "Shear Moduli (G23, G31, G12)"
+                        type    float
+                        size    3
+                        default { "38461.53846153846" "38461.53846153846" "38461.53846153846" }
+                        disablewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@ { elast_mode#_# != orthotropic }"
+                        hidewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@ { elast_mode#_# != orthotropic }"
+                        range   { 1e-12! 1e+12 }
+                        help    "Orthotropic shear moduli G23, G31, G12 (stress units, all > 0; default matches isotropic E / (2*(1 + nu)))."
+                        parmtag { "script_callback" "hou.pwd().hm().sync_ortho_tensor(kwargs)" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
                         name    "elast_tensor#_#"
                         label   "Elasticity Constants"
                         type    string
                         default { "[E11,E22,E33,nu12,nu13,nu23,mu23,mu31,mu12]" }
-                        disablewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@"
-                        hidewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@"
-                        help    "The 9 orthotropic elastic constants for Hooke / Saint Venant materials as a list: [E11, E22, E33, nu12, nu13, nu23, mu23, mu31, mu12]. Moduli in stress units, Poisson's ratios dimensionless."
+                        disablewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@ { elast_mode#_# != raw }"
+                        hidewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@ { elast_mode#_# != raw }"
+                        help    "Raw elasticity constants list for Hooke / Saint Venant materials: 9 numbers [E11, E22, E33, nu12, nu13, nu23, G23, G31, G12] (orthotropic), 5 (transversely isotropic), or 21 (full symmetric 6x6 stiffness)."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -2661,29 +2726,35 @@
             parmtag { "script_callback_language" "python" }
         }
         parm {
-            name    "labelparm3"
-            label   ""
-            type    label
-            default { "Turn on two of the three below (End Time, Time Step, Number of Time Steps); with all three on, End Time and Time Step are used." }
-            parmtag { "sidefx::look" "block" }
+            name    "define_run_by"
+            label   "Define Run By"
+            type    ordinal
+            default { "0" }
+            menu {
+                "tend_dt"    "End Time & Time Increment (dt)"
+                "tend_steps" "End Time & # of Timesteps"
+                "dt_steps"   "Time Increment (dt) & # of Timesteps"
+            }
+            help    "Choose which two of End Time, Time Increment (dt), and # of Timesteps you specify; the third is computed automatically."
+            parmtag { "script_callback" "hou.pwd().hm().sync_time_mode(kwargs)" }
+            parmtag { "script_callback_language" "python" }
         }
         parm {
             name    "end_time_bool"
             label   "End Time"
             type    toggle
-            joinnext
+            invisible
             default { "1" }
-            help    "Specify the end time. Choose exactly two of End Time, Time Increment and # of Timesteps; the third is derived (if all three are on, End Time and Time Increment win)."
+            help    "Legacy toggle mirrored by Define Run By (kept hidden for compatibility with saved scenes and scripts)."
             parmtag { "script_callback_language" "python" }
         }
         parm {
             name    "tend"
             label   "End Time"
             type    log
-            nolabel
             default { "5" }
-            disablewhen "{ end_time_bool != 1 }"
-            hidewhen "{ end_time_bool != 1 }"
+            disablewhen "{ end_time_bool != 1 define_run_by == tend_dt } { define_run_by == dt_steps }"
+            hidewhen "{ end_time_bool != 1 define_run_by == tend_dt } { define_run_by == dt_steps }"
             range   { 0! 100 }
             help    "Time at which the simulation stops (time units)."
             parmtag { "script_callback_language" "python" }
@@ -2692,19 +2763,18 @@
             name    "time_inc_bool"
             label   "Time Increment"
             type    toggle
-            joinnext
+            invisible
             default { "1" }
-            help    "Specify the time step dt. Choose exactly two of End Time, Time Increment and # of Timesteps."
+            help    "Legacy toggle mirrored by Define Run By (kept hidden for compatibility with saved scenes and scripts)."
             parmtag { "script_callback_language" "python" }
         }
         parm {
             name    "dt"
-            label   "dt"
+            label   "Time Increment (dt)"
             type    log
-            nolabel
             default { "0.025" }
-            disablewhen "{ time_inc_bool != 1 }"
-            hidewhen "{ time_inc_bool != 1 }"
+            disablewhen "{ time_inc_bool != 1 define_run_by == tend_dt } { define_run_by == tend_steps }"
+            hidewhen "{ time_inc_bool != 1 define_run_by == tend_dt } { define_run_by == tend_steps }"
             range   { 0! 10 }
             help    "Size of each time step (time units). Smaller steps follow fast motion and hard contact more accurately but cost more steps; the semi-implicit contact mode tolerates larger steps than classic IPC."
             parmtag { "script_callback_language" "python" }
@@ -2713,19 +2783,18 @@
             name    "num_timesteps_bool"
             label   "# of Timesteps"
             type    toggle
-            joinnext
+            invisible
             default { "0" }
-            help    "Specify the number of time steps instead of the end time or the step size. Choose exactly two of the three."
+            help    "Legacy toggle mirrored by Define Run By (kept hidden for compatibility with saved scenes and scripts)."
             parmtag { "script_callback_language" "python" }
         }
         parm {
             name    "num_timesteps"
             label   "# of Timesteps"
             type    intlog
-            nolabel
             default { "200" }
-            disablewhen "{ num_timesteps_bool != 1 }"
-            hidewhen "{ num_timesteps_bool != 1 }"
+            disablewhen "{ num_timesteps_bool != 1 define_run_by == tend_dt }"
+            hidewhen "{ num_timesteps_bool != 1 define_run_by == tend_dt }"
             range   { 1! 10000 }
             help    "Number of time steps to run (whole number)."
             parmtag { "script_callback_language" "python" }
@@ -5102,6 +5171,25 @@
             parmtag { "script_callback_language" "python" }
         }
         parm {
+            name    "set_gravity_y"
+            label   "Set Gravity (-Y)"
+            type    button
+            joinnext
+            default { "0" }
+            help    "Fill Body Load with standard downward gravity along -Y using PolyFEM's rhs = -acceleration sign convention (0, +9.81, 0 in m/s^2, automatically scaled to the active Global > Units)."
+            parmtag { "script_callback" "hou.pwd().hm().set_gravity_y(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "clear_body_load"
+            label   "Clear Body Load"
+            type    button
+            default { "0" }
+            help    "Reset Body Load to 0, 0, 0 (no body force / gravity off)."
+            parmtag { "script_callback" "hou.pwd().hm().clear_body_load(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
             name    "RHS"
             label   "Body Load (legacy)"
             type    string
@@ -5181,6 +5269,21 @@
             label   "Separator"
             type    separator
             default { "" }
+        }
+        groupcollapsible {
+            name    "extra_params_folder"
+            label   "Extra JSON Overrides (Advanced)"
+
+            parm {
+                name    "extra_params_json"
+                label   "Extra params.json"
+                type    string
+                default { "" }
+                help    "Optional JSON object deep-merged into params.json at export time so you can test or override any PolyFEM key (for example {\"solver\": {\"advanced\": {\"stall_restart\": {\"enabled\": true}}}}). Leave blank for none."
+                parmtag { "editor" "1" }
+                parmtag { "editorlines" "4-12" }
+                parmtag { "script_callback_language" "python" }
+            }
         }
     }
 

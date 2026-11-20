@@ -179,10 +179,14 @@ def check_cases_against_solver(root):
     print("PASS: an unconstrained quasistatic body is a warning; PolyFEM "
           "indeed stops with 'Reached iteration limit', and runs once fixed")
 
-    # Hooke / Saint Venant left at the placeholder tensor: error
+    # Hooke / Saint Venant: structured orthotropic mode works out of the box;
+    # raw mode left at the placeholder tensor is an error.
     tokens = scene.mod.MATERIAL_TOKENS
     for model in ("HookeLinearElasticity", "SaintVenant"):
-        scene.node.setParms({"materials1_1": tokens.index(model)})
+        scene.node.setParms({"materials1_1": tokens.index(model),
+                             "elast_mode1_1": 0})
+        assert not scene.check()["errors"], scene.check()
+        scene.node.setParms({"elast_mode1_1": 1})
         only(scene.check(), "errors", "Replace the placeholder names")
         code, log = scene.solve_anyway()
         assert code == 1 and "type must be number" in log, (model, code,
@@ -193,9 +197,11 @@ def check_cases_against_solver(root):
         code, log = scene.solve_anyway()
         assert code == 0, (model, log[-400:])
         scene.node.parm("elast_tensor1_1").revertToDefaults()
+        scene.node.parm("elast_mode1_1").revertToDefaults()
     scene.node.setParms({"materials1_1": 3})
-    print("PASS: the placeholder elasticity tensor is an error (PolyFEM: "
-          "JSON type error); a numeric tensor runs")
+    print("PASS: structured orthotropic runs by default; raw placeholder "
+          "elasticity tensor is an error (PolyFEM: JSON type error); a numeric "
+          "tensor runs")
 
     # a mirrored transform: error
     scene.node.setParms({"xform_s__1x": -1.0})
