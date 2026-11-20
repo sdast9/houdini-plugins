@@ -411,6 +411,18 @@ Targets the current build's strict-validated schema — the old fork keys
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
 
+### PolyFEM Workflow Batch B (2026-11-20)
+
+Direct Houdini SOP workflow, display-network upgrades, smart defaults, and
+Output tab ergonomics for `PolyFEM 2.0` (`tests/test_polyfem_batch_b.py`):
+
+| Feature | Details |
+| --- | --- |
+| **Direct Houdini SOP input (`F1`)** | New **Mesh Source** selector (`Mesh File` vs `Houdini SOP`) with **Source SOP** (`sop_path#`) and **Reload SOP Mesh** (`load_sop#`) per geometry. Volume SOPs (`Tet Conform` / `Tet Embed` tetrahedra or hexahedra) are exported directly to `<working_dir>/input/sop_geo<N>.msh` with automatic positive-volume orientation and subdomain preservation from integer prim attributes (`Entity`, `entity`, `subdomain`, `class`). Rigid obstacle SOPs are triangulated directly to `<working_dir>/input/sop_obs<N>.obj`. Toggling `Obstacle (rigid)` on a SOP geometry automatically re-exports in the matching format |
+| **Rebuild Display Network & `OnLoaded` upgrade** | New **Main ▸ Rebuild Display Network** button rebuilds internal viewport SOPs (`surface_`, `entitycolor_`, `mindist_`, `fiberdata_`, `fiberviz_`, `null_`, and sideset `group_` chains) from the current asset definition while preserving all transforms, materials, subdomains, element reassignments, sidesets, and boundary conditions. `OnLoaded` checks `polyfem_display_version` and upgrades older saved `.hipnc` scenes automatically |
+| **Smart defaults & non-destructive binary check** | New nodes automatically populate **PolyFEM Binary** from `$POLYFEM_BIN` (when set) and default **Working Directory** to `$HIP/polyfem/$OS/`. Mistyping `PolyFEM Binary` warns without wiping the entered path |
+| **Output drawer promotions** | Promoted **Use HDF5** (`use_hdf5`), **Minimal Fields (derive in readPVD)** (`minimal_fields`), and **Nodal Forces (force curves)** (`forces_fields`) out of the collapsed *Options* / *Volume Specific Data* sub-drawers directly to the top level of *Output ▸ Paraview* |
+
 ### PolyFEM Workflow Batch A (2026-11-20)
 
 Workflow usability and mesh-integration upgrades for `PolyFEM 2.0`

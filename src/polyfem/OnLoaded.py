@@ -7,6 +7,10 @@ try:
 except Exception as exc:  # loading the scene must never fail on this
     print(f"[PolyFEM HDA] {node.path()}: could not migrate expression vectors: {exc}")
 try:
+    node.hdaModule().check_display_version(node)
+except Exception as exc:
+    print(f"[PolyFEM HDA] {node.path()}: could not refresh display network: {exc}")
+try:
     node.hdaModule().reattach_run(node)
 except Exception as exc:  # loading the scene must never fail on this
     print(f"[PolyFEM HDA] {node.path()}: could not follow its last run: {exc}")

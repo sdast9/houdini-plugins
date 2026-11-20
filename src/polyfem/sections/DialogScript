@@ -880,8 +880,18 @@
             name    "expert_mode"
             label   "Show Expert Controls"
             type    toggle
+            joinnext
             default { "0" }
             help    "Show the advanced solver settings: the Augmented Lagrangian, Rayleigh damping, Semi-Implicit contact options, AMGCL and Hypre linear-solver settings, the Strong Wolfe line search, the finite-difference gradient check and Output > Advanced (debug output). Hiding them never changes their values: whatever they are set to is exported either way, and Check Setup lists any that differ from their defaults while they are hidden."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "rebuild_display"
+            label   "Rebuild Display Network"
+            type    button
+            default { "0" }
+            help    "Rebuild the internal viewport display SOPs (surface extraction, subdomain colors, disabled dimming, fiber preview, and sideset selection groups) from the current asset definition while keeping every transform, material, subdomain, sideset, and boundary condition intact."
+            parmtag { "script_callback" "hou.pwd().hm().rebuild_display_network(kwargs)" }
             parmtag { "script_callback_language" "python" }
         }
         groupcollapsible {
@@ -961,10 +971,47 @@
             parmtag { "script_callback_language" "python" }
 
             parm {
+                name    "mesh_source#"
+                label   "Mesh Source"
+                type    ordinal
+                default { "0" }
+                menu {
+                    "file" "Mesh File (.msh / .obj / .stl / .ply)"
+                    "sop"  "Houdini SOP (tets/hexes or obstacle surface)"
+                }
+                help    "Choose where this geometry comes from: a mesh file on disk (.msh for volumes; .obj/.stl/.ply/.msh for obstacles) or a live Houdini SOP node (Tet Conform / Tet Embed for volumes, or any polygon surface for a rigid obstacle)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "sop_path#"
+                label   "Source SOP"
+                type    oppath
+                default { "" }
+                disablewhen "{ mesh_source# != sop }"
+                hidewhen "{ mesh_source# != sop }"
+                help    "Path to a Houdini SOP node supplying this geometry. For simulated bodies the SOP must contain tetrahedra or hexahedra (optional prim int 'Entity' / 'subdomain' / 'class' sets subdomains); for rigid obstacles any polygon surface is triangulated and exported automatically."
+                parmtag { "opfilter" "!!SOP!!" }
+                parmtag { "script_callback" "hou.pwd().hm().load_sop_mesh(kwargs)" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "load_sop#"
+                label   "Reload SOP Mesh"
+                type    button
+                default { "0" }
+                disablewhen "{ mesh_source# != sop }"
+                hidewhen "{ mesh_source# != sop }"
+                help    "Re-read the Source SOP and update the staged mesh in <working dir>/input while preserving materials, transforms, and sidesets."
+                parmtag { "script_callback" "hou.pwd().hm().load_sop_mesh(kwargs)" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
                 name    "file_location#"
                 label   "Mesh File"
                 type    geometry
                 default { "" }
+                disablewhen "{ mesh_source# == sop }"
+                hidewhen "{ mesh_source# == sop }"
                 help    "Volume mesh for this body: a Gmsh .msh file (tetrahedra or hexahedra). The file is copied into <working_dir>/input when selected; if another geometry already uses a different mesh with the same file name, the copy is renamed (part_geo2.msh) so neither replaces the other. Physical groups in the file become the subdomains you can assign materials to. Surface meshes (.obj, .stl, .ply, or 2D .msh) can be used as rigid obstacles."
                 parmtag { "filechooser_mode" "read" }
                 parmtag { "filechooser_pattern" "*.msh, *.obj, *.stl,*.ply" }
@@ -976,6 +1023,7 @@
                 label   ""
                 type    label
                 default { "The file is copied into <working dir>/input when you pick it." }
+                hidewhen "{ mesh_source# == sop }"
                 parmtag { "sidefx::look" "block" }
             }
             parm {
@@ -4756,18 +4804,36 @@
                 help    "Write every Nth time step to the ParaView output (1 = every step, 2 = every other step; at least 1). Reduces output size for long runs."
                 parmtag { "script_callback_language" "python" }
             }
+            parm {
+                name    "use_hdf5"
+                label   "Use HDF5"
+                type    toggle
+                default { "1" }
+                help    "Save each result frame as a compressed HDF5 file. This is the recommended default: large meshes usually use much less disk space (about 89% less in a 612,000-tet test), and the Read PVD node loads these files directly through the .pvd collection (it bundles an HDF5 reader for macOS, Linux x86_64 and Windows x64). On a computer where Read PVD could not read them (no h5py in Houdini's Python and no bundled reader for the platform), the node writes XML .vtu files instead and Check Setup says so. Turn this off only when sending results to an older tool that requires XML .vtu files."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "minimal_fields"
+                label   "Minimal Fields (derive in readPVD)"
+                type    toggle
+                default { "1" }
+                disablewhen "{ materials_fields == 1 }"
+                help    "Export only what the Read PVD node needs to derive everything else (displacement, deformation gradient F, Cauchy stress) plus the surface/force arrays you enable. Von Mises, PK1/PK2 and the *_avg variants are skipped, making files much smaller and faster to write; Read PVD computes them on load. Turn off to write every field like upstream PolyFEM. Disabled while Material output is on."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "forces_fields"
+                label   "Nodal Forces (force curves)"
+                type    toggle
+                default { "0" }
+                help    "Export each node's force vectors, one field per term the scene has (elastic, loads, pressure, contact, friction, inertia, damping). Read PVD adds them up over a sideset or an obstacle to give force-displacement curves (Analysis > Force Curves): the reaction of a fixed or moved sideset, the contact force on an obstacle. Costs 3 numbers per output point per term (one term, the elastic force, in a quasistatic scene without loads or contact, about +14% per frame). New nodes start with it on; scenes saved before keep their setting."
+                parmtag { "export_disable" "1" }
+                parmtag { "script_callback_language" "python" }
+            }
             groupcollapsible {
                 name    "Options"
                 label   "Options"
 
-                parm {
-                    name    "use_hdf5"
-                    label   "Use HDF5"
-                    type    toggle
-                    default { "1" }
-                    help    "Save each result frame as a compressed HDF5 file. This is the recommended default: large meshes usually use much less disk space (about 89% less in a 612,000-tet test), and the Read PVD node loads these files directly through the .pvd collection (it bundles an HDF5 reader for macOS, Linux x86_64 and Windows x64). On a computer where Read PVD could not read them (no h5py in Houdini's Python and no bundled reader for the platform), the node writes XML .vtu files instead and Check Setup says so. Turn this off only when sending results to an older tool that requires XML .vtu files."
-                    parmtag { "script_callback_language" "python" }
-                }
                 parm {
                     name    "materials_fields"
                     label   "Material"
@@ -4798,15 +4864,6 @@
                     type    toggle
                     default { "0" }
                     help    "Force writing of the high-order mesh even for output types where PolyFEM would normally refuse (may break the output; leave off)."
-                    parmtag { "script_callback_language" "python" }
-                }
-                parm {
-                    name    "minimal_fields"
-                    label   "Minimal Fields (derive in readPVD)"
-                    type    toggle
-                    default { "1" }
-                    disablewhen "{ materials_fields == 1 }"
-                    help    "Export only what the Read PVD node needs to derive everything else (displacement, deformation gradient F, Cauchy stress) plus the surface/force arrays you enable. Von Mises, PK1/PK2 and the *_avg variants are skipped, making files much smaller and faster to write; Read PVD computes them on load. Turn off to write every field like upstream PolyFEM. Disabled while Material output is on."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -4887,15 +4944,6 @@
                         type    toggle
                         default { "0" }
                         help    "Export the nodal acceleration (dynamic runs)."
-                        parmtag { "script_callback_language" "python" }
-                    }
-                    parm {
-                        name    "forces_fields"
-                        label   "Nodal Forces (force curves)"
-                        type    toggle
-                        default { "0" }
-                        help    "Export each node's force vectors, one field per term the scene has (elastic, loads, pressure, contact, friction, inertia, damping). Read PVD adds them up over a sideset or an obstacle to give force-displacement curves (Analysis > Force Curves): the reaction of a fixed or moved sideset, the contact force on an obstacle. Costs 3 numbers per output point per term (one term, the elastic force, in a quasistatic scene without loads or contact, about +14% per frame). New nodes start with it on; scenes saved before keep their setting."
-                        parmtag { "export_disable" "1" }
                         parmtag { "script_callback_language" "python" }
                     }
                 }

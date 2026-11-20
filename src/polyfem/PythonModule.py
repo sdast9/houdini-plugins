@@ -1314,8 +1314,209 @@ def polyfem_bin_check(kwargs):
     parent = kwargs["node"]
     polyfem_bin = parent.evalParm("polyfem_bin")
     if polyfem_bin and not os.path.isfile(polyfem_bin):
-        _message("PolyFEM binary not found at that path.")
-        parent.parm("polyfem_bin").revertToDefaults()
+        _message(f"PolyFEM binary not found at: {polyfem_bin}")
+
+
+def _write_sop_volume_msh(sop_geo, dst_path):
+    """Export tetrahedra/hexahedra from a Houdini SOP Geometry to MSH 2.2.
+
+    Auto-orients every element to strictly positive Gmsh/PolyFEM volume
+    (Houdini's TetConform creates negative-signed tets relative to Gmsh) and
+    preserves integer subdomain tags from prim attribute Entity/entity/
+    subdomain/class when present.
+    """
+    n_pts = sop_geo.intrinsicValue("pointcount")
+    if not n_pts:
+        raise hou.NodeError("Source SOP has no points.")
+    pts = np.frombuffer(
+        sop_geo.pointFloatAttribValuesAsString(
+            "P", float_type=hou.numericData.Float64),
+        dtype=np.float64).reshape(-1, 3)
+
+    entity_vals = None
+    for attr_name in ("Entity", "entity", "subdomain", "class"):
+        attr = sop_geo.findPrimAttrib(attr_name)
+        if attr is not None and attr.dataType() == hou.attribData.Int:
+            entity_vals = np.frombuffer(
+                sop_geo.primIntAttribValuesAsString(attr_name),
+                dtype=np.int32).astype(np.int64)
+            break
+
+    tets, tet_ent = [], []
+    hexes, hex_ent = [], []
+    for prim in sop_geo.prims():
+        ptype = prim.type()
+        if ptype == hou.primType.Tetrahedron:
+            verts = [v.point().number() for v in prim.vertices()]
+            if len(verts) == 4:
+                tets.append(verts)
+                tet_ent.append(
+                    int(entity_vals[prim.number()])
+                    if entity_vals is not None else 1)
+        elif ptype == hou.primType.Hexahedron:
+            verts = [v.point().number() for v in prim.vertices()]
+            if len(verts) == 8:
+                # Houdini hex vertex order [0,1,3,2,4,5,7,6] -> Gmsh [0..7]
+                hexes.append([verts[0], verts[1], verts[3], verts[2],
+                              verts[4], verts[5], verts[7], verts[6]])
+                hex_ent.append(
+                    int(entity_vals[prim.number()])
+                    if entity_vals is not None else 1)
+
+    if not tets and not hexes:
+        return {"n_points": n_pts, "n_tets": 0, "n_hexes": 0}
+
+    all_ent = np.asarray(tet_ent + hex_ent, dtype=np.int64)
+    shift = (1 - int(all_ent.min())) if int(all_ent.min()) <= 0 else 0
+
+    tets_arr = np.asarray(tets, dtype=np.int64).reshape(-1, 4)
+    if len(tets_arr):
+        v0 = pts[tets_arr[:, 0]]
+        vol6 = np.einsum(
+            "ij,ij->i",
+            np.cross(pts[tets_arr[:, 1]] - v0, pts[tets_arr[:, 2]] - v0),
+            pts[tets_arr[:, 3]] - v0)
+        flip = vol6 < 0
+        if np.any(flip):
+            tmp = tets_arr[flip, 2].copy()
+            tets_arr[flip, 2] = tets_arr[flip, 3]
+            tets_arr[flip, 3] = tmp
+
+    hexes_arr = np.asarray(hexes, dtype=np.int64).reshape(-1, 8)
+    if len(hexes_arr):
+        v0 = pts[hexes_arr[:, 0]]
+        vol6 = np.einsum(
+            "ij,ij->i",
+            np.cross(pts[hexes_arr[:, 1]] - v0, pts[hexes_arr[:, 3]] - v0),
+            pts[hexes_arr[:, 4]] - v0)
+        flip = vol6 < 0
+        if np.any(flip):
+            hexes_arr[flip] = hexes_arr[flip][:, [4, 5, 6, 7, 0, 1, 2, 3]]
+
+    n_elems = len(tets_arr) + len(hexes_arr)
+    os.makedirs(os.path.dirname(os.path.abspath(dst_path)), exist_ok=True)
+    tmp_path = dst_path + ".tmp"
+    with open(tmp_path, "w") as handle:
+        handle.write("$MeshFormat\n2.2 0 8\n$EndMeshFormat\n")
+        handle.write(f"$Nodes\n{n_pts}\n")
+        for idx, (x, y, z) in enumerate(pts.tolist(), 1):
+            handle.write(f"{idx} {x!r} {y!r} {z!r}\n")
+        handle.write("$EndNodes\n")
+        handle.write(f"$Elements\n{n_elems}\n")
+        eid = 1
+        for row, tag in zip(tets_arr.tolist(), tet_ent):
+            ptag = int(tag) + shift
+            a, b, c, d = (v + 1 for v in row)
+            handle.write(f"{eid} 4 2 {ptag} {ptag} {a} {b} {c} {d}\n")
+            eid += 1
+        for row, tag in zip(hexes_arr.tolist(), hex_ent):
+            ptag = int(tag) + shift
+            vs = " ".join(str(v + 1) for v in row)
+            handle.write(f"{eid} 5 2 {ptag} {ptag} {vs}\n")
+            eid += 1
+        handle.write("$EndElements\n")
+    os.replace(tmp_path, dst_path)
+    return {"n_points": n_pts, "n_tets": len(tets_arr), "n_hexes": len(hexes_arr)}
+
+
+def _write_sop_surface_obj(sop_geo, dst_path):
+    """Export polygon faces from a Houdini SOP Geometry to a triangulated OBJ."""
+    n_pts = sop_geo.intrinsicValue("pointcount")
+    if not n_pts:
+        raise hou.NodeError("Source SOP has no points.")
+    pts = np.frombuffer(
+        sop_geo.pointFloatAttribValuesAsString(
+            "P", float_type=hou.numericData.Float64),
+        dtype=np.float64).reshape(-1, 3)
+    tris = []
+    for prim in sop_geo.prims():
+        if prim.type() != hou.primType.Polygon:
+            continue
+        verts = [v.point().number() for v in prim.vertices()]
+        if len(verts) < 3:
+            continue
+        v0 = verts[0]
+        for i in range(1, len(verts) - 1):
+            tris.append((v0, verts[i], verts[i + 1]))
+    if not tris:
+        return {"n_points": n_pts, "n_tris": 0}
+    os.makedirs(os.path.dirname(os.path.abspath(dst_path)), exist_ok=True)
+    tmp_path = dst_path + ".tmp"
+    with open(tmp_path, "w") as handle:
+        for x, y, z in pts.tolist():
+            handle.write(f"v {x!r} {y!r} {z!r}\n")
+        for a, b, c in tris:
+            handle.write(f"f {a + 1} {b + 1} {c + 1}\n")
+    os.replace(tmp_path, dst_path)
+    return {"n_points": n_pts, "n_tris": len(tris)}
+
+
+def load_sop_mesh(kwargs):
+    """Export a Houdini SOP into <working_dir>/input and load it as geometry."""
+    parent = kwargs["node"]
+    geo_number = str(kwargs.get("script_multiparm_index", "1"))
+    if not working_dir_check(kwargs):
+        return False
+    sop_path = parent.evalParm(f"sop_path{geo_number}").strip()
+    if not sop_path:
+        destroy_geo_nodes(parent, geo_number)
+        parent.parm(f"file_location{geo_number}").revertToDefaults()
+        _status(f"Geometry {geo_number}: Source SOP cleared.")
+        return False
+    sop_node = parent.node(sop_path) or hou.node(sop_path)
+    if sop_node is None or sop_node.type().category() != hou.sopNodeTypeCategory():
+        _message(f"Geometry {geo_number}: SOP node not found: {sop_path}")
+        return False
+    try:
+        sop_node.cook(force=False)
+        sop_geo = sop_node.geometry()
+    except hou.OperationFailed as exc:
+        _message(f"Geometry {geo_number}: failed to cook SOP {sop_path}: {exc}")
+        return False
+
+    working_dir = parent.evalParm("working_dir")
+    input_dir = os.path.join(working_dir, "input")
+    is_obstacle = bool(parent.evalParm(f"is_obstacle{geo_number}"))
+    try:
+        if is_obstacle:
+            dst_abs = os.path.join(input_dir, f"sop_obs{geo_number}.obj")
+            stats = _write_sop_surface_obj(sop_geo, dst_abs)
+            if stats["n_tris"] == 0:
+                _message(
+                    f"Geometry {geo_number}: SOP '{sop_path}' has no polygon "
+                    "faces to export as an obstacle surface.")
+                return False
+        else:
+            dst_abs = os.path.join(input_dir, f"sop_geo{geo_number}.msh")
+            stats = _write_sop_volume_msh(sop_geo, dst_abs)
+            if stats["n_tets"] == 0 and stats["n_hexes"] == 0:
+                _message(
+                    f"Geometry {geo_number}: SOP '{sop_path}' has no "
+                    "tetrahedra or hexahedra (only surface polygons). Use a "
+                    "Tet Conform / Tet Embed SOP for a simulated volume mesh, "
+                    "or enable 'Obstacle (rigid)' to use this surface as an "
+                    "obstacle.")
+                return False
+    except (OSError, hou.Error) as exc:
+        _message(f"Geometry {geo_number}: could not export SOP {sop_path}: {exc}")
+        return False
+
+    parent.setParms({f"file_location{geo_number}": dst_abs})
+    create_geo_nodes({
+        "node": parent,
+        "script_multiparm_index": geo_number,
+        "parm_name": f"file_location{geo_number}",
+    })
+    if is_obstacle:
+        _status(
+            f"Geometry {geo_number}: loaded obstacle surface from SOP "
+            f"{sop_node.path()} ({stats['n_tris']} triangles).")
+    else:
+        _status(
+            f"Geometry {geo_number}: loaded volume mesh from SOP "
+            f"{sop_node.path()} ({stats['n_tets']} tets, "
+            f"{stats['n_hexes']} hexes).")
+    return True
 
 
 def create_geo_nodes(kwargs):
@@ -1328,7 +1529,15 @@ def create_geo_nodes(kwargs):
     """
     parent = kwargs["node"]
     parent.allowEditingOfContents()
-    geo_number = kwargs["script_multiparm_index"]
+    geo_number = str(kwargs["script_multiparm_index"])
+    # If the user toggled Obstacle while Mesh Source is Houdini SOP, re-export
+    # the SOP in the new format (.obj surface vs .msh volume).
+    src_parm = parent.parm(f"mesh_source{geo_number}")
+    if kwargs.get("parm_name") == f"is_obstacle{geo_number}" \
+            and src_parm is not None and src_parm.evalAsString() == "sop" \
+            and parent.evalParm(f"sop_path{geo_number}").strip():
+        load_sop_mesh(kwargs)
+        return
     path_parm = parent.parm("file_location" + geo_number).eval()
     if not working_dir_check(kwargs):
         parent.parm("file_location" + geo_number).revertToDefaults()
@@ -2030,6 +2239,9 @@ node.parent().hdaModule().cook_fiber_data(node)
 """
 
 
+DISPLAY_CHAIN_VERSION = 2
+
+
 def create_geo_tree(kwargs):
     """Volume geometry display chain: one Entity-colored boundary surface."""
     parent = kwargs["node"]
@@ -2073,6 +2285,7 @@ def create_geo_tree(kwargs):
         if parent.parm(f"sideset_selection{geo_number}_{vol}") is not None:
             _rebuild_group_chain(parent, geo_number, str(vol),
                                  default_condition=False)
+    parent.setUserData("polyfem_display_version", str(DISPLAY_CHAIN_VERSION))
     parent.layoutChildren()
 
 
@@ -2109,7 +2322,59 @@ def create_obstacle_tree(parent, geo_number):
     null_node = parent.createNode("null", "null_" + geo_number)
     null_node.setNextInput(color_node)
     _merge_all(parent).setNextInput(null_node)
+    parent.setUserData("polyfem_display_version", str(DISPLAY_CHAIN_VERSION))
     parent.layoutChildren()
+
+
+def rebuild_display_network(kwargs, quiet=False):
+    """Rebuild the internal viewport display SOPs for every loaded geometry
+    from the current asset definition, keeping all transforms, materials,
+    subdomains, element reassignments, sidesets, and boundary conditions."""
+    parent = kwargs["node"]
+    parent.allowEditingOfContents()
+    rebuilt = 0
+    num_geos = max(0, int(parent.evalParm("num_geos")))
+    for geo in range(1, num_geos + 1):
+        geo_str = str(geo)
+        if parent.node(f"branch_{geo_str}") is None:
+            continue
+        clear_geo_tree(parent, geo_str)
+        if parent.parm(f"is_obstacle{geo_str}") is not None \
+                and parent.evalParm(f"is_obstacle{geo_str}"):
+            create_obstacle_tree(parent, geo_str)
+        else:
+            create_geo_tree({"node": parent, "script_multiparm_index": geo_str})
+        rebuilt += 1
+    parent.setUserData("polyfem_display_version", str(DISPLAY_CHAIN_VERSION))
+    if not quiet:
+        if rebuilt:
+            _status(
+                f"Rebuilt display network for {rebuilt} "
+                f"geometr{'y' if rebuilt == 1 else 'ies'} (all materials, "
+                "transforms, subdomains, and sidesets preserved).")
+        else:
+            _status("No loaded geometries to rebuild.")
+    return rebuilt
+
+
+def check_display_version(node):
+    """Upgrade the internal display chain of an older saved scene on load."""
+    if not _has_loaded_geometry(node):
+        return 0
+    raw = node.userData("polyfem_display_version")
+    try:
+        current = int(raw) if raw is not None else 0
+    except ValueError:
+        current = 0
+    if current >= DISPLAY_CHAIN_VERSION:
+        return 0
+    rebuilt = rebuild_display_network({"node": node}, quiet=True)
+    if rebuilt:
+        print(
+            f"[PolyFEM HDA] {node.path()}: upgraded display network "
+            f"(v{current} -> v{DISPLAY_CHAIN_VERSION}) for {rebuilt} "
+            "geometries.")
+    return rebuilt
 
 
 def clear_geo_tree(parent, geo_number):
