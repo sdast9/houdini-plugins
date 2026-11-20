@@ -414,10 +414,14 @@ def main():
     # downstream. No setting change may make a cached frame read its file.
     cache_node = node.node("cache1")
     frame_node = node.node("frame_data")
+    step_shift = node.node("step_shift")
     assert cache_node.inputs()[0] == frame_node
+    assert step_shift is not None and step_shift.inputs() == (cache_node,)
     cache_switch = node.node("cache_switch")
-    assert cache_switch.inputs() == (frame_node, cache_node)
-    assert node.node("derived").inputs()[0] == cache_switch
+    assert cache_switch.inputs() == (frame_node, step_shift)
+    derived_prepare = node.node("derived_prepare")
+    assert derived_prepare is not None and derived_prepare.inputs() == (cache_switch,)
+    assert node.node("derived").inputs()[0] == derived_prepare
     assert node.node("deform").inputs()[0] == node.node("derived_switch")
     assert node.isLockedHDA(), "loading a PVD unlocked the asset instance"
     node.setParms({"cache": 1})
@@ -524,7 +528,11 @@ def main():
     assert frame_node.cookCount() == before + 2, (
         "Cache Frames off still served frames from the cache")
     hou.setFrame(4)
-    out.cook(force=False)
+    # Inspect all 32 derived attributes simultaneously via derived_mode = "all"
+    # (default "on_demand" allocates only the attributes needed for display/glyphs/probe).
+    node.parm("derived_mode").set("all")
+    out.cook(force=True)
+    geo4 = out.geometry()
 
     # Fields: generic forwarding, typo alias, and expanded mechanics values.
     derived_names = (
@@ -671,7 +679,7 @@ def main():
     assert not any(n.startswith(("von_mises", "pk1", "pk2"))
                    for n in minimal_names), minimal_names
     mnode = hou.node("/obj").createNode("readPVD::1.0", "viewer_minimal")
-    mnode.setParms({"PVD_file": minimal_pvd})
+    mnode.setParms({"PVD_file": minimal_pvd, "derived_mode": "all"})
     mnode.hdaModule().sync_available_options({"node": mnode})
     minimal_menu = set(mnode.parm("color_attrib").menuItems())
     assert set(derived_names) <= minimal_menu, (

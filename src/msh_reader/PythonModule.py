@@ -67,9 +67,15 @@ def cook(node):
         raise hou.NodeError("MSH file contains no nodes")
 
     # --- bulk point creation + msh_pt_id ---------------------------------
-    geo.createPoints(points.tolist())
+    geo.createPoints(np.ascontiguousarray(points, dtype=np.float64))
     geo.addAttrib(hou.attribType.Point, "msh_pt_id", -1, create_local_variable=False)
-    geo.setPointIntAttribValues("msh_pt_id", mesh["node_tags"].astype(np.int64).tolist())
+    tags = np.asarray(mesh["node_tags"], dtype=np.int64)
+    if len(tags) and int(tags.min()) >= -2147483648 and int(tags.max()) <= 2147483647:
+        geo.setPointIntAttribValuesFromString(
+            "msh_pt_id", np.ascontiguousarray(tags, dtype=np.int32).tobytes(),
+            int_type=hou.numericData.Int32)
+    else:
+        geo.setPointIntAttribValues("msh_pt_id", tags.tolist())
 
     cells = mesh["cells"]
     if not cells:

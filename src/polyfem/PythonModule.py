@@ -3365,14 +3365,25 @@ _SELECTION_FILE_PATTERNS = ("surface_sidesets{geo}_tri.txt",
                             "point_sidesets{geo}.txt")
 
 
-def export_sidesets(parent, geo, num_vols, input_dir, plans=None):
+def _cached(cache, bucket, key, factory):
+    """Memoize expensive setup/export lookups across Check Setup and Write."""
+    if cache is None:
+        return factory()
+    store = cache.setdefault(bucket, {})
+    if key not in store:
+        store[key] = factory()
+    return store[key]
+
+
+def export_sidesets(parent, geo, num_vols, input_dir, plans=None, cache=None):
     """Write one geometry's selection files.
 
     Returns (surface_selection_list, point_selection_list) for the json. The
     resolved plan (ids and merged conditions) is stored in plans[geo] when a
     dict is passed, for build_conditions and the import record.
     """
-    plan = resolve_sidesets(parent, geo, num_vols)
+    plan = _cached(cache, "plans", int(geo),
+                   lambda: resolve_sidesets(parent, geo, num_vols))
     if plans is not None:
         plans[int(geo)] = plan
     if plan["warnings"]:
@@ -3720,6 +3731,82 @@ def _prim_centroids(geo_data, mask):
     return centroids[mask] if mask is not None else centroids
 
 
+def _nearest_centroids_numpy(src_centroids, target_centroids):
+    """O(N) pure-NumPy nearest-centroid matcher using a 3D spatial hash.
+
+    Replaces the O(N^2) broadcast matrix when scipy.spatial.cKDTree is absent;
+    falls back to chunked exact distances only for targets whose 27-cell
+    neighborhood is empty (e.g. mismatched meshes).
+    """
+    src = np.asarray(src_centroids, dtype=np.float64)
+    tgt = np.asarray(target_centroids, dtype=np.float64)
+    n_src, n_tgt = len(src), len(tgt)
+    if n_src == 0 or n_tgt == 0:
+        return (np.empty(n_tgt, dtype=np.float64),
+                np.empty(n_tgt, dtype=np.int64))
+    origin = np.minimum(src.min(axis=0), tgt.min(axis=0))
+    span = np.maximum(src.max(axis=0), tgt.max(axis=0)) - origin
+    extent = float(np.linalg.norm(span))
+    cell = max(1e-9, extent / max(1.0, n_src ** (1.0 / 3.0)))
+    src_cells = np.floor((src - origin) / cell).astype(np.int64)
+    tgt_cells = np.floor((tgt - origin) / cell).astype(np.int64)
+    buckets = {}
+    for idx, key in enumerate(map(tuple, src_cells.tolist())):
+        buckets.setdefault(key, []).append(idx)
+    buckets = {k: np.asarray(v, dtype=np.int64) for k, v in buckets.items()}
+    tgt_groups = {}
+    for idx, key in enumerate(map(tuple, tgt_cells.tolist())):
+        tgt_groups.setdefault(key, []).append(idx)
+    offsets = tuple(
+        (dx, dy, dz)
+        for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1))
+    order = np.empty(n_tgt, dtype=np.int64)
+    distances = np.empty(n_tgt, dtype=np.float64)
+    missing = []
+    for key, t_list in tgt_groups.items():
+        kx, ky, kz = key
+        cand_parts = [buckets[(kx + dx, ky + dy, kz + dz)]
+                      for dx, dy, dz in offsets
+                      if (kx + dx, ky + dy, kz + dz) in buckets]
+        t_idx = np.asarray(t_list, dtype=np.int64)
+        if not cand_parts:
+            missing.append(t_idx)
+            continue
+        cands = np.concatenate(cand_parts)
+        pts_t = tgt[t_idx]
+        pts_c = src[cands]
+        best_d2 = np.full(len(t_idx), np.inf, dtype=np.float64)
+        best_i = np.zeros(len(t_idx), dtype=np.int64)
+        for start in range(0, len(cands), 256):
+            block = pts_c[start:start + 256]
+            diff = pts_t[:, None, :] - block[None, :, :]
+            d2 = np.einsum("ijk,ijk->ij", diff, diff)
+            local_i = d2.argmin(axis=1)
+            local_d2 = d2[np.arange(len(t_idx)), local_i]
+            better = local_d2 < best_d2
+            best_d2[better] = local_d2[better]
+            best_i[better] = cands[start + local_i[better]]
+        order[t_idx] = best_i
+        distances[t_idx] = np.sqrt(best_d2)
+    if missing:
+        m_idx = np.concatenate(missing)
+        pts_m = tgt[m_idx]
+        best_d2 = np.full(len(m_idx), np.inf, dtype=np.float64)
+        best_i = np.zeros(len(m_idx), dtype=np.int64)
+        for start in range(0, n_src, 512):
+            block = src[start:start + 512]
+            diff = pts_m[:, None, :] - block[None, :, :]
+            d2 = np.einsum("ijk,ijk->ij", diff, diff)
+            local_i = d2.argmin(axis=1)
+            local_d2 = d2[np.arange(len(m_idx)), local_i]
+            better = local_d2 < best_d2
+            best_d2[better] = local_d2[better]
+            best_i[better] = start + local_i[better]
+        order[m_idx] = best_i
+        distances[m_idx] = np.sqrt(best_d2)
+    return distances, order
+
+
 def _match_by_centroid(source_geo, target_centroids, label):
     """Map target elements onto source volume prims by nearest centroid.
 
@@ -3739,10 +3826,8 @@ def _match_by_centroid(source_geo, target_centroids, label):
         from scipy.spatial import cKDTree
         distances, order = cKDTree(src_centroids).query(target_centroids)
     except ImportError:
-        deltas = target_centroids[:, None, :] - src_centroids[None, :, :]
-        squared = np.einsum("ijk,ijk->ij", deltas, deltas)
-        order = squared.argmin(axis=1)
-        distances = np.sqrt(squared[np.arange(len(order)), order])
+        distances, order = _nearest_centroids_numpy(
+            src_centroids, target_centroids)
     extent = float(np.linalg.norm(
         target_centroids.max(axis=0) - target_centroids.min(axis=0)))
     tolerance = max(1e-9, 1e-4 * extent)
@@ -4403,7 +4488,6 @@ def cook_fiber_data(node):
         return
 
     # Recomputed after the transform, and needed by the hedgehog wrangle.
-    mask = _volume_mask(geo_data)
     centroids = _prim_centroids(geo_data, None)
     if geo_data.findPrimAttrib("centroid") is None:
         geo_data.addAttrib(hou.attribType.Prim, "centroid", (0.0, 0.0, 0.0),
@@ -4433,6 +4517,7 @@ def cook_fiber_data(node):
             "polyfem_fiber_reference_frame",
             "simulation_world_reference_a0")
 
+    mask = _volume_mask(geo_data)
     total = geo_data.intrinsicValue("primitivecount")
     index = np.flatnonzero(mask) if mask is not None else np.arange(total)
     entity_attrib = geo_data.findPrimAttrib("Entity")
@@ -4608,7 +4693,8 @@ def _check_composite_consistency(parent):
                 f"<type>_0, <type>_1 (needs the SumModel naming patch).")
 
 
-def export_per_element_materials(parent, input_dir, output_dir=None):
+def export_per_element_materials(parent, input_dir, output_dir=None,
+                                 cache=None):
     """Write solver fields and a ReadPVD companion fiber-family file.
 
     Every file spans the GLOBAL element range: polyfem indexes them by global
@@ -4633,7 +4719,8 @@ def export_per_element_materials(parent, input_dir, output_dir=None):
     all_centroids = np.zeros((total, 3), dtype=np.float64)
     all_body_ids = np.zeros(total, dtype=np.int64)
     for geo, offset, count in table:
-        fields, resolved = per_element_data(parent, geo)
+        fields, resolved = _cached(
+            cache, "pe_data", int(geo), lambda g=geo: per_element_data(parent, g))
         if resolved != count:
             raise hou.NodeError(
                 f"Geometry {geo}: element count changed while exporting "
@@ -4995,7 +5082,7 @@ def _write_obj(path, vertices, faces):
             f"f {a + 1} {b + 1} {c + 1}\n" for a, b, c in faces.tolist()))
 
 
-def write_obstacle_sequence(parent, geo, line, input_dir):
+def write_obstacle_sequence(parent, geo, line, input_dir, cache=None):
     """Write one obstacle's mesh sequence (frame i = the obstacle posed at
     simulation time i / fps, in simulation coordinates; times before Start
     Time hold the rest pose) and return its geometry entry."""
@@ -5004,7 +5091,8 @@ def write_obstacle_sequence(parent, geo, line, input_dir):
         raise hou.NodeError(SEQUENCE_RATE_ERROR.format(
             geo=geo, dt=line.dt, t0=line.t0))
     last = int(round(float(line.times[-1]) * rate))
-    vertices, faces, _ = obstacle_surface(parent, geo)
+    vertices, faces, _ = _cached(
+        cache, "obstacles", int(geo), lambda: obstacle_surface(parent, geo))
     if not len(faces):
         raise hou.NodeError(f"Obstacle {geo} has no triangles to write.")
     folder = OBSTACLE_SEQUENCE_DIR.format(geo)
@@ -5059,7 +5147,7 @@ def _obstacle_displacement_is_zero(parent, geo):
 
 
 def build_geometry_and_materials(parent, data, input_dir, plans=None,
-                                 motions=None):
+                                 motions=None, cache=None):
     num_geos = parent.evalParm("num_geos")
     if num_geos == 0:
         raise hou.NodeError("No input geometry provided!")
@@ -5070,7 +5158,8 @@ def build_geometry_and_materials(parent, data, input_dir, plans=None,
     _check_composite_consistency(parent)
     export_per_element_materials(
         parent, input_dir,
-        os.path.join(os.path.dirname(input_dir), "output"))
+        os.path.join(os.path.dirname(input_dir), "output"),
+        cache=cache)
 
     # Normally every mesh is already staged in input/; after a change of
     # working directory they are staged again here, under names that two
@@ -5105,7 +5194,7 @@ def build_geometry_and_materials(parent, data, input_dir, plans=None,
                     geo=geo))
             if motion["kind"] == "sequence":
                 data["geometry"].append(write_obstacle_sequence(
-                    parent, geo, lazy_timeline.get(), input_dir))
+                    parent, geo, lazy_timeline.get(), input_dir, cache=cache))
                 continue
             data["geometry"].append({
                 "mesh": mesh_ref, "enabled": enabled, "is_obstacle": True,
@@ -5116,7 +5205,7 @@ def build_geometry_and_materials(parent, data, input_dir, plans=None,
         num_vols = parent.evalParm(f"num_volumes{geo}")
         volumefile = export_volumes(parent, geo, input_dir)
         surface_sel, point_sel = export_sidesets(
-            parent, geo, num_vols, input_dir, plans)
+            parent, geo, num_vols, input_dir, plans, cache=cache)
 
         geo_data = {"mesh": mesh_ref, "enabled": enabled, "is_obstacle": False,
                     "volume_selection": volumefile,
@@ -6129,7 +6218,7 @@ def build_output(parent, data):
 # =============================================================================
 
 
-def build_params(parent):
+def build_params(parent, cache=None):
     working_dir = parent.evalParm("working_dir")
     if not working_dir.strip():
         raise hou.NodeError("Choose a Working Directory first.")
@@ -6142,10 +6231,12 @@ def build_params(parent):
     os.makedirs(input_dir, exist_ok=True)
     os.makedirs(os.path.join(working_dir, "output"), exist_ok=True)
 
+    if cache is None:
+        cache = {}
     data = {}
     plans, motions = {}, {}
     orders = build_geometry_and_materials(parent, data, input_dir, plans,
-                                          motions)
+                                          motions, cache=cache)
     build_time(parent, data)
     build_contact(parent, data)
     build_conditions(parent, data, plans, motions)
@@ -6158,7 +6249,7 @@ def build_params(parent):
     with open(params_path, "w") as f:
         json.dump(data, f, indent=4)
     write_sideset_record(input_dir, data, plans)
-    write_scene_record(parent, input_dir, data, plans, motions)
+    write_scene_record(parent, input_dir, data, plans, motions, cache=cache)
     _set_export_report(parent, plans)
     return params_path
 
@@ -6316,7 +6407,7 @@ def _force_set_label(geo, entry):
             f"{entry['sideset']} ({conditions})")
 
 
-def write_scene_record(parent, input_dir, data, plans, motions):
+def write_scene_record(parent, input_dir, data, plans, motions, cache=None):
     """input/hda_scene.json (see SCENE_RECORD_FILE)."""
     try:
         line = timeline(parent)
@@ -6333,7 +6424,9 @@ def write_scene_record(parent, input_dir, data, plans, motions):
         matrix = rest_matrix(parent, geo)
         if parent.parm(f"is_obstacle{geo}").eval():
             motion = (motions or {}).get(geo, {"kind": "static"})
-            vertices, _, exact = obstacle_surface(parent, geo)
+            vertices, _, exact = _cached(
+                cache, "obstacles", int(geo),
+                lambda g=geo: obstacle_surface(parent, g))
             vertices = vertices @ matrix[:3, :3] + matrix[3, :3]
             record["obstacles"][str(geo)] = {
                 "motion": motion["kind"],
@@ -6733,7 +6826,8 @@ def _prepare_inputs(parent, purpose):
     (terminal) or "background". Returns the params.json path, or None when a
     check refused or the user cancelled.
     """
-    if not gate_setup(parent, purpose):
+    cache = {}
+    if not gate_setup(parent, purpose, cache=cache):
         return None
     running = active_run(parent)
     if running is not None:
@@ -6745,7 +6839,7 @@ def _prepare_inputs(parent, purpose):
     if not confirm_output_folder(parent):
         return None
     try:
-        return build_params(parent)
+        return build_params(parent, cache=cache)
     except hou.NodeError as e:
         _message(str(e))
         return None
@@ -7053,12 +7147,15 @@ def _msh_duplicate_elements(geo_data):
         return 0
 
 
-def check_setup(parent, purpose="check"):
+def check_setup(parent, purpose="check", cache=None):
     """Find setup problems before PolyFEM does.
 
     purpose: "check" (the button: everything), "write" (no binary needed) or
     "run"/"background". Returns {"errors", "warnings", "notes"}: lists of
-    sentences. Nothing is written.
+    sentences. Nothing is written. When ``cache`` is passed, resolved
+    sideset plans, per-element material arrays, and obstacle surfaces are
+    stored in it so a subsequent ``build_params(..., cache=cache)`` reuses
+    them without re-parsing meshes or re-evaluating sidesets.
     """
     errors, warnings, notes = [], [], []
     working_dir = parent.evalParm("working_dir")
@@ -7090,7 +7187,8 @@ def check_setup(parent, purpose="check"):
         path = parent.evalParm(f"file_location{geo}")
         obstacle = bool(parent.evalParm(f"is_obstacle{geo}"))
         if not parent.evalParm(f"is_enabled{geo}"):
-            _disabled_geometry_findings(parent, geo, obstacle, path, errors)
+            _disabled_geometry_findings(
+                parent, geo, obstacle, path, errors, cache=cache)
             continue
         if not path.strip():
             errors.append(f"Geometry {geo} has no mesh file.")
@@ -7153,7 +7251,8 @@ def check_setup(parent, purpose="check"):
                 FIBER_MODELS + ("MaterialSum",)
         if fibers:
             try:
-                per_element_data(parent, geo)
+                _cached(cache, "pe_data", int(geo),
+                        lambda g=geo: per_element_data(parent, g))
             except hou.Error as exc:
                 errors.append(f"Geometry {geo}: {_error_text(exc)}")
         try:
@@ -7161,7 +7260,9 @@ def check_setup(parent, purpose="check"):
         except hou.Error:
             pass
         try:
-            plan = resolve_sidesets(parent, geo, num_vols)
+            plan = _cached(
+                cache, "plans", int(geo),
+                lambda g=geo, nv=num_vols: resolve_sidesets(parent, g, nv))
         except hou.Error as exc:
             errors.append(f"Geometry {geo} sidesets: {_error_text(exc)}")
             plan = None
@@ -7335,7 +7436,7 @@ def check_setup(parent, purpose="check"):
         errors.append("The number of time steps must be at least 1 "
                       "(Time tab).")
 
-    _timeline_findings(parent, obstacles, errors, notes)
+    _timeline_findings(parent, obstacles, errors, notes, cache=cache)
 
     notes.extend(_expert_notes(parent))
     hdf5 = _hdf5_note(parent)
@@ -7344,7 +7445,8 @@ def check_setup(parent, purpose="check"):
     return {"errors": errors, "warnings": warnings, "notes": notes}
 
 
-def _disabled_geometry_findings(parent, geo, obstacle, path, errors):
+def _disabled_geometry_findings(parent, geo, obstacle, path, errors,
+                                cache=None):
     """Check Setup for a geometry with Enabled off.
 
     PolyFEM skips its mesh, but Write still exports its settings (so they
@@ -7369,7 +7471,9 @@ def _disabled_geometry_findings(parent, geo, obstacle, path, errors):
     if transform_is_animated(parent, geo):
         errors.append(f"{lead}: " + ANIMATED_BODY_ERROR.format(geo=geo))
     try:
-        resolve_sidesets(parent, geo, parent.evalParm(f"num_volumes{geo}"))
+        num_vols = parent.evalParm(f"num_volumes{geo}")
+        _cached(cache, "plans", int(geo),
+                lambda g=geo, nv=num_vols: resolve_sidesets(parent, g, nv))
     except hou.Error as exc:
         text = _error_text(exc).rstrip(".")
         errors.append(f"{lead}, and a sideset cannot be exported: {text}. "
@@ -7377,7 +7481,7 @@ def _disabled_geometry_findings(parent, geo, obstacle, path, errors):
                       "geometry is disabled.")
 
 
-def _timeline_findings(parent, obstacles, errors, notes):
+def _timeline_findings(parent, obstacles, errors, notes, cache=None):
     """Check Setup: the timeline, animated obstacles, time curves and what
     force curves can include."""
     try:
@@ -7407,7 +7511,9 @@ def _timeline_findings(parent, obstacles, errors, notes):
                                                      t0=line.t0))
             continue
         frames = int(round(float(line.times[-1]) * rate)) + 1
-        _, _, exact = obstacle_surface(parent, geo)
+        _, _, exact = _cached(
+            cache, "obstacles", int(geo),
+            lambda g=geo: obstacle_surface(parent, g))
         notes.append(
             f"Obstacle {geo} rotates or scales over time: it is written as "
             f"{frames} posed copies of its surface (input/"
@@ -7580,14 +7686,14 @@ def check_setup_button(kwargs):
     return report
 
 
-def gate_setup(parent, purpose):
+def gate_setup(parent, purpose, cache=None):
     """Run Check Setup before Write/Run; True means go ahead.
 
     Errors refuse (PolyFEM could not run the scene). Warnings are confirmed
     before a run, once per node for the same list; writing only reports
     them, and without an interface (hython) they are printed.
     """
-    report = check_setup(parent, purpose)
+    report = check_setup(parent, purpose, cache=cache)
     _set_check_report(parent, report)
     if report["errors"]:
         _message("PolyFEM cannot run this setup yet (Check Setup on the Main "

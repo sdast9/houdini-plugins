@@ -411,6 +411,20 @@ Targets the current build's strict-validated schema — the old fork keys
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
 
+### Pipeline review Patch 3 — Performance & Memory (2026-11-20)
+
+Performance and memory optimizations across `Read PVD 1.0`, `PolyFEM 2.0`,
+`MSH_Reader 3.0`, and `src/common/vtu_parser.py` (`tests/test_patch3_performance.py`):
+
+| Asset | Optimization |
+| --- | --- |
+| Read PVD | **On-demand derived mechanics & Green-Lagrange eigendecomposition reuse:** new *Analysis ▸ Derived Fields Scope* menu (`on_demand` default vs `all`) uses a lightweight detail wrangle (`derived_prepare`) to allocate and compute only the derived attributes actually needed by the active *Color Field*, glyphs, fibers, and probe (avoiding ~780 B/point of unused tensors when viewing exported fields such as `von_mises`); Green-Lagrange eigenvalues/eigenvectors now reuse `C = FᵀF`'s eigendecomposition (`0.5 * (λ_C − 1)`) instead of running a redundant 6th `sorted_eigen` per point |
+| Read PVD | **Step-keyed frame cache (`step_shift`):** a `timeshift` driven by `cache_frame(node)` sits downstream of `cache1`, so multiple Houdini frames mapping to the same PVD output step (under *Simulation Time* or past the last step) reuse one cached geometry instead of storing duplicate copies |
+| Read PVD | **Faster glyphs, force readout, multi-block, topology, and viewport overlay:** `cook_glyph_recovery` runs `np.linalg.eigh` once per unique physical node before gathering onto duplicated vertices; `force_readout_text` reuses `_FORCE_CURVES` or a 64-entry LRU `_FORCE_FRAME_CACHE` (invalidated by `_invalidate_pvd_caches`, which now also unwraps nested tuple keys for `_SCAN_CACHE`); `cook_multi_blocks` evaluates color ramps via a 513-entry vectorized NumPy LUT instead of a per-vertex Python loop; `cook_topology` passes contiguous NumPy arrays directly to `geo.createPoints()`; `ViewerStateModule.onDraw` caches overlay bar, tick, and probe-marker geometry by layout/ramp/tick signature |
+| `vtu_parser` | **Zero-copy `mmap` + payload-skipping `read_vtu_field_info`:** maps VTU files read-only, stops before `<AppendedData`, and jumps over uncompressed inline-binary `<DataArray>` payloads via `_predicted_close` instead of reading and regex-scanning gigabytes of base64 bytes |
+| PolyFEM | **O(N) pure-NumPy centroid matcher, leaner display & shared Write/Run cache:** `_match_by_centroid`'s `scipy`-absent fallback uses a 3D spatial-grid hash (`_nearest_centroids_numpy`) with chunked exact fallback instead of an O(N²) broadcast matrix; `cook_fiber_data` defers `_volume_mask` until material display is active; `_prepare_inputs` shares resolved sideset plans, per-element material arrays, and obstacle surfaces across `Check Setup` and `build_params` / `write_scene_record` so each runs once per Write/Run |
+| MSH Reader | **Bulk NumPy point & tag upload:** passes contiguous `float64` NumPy arrays directly to `geo.createPoints()` and uploads int32-range `msh_pt_id` via `setPointIntAttribValuesFromString()` without Python `.tolist()` boxing |
+
 ### UX improvements (2026-11-19)
 
 Usability upgrades across `PolyFEM 2.0` and `Read PVD 1.0` (`tests/test_ux_improvements.py`):

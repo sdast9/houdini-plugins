@@ -61,6 +61,22 @@ def _tick_geometry(node, left, bottom, width, height, labels_on_left=False):
     return geo
 
 
+def _bar_cache_key(node, left, bottom, width, height):
+    """Cheap signature of everything _bar_geometry depends on."""
+    ramp = node.parm("color_ramp").evalAsRamp()
+    return (left, bottom, width, height,
+            ramp.keys(), ramp.values(), tuple(str(b) for b in ramp.basis()))
+
+
+def _tick_cache_key(node, left, bottom, width, height, labels_on_left):
+    """Cheap signature of everything _tick_geometry depends on."""
+    tick_color = tuple(float(c) for c in node.evalParmTuple(
+        "legend_text_color"))
+    n_ticks = max(2, int(node.evalParm("legend_ticks")))
+    return (left, bottom, width, height, bool(labels_on_left),
+            n_ticks, tick_color)
+
+
 class State:
     """Draw a screen-fixed legend while this node's viewer state is active."""
 
@@ -68,6 +84,9 @@ class State:
         self.state_name = state_name
         self.scene_viewer = scene_viewer
         self.node = None
+        self._bar_cache_key = None
+        self._tick_cache_key = None
+        self._probe_marker_pos = None
         self.bar = hou.GeometryDrawable(
             scene_viewer, hou.drawableGeometryType.Face,
             "readpvd_overlay_legend_bar")
@@ -84,6 +103,9 @@ class State:
 
     def onEnter(self, kwargs):
         self.node = kwargs["node"]
+        self._bar_cache_key = None
+        self._tick_cache_key = None
+        self._probe_marker_pos = None
         for drawable in (self.bar, self.ticks, self.text,
                          self.probe_text, self.probe_marker):
             drawable.show(True)
@@ -156,9 +178,12 @@ class State:
             position, readout = self.node.hdaModule().probe_readout(
                 self.node, int(self.node.evalParm("probe_point")))
             if position is not None:
-                marker_geo = hou.Geometry()
-                marker_geo.createPoint().setPosition(position)
-                self.probe_marker.setGeometry(marker_geo)
+                pos_key = tuple(position)
+                if pos_key != self._probe_marker_pos:
+                    marker_geo = hou.Geometry()
+                    marker_geo.createPoint().setPosition(position)
+                    self.probe_marker.setGeometry(marker_geo)
+                    self._probe_marker_pos = pos_key
                 self.probe_marker.draw(
                     handle, {"xform": self.node.worldTransform()})
                 self.probe_text.draw(handle, {
@@ -176,16 +201,23 @@ class State:
         labels_on_left = self.node.evalParm("overlay_corner") in (1, 3)
         # screen_space covers the whole viewport; geometry is in pixels.
         full_viewport = (0, 0, viewport_width, viewport_height, 0, 0)
-        self.bar.setGeometry(
-            _bar_geometry(self.node, left, bottom, width, height))
+        bar_key = _bar_cache_key(self.node, left, bottom, width, height)
+        if bar_key != self._bar_cache_key:
+            self.bar.setGeometry(
+                _bar_geometry(self.node, left, bottom, width, height))
+            self._bar_cache_key = bar_key
         self.bar.draw(handle, {
             "screen_space": full_viewport,
             "use_cd": True,
             "backface_culling": False,
         })
-        self.ticks.setGeometry(
-            _tick_geometry(self.node, left, bottom, width, height,
-                           labels_on_left=labels_on_left))
+        tick_key = _tick_cache_key(
+            self.node, left, bottom, width, height, labels_on_left)
+        if tick_key != self._tick_cache_key:
+            self.ticks.setGeometry(
+                _tick_geometry(self.node, left, bottom, width, height,
+                               labels_on_left=labels_on_left))
+            self._tick_cache_key = tick_key
         self.ticks.draw(handle, {
             "screen_space": full_viewport,
             "use_cd": True,

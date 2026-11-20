@@ -829,6 +829,23 @@ def entry_frame(node, index):
                      - 1e-6)
 
 
+def cache_frame(node):
+    """Canonical Houdini frame for the current PVD step.
+
+    Drives step_shift downstream of cache1 so every Houdini frame mapping to
+    the same output step (common under Simulation Time or past the end of a
+    sequence) reuses one cache entry instead of storing duplicate copies.
+    """
+    times = _pvd_times(node)
+    if not times:
+        return float(hou.frame())
+    step = max(0, min(entry_index(node), len(times) - 1))
+    canonical = float(entry_frame(node, step))
+    if max(0, min(entry_index(node, canonical), len(times) - 1)) == step:
+        return canonical
+    return float(hou.frame())
+
+
 def playbar_range(node):
     """(first, last) whole frames covering the run on the active mapping."""
     times = _pvd_times(node)
@@ -2273,6 +2290,28 @@ def _build_block_geometry(mesh, block_name, slug, colors, values, components):
     return block
 
 
+def _sample_ramp_vectorized(ramp, normalized, finite, invalid_rgb,
+                            lut_size=513):
+    """Evaluate a Houdini color ramp over a NumPy array via a uniform LUT.
+
+    Avoids calling ramp.lookup() in a Python loop per vertex.
+    """
+    n = len(normalized)
+    if n == 0:
+        return np.empty((0, 3), dtype=np.float64)
+    lut = np.asarray(
+        [ramp.lookup(i / (lut_size - 1)) for i in range(lut_size)],
+        dtype=np.float64)
+    scaled = np.where(finite, np.clip(normalized, 0.0, 1.0), 0.0) * (lut_size - 1)
+    idx0 = np.floor(scaled).astype(np.intp)
+    idx1 = np.minimum(idx0 + 1, lut_size - 1)
+    frac = (scaled - idx0)[:, None]
+    colors = lut[idx0] * (1.0 - frac) + lut[idx1] * frac
+    if not np.all(finite):
+        colors[~finite] = invalid_rgb
+    return colors
+
+
 def cook_multi_blocks(node):
     """Generate optional supplementary PVD blocks with independent colors."""
     geo = node.geometry()
@@ -2323,9 +2362,8 @@ def cook_multi_blocks(node):
             else:
                 normalized = np.clip((reduced - low) / denom, 0.0, 1.0)
             ramp = asset.parm(f"multi_{slug}_ramp").evalAsRamp()
-            colors = np.asarray([
-                ramp.lookup(float(v)) if ok else invalid_rgb
-                for v, ok in zip(normalized, finite)], dtype=np.float64)
+            colors = _sample_ramp_vectorized(
+                ramp, normalized, finite, invalid_rgb)
         mesh["_field_name"] = field
         geo.merge(_build_block_geometry(
             mesh, block_name, slug, colors, values, components))
@@ -2626,7 +2664,7 @@ def cook_topology(node):
     mesh = _block_for(asset, blocks)
 
     points = mesh["points"]
-    geo.createPoints(points.tolist())
+    geo.createPoints(np.ascontiguousarray(points, dtype=np.float64))
     # A point id that survives the body filter and the clip (which renumber
     # points), so the probe follows its vertex (review 2026-11-14, item 4).
     geo.addAttrib(hou.attribType.Point, "readpvd_point", 0,
@@ -2951,7 +2989,9 @@ def _invalidate_pvd_caches(pvd_path):
     prefix = folder + os.sep
 
     def _matches(key):
-        first = key[0] if isinstance(key, tuple) and key else key
+        first = key
+        while isinstance(first, tuple) and first:
+            first = first[0]
         if not isinstance(first, str):
             return False
         norm = os.path.abspath(first)
@@ -2959,7 +2999,8 @@ def _invalidate_pvd_caches(pvd_path):
 
     for cache_dict in (_PVD_CACHE, _FIELD_INFO_CACHE, _VTU_CACHE,
                        _SEQUENCE_METADATA_CACHE, _FIBER_COMPANION_CACHE,
-                       _FIBER_POINT_CACHE, _MANIFEST_CACHE):
+                       _FIBER_POINT_CACHE, _MANIFEST_CACHE,
+                       _FORCE_FRAME_CACHE):
         for k in [k for k in list(cache_dict) if _matches(k)]:
             cache_dict.pop(k, None)
     scan_key = _SCAN_CACHE.get("key")
@@ -3547,10 +3588,9 @@ def cook_glyph_recovery(node):
         for b in range(3):
             averaged[:, a, b] = np.bincount(
                 groups, weights=matrices[:, a, b], minlength=size) / counts
-    per_point = averaged[groups]
-    eigenvalues, eigenvectors = np.linalg.eigh(per_point)
-    eigenvalues = eigenvalues[:, ::-1]                     # largest first
-    eigenvectors = np.ascontiguousarray(eigenvectors[:, :, ::-1])
+    node_vals, node_vecs = np.linalg.eigh(averaged)
+    eigenvalues = np.ascontiguousarray(node_vals[:, ::-1][groups])
+    eigenvectors = np.ascontiguousarray(node_vecs[:, :, ::-1][groups])
     _set_floats(geo.setPointFloatAttribValuesFromString, value_name,
                 eigenvalues)
     _set_floats(geo.setPointFloatAttribValuesFromString, vector_name,
@@ -3942,6 +3982,10 @@ def _vector_text(vector):
     return "(" + ", ".join(f"{float(v):.5g}" for v in vector) + ")"
 
 
+_FORCE_FRAME_CACHE = OrderedDict()
+_FORCE_FRAME_CACHE_MAX = 64
+
+
 def force_readout_text(node):
     """Read-only Force Curves readout: each set's forces at this frame."""
     hou.frame()  # time-dependent, so it follows the playbar
@@ -3951,11 +3995,35 @@ def force_readout_text(node):
     try:
         record, definitions = _force_definitions(node)
         chosen = _selected_force_sets(node, len(definitions))
-        step = min(entry_index(node), len(read_pvd(path)) - 1)
-        mesh = _volume_block(load_frame(path, step))
-        nodes = _force_nodes(_file_key(scene_record_path(path)), mesh,
-                             definitions, chosen)
-        values = _frame_set_values(mesh, nodes)
+        entries = read_pvd(path)
+        step = max(0, min(entry_index(node), len(entries) - 1))
+        pvd_key = _file_key(path)
+        record_key = _file_key(scene_record_path(path))
+        memo_key = (pvd_key, record_key, tuple(chosen), len(entries))
+        values = None
+        memo = _FORCE_CURVES.get(node.sessionId())
+        if memo is not None and memo["key"] == memo_key \
+                and 0 <= step < len(memo["steps"]) \
+                and np.all(np.isfinite(memo["reaction"][step])):
+            values = {
+                index: (memo["reaction"][step, col],
+                        memo["contact"][step, col],
+                        memo["displacement"][step, col])
+                for col, index in enumerate(chosen)
+            }
+        else:
+            step_key = (pvd_key, record_key, step, tuple(chosen))
+            cached = _FORCE_FRAME_CACHE.get(step_key)
+            if cached is not None:
+                _FORCE_FRAME_CACHE.move_to_end(step_key)
+                values = cached
+            else:
+                mesh = _volume_block(load_frame(path, step))
+                nodes = _force_nodes(record_key, mesh, definitions, chosen)
+                values = _frame_set_values(mesh, nodes)
+                _FORCE_FRAME_CACHE[step_key] = values
+                while len(_FORCE_FRAME_CACHE) > _FORCE_FRAME_CACHE_MAX:
+                    _FORCE_FRAME_CACHE.popitem(last=False)
     except ForceCurveError as exc:
         return str(exc)
     except Exception as exc:

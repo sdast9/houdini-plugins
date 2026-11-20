@@ -176,6 +176,132 @@ if (chi("../show_deformed") && haspointattrib(0, "solution"))
     v@P += v@solution;
 """
 
+DERIVED_PREPARE_VEX = """\
+// Detail wrangle: allocate only the derived point attributes needed by the
+// current display, glyphs, fibers, and probe (or every derived field when
+// Derived Fields Scope is set to 'All Mechanics Fields'). Static @attrib
+// references in a point wrangle would pre-allocate every attribute even inside
+// untaken branches (~780 B/pt); dynamic creation here keeps on-demand mode
+// near zero memory overhead.
+int all_fields = chs("../derived_mode") == "all";
+string color = chs("../color_attrib");
+int glyphs = chi("../add_glyphs");
+string gtensor = glyphs ? chs("../glyph_tensor") : "";
+int probe = chi("../probe_enabled") || chi("../probe_point") >= 0;
+int fibers = chi("../show_fibers");
+matrix3 zero_m = 0;
+vector zero_v = {0, 0, 0};
+
+setdetailattrib(0, "__derived_fill_von_mises", 0, "set");
+
+if (haspointattrib(0, "solution") && (all_fields || color == "solution_mag"))
+    addpointattrib(0, "solution_mag", 0.0);
+
+int have_F = haspointattrib(0, "F_1") && haspointattrib(0, "F_2")
+    && haspointattrib(0, "F_3");
+if (!have_F)
+    return;
+
+if (all_fields || fibers || color == "F_mat")
+    addpointattrib(0, "F_mat", zero_m);
+if (all_fields || color == "J")
+    addpointattrib(0, "J", 0.0);
+
+if (all_fields || probe || color == "principal_stretches")
+    addpointattrib(0, "principal_stretches", zero_v);
+if (all_fields || gtensor == "right_cauchy_green"
+    || color == "right_cauchy_green")
+    addpointattrib(0, "right_cauchy_green", zero_m);
+if (all_fields || gtensor == "right_cauchy_green"
+    || color == "right_cauchy_green_eigenvalues")
+    addpointattrib(0, "right_cauchy_green_eigenvalues", zero_v);
+if (all_fields || gtensor == "right_cauchy_green"
+    || color == "right_cauchy_green_eigenvectors")
+    addpointattrib(0, "right_cauchy_green_eigenvectors", zero_m);
+if (all_fields || color == "right_stretch")
+    addpointattrib(0, "right_stretch", zero_m);
+if (all_fields || color == "hencky_strain")
+    addpointattrib(0, "hencky_strain", zero_m);
+if (all_fields || color == "hencky_strain_eigenvalues")
+    addpointattrib(0, "hencky_strain_eigenvalues", zero_v);
+if (all_fields || gtensor == "green_lagrange"
+    || color == "green_lagrange_strain")
+    addpointattrib(0, "green_lagrange_strain", zero_m);
+if (all_fields || gtensor == "green_lagrange"
+    || color == "green_lagrange_eigenvalues")
+    addpointattrib(0, "green_lagrange_eigenvalues", zero_v);
+if (all_fields || gtensor == "green_lagrange"
+    || color == "green_lagrange_eigenvectors")
+    addpointattrib(0, "green_lagrange_eigenvectors", zero_m);
+
+if (all_fields || gtensor == "left_cauchy_green"
+    || color == "left_cauchy_green")
+    addpointattrib(0, "left_cauchy_green", zero_m);
+if (all_fields || gtensor == "left_cauchy_green"
+    || color == "left_cauchy_green_eigenvalues")
+    addpointattrib(0, "left_cauchy_green_eigenvalues", zero_v);
+if (all_fields || gtensor == "left_cauchy_green"
+    || color == "left_cauchy_green_eigenvectors")
+    addpointattrib(0, "left_cauchy_green_eigenvectors", zero_m);
+if (all_fields || color == "left_stretch")
+    addpointattrib(0, "left_stretch", zero_m);
+if (all_fields || color == "almansi_strain")
+    addpointattrib(0, "almansi_strain", zero_m);
+if (all_fields || color == "almansi_strain_eigenvalues")
+    addpointattrib(0, "almansi_strain_eigenvalues", zero_v);
+
+if (all_fields || color == "infinitesimal_strain")
+    addpointattrib(0, "infinitesimal_strain", zero_m);
+if (all_fields || color == "infinitesimal_strain_eigenvalues")
+    addpointattrib(0, "infinitesimal_strain_eigenvalues", zero_v);
+if (all_fields || color == "infinitesimal_strain_eigenvectors")
+    addpointattrib(0, "infinitesimal_strain_eigenvectors", zero_m);
+
+int have_cauchy = haspointattrib(0, "cauchy_stress_1")
+    && haspointattrib(0, "cauchy_stress_2")
+    && haspointattrib(0, "cauchy_stress_3");
+int have_pk1 = haspointattrib(0, "pk1_stress_1")
+    && haspointattrib(0, "pk1_stress_2")
+    && haspointattrib(0, "pk1_stress_3");
+if (!(have_cauchy || have_pk1))
+    return;
+
+if (all_fields || gtensor == "cauchy" || color == "cauchy_mat")
+    addpointattrib(0, "cauchy_mat", zero_m);
+if (all_fields || probe || gtensor == "cauchy" || color == "cauchy_eigenvalues")
+    addpointattrib(0, "cauchy_eigenvalues", zero_v);
+if (all_fields || gtensor == "cauchy" || color == "cauchy_eigenvectors")
+    addpointattrib(0, "cauchy_eigenvectors", zero_m);
+if (all_fields || color == "cauchy_trace")
+    addpointattrib(0, "cauchy_trace", 0.0);
+if (all_fields || color == "hydrostatic_stress")
+    addpointattrib(0, "hydrostatic_stress", 0.0);
+if (all_fields || color == "deviatoric_stress")
+    addpointattrib(0, "deviatoric_stress", zero_m);
+if (all_fields || color == "stress_J2")
+    addpointattrib(0, "stress_J2", 0.0);
+if (all_fields || color == "stress_J3")
+    addpointattrib(0, "stress_J3", 0.0);
+if (all_fields || color == "von_mises_derived")
+    addpointattrib(0, "von_mises_derived", 0.0);
+if (all_fields || color == "max_shear_stress")
+    addpointattrib(0, "max_shear_stress", 0.0);
+if (all_fields || color == "stress_triaxiality")
+    addpointattrib(0, "stress_triaxiality", 0.0);
+if (!haspointattrib(0, "von_mises") && (all_fields || color == "von_mises")) {
+    addpointattrib(0, "von_mises", 0.0);
+    setdetailattrib(0, "__derived_fill_von_mises", 1, "set");
+}
+if (all_fields || color == "pk1")
+    addpointattrib(0, "pk1", zero_m);
+if (all_fields || gtensor == "pk2" || color == "pk2")
+    addpointattrib(0, "pk2", zero_m);
+if (all_fields || probe || gtensor == "pk2" || color == "pk2_eigenvalues")
+    addpointattrib(0, "pk2_eigenvalues", zero_v);
+if (all_fields || gtensor == "pk2" || color == "pk2_eigenvectors")
+    addpointattrib(0, "pk2_eigenvectors", zero_m);
+"""
+
 DERIVED_VEX = """\
 float matrix_trace(matrix3 m) {
     return getcomp(m, 0, 0) + getcomp(m, 1, 1) + getcomp(m, 2, 2);
@@ -218,84 +344,191 @@ matrix3 rebuild_symmetric(vector fvals; matrix3 vecs) {
     return vecs * diag * transpose(vecs);
 }
 
-if (haspointattrib(0, "solution"))
-    f@solution_mag = length(v@solution);
+if (haspointattrib(0, "solution_mag") && haspointattrib(0, "solution")) {
+    vector sol = point(0, "solution", @ptnum);
+    setpointattrib(0, "solution_mag", @ptnum, length(sol));
+}
 
-if (haspointattrib(0, "F_1") && haspointattrib(0, "F_2") && haspointattrib(0, "F_3")) {
-    // PolyFEM flattens tensors column-major: the exported X_i arrays are
-    // the COLUMNS of the tensor, while VEX set(a, b, c) fills rows --
-    // transpose to recover the true matrix (verified against PolyFEM's own
-    // pk1_stess export, which is asymmetric and exposes the convention).
-    matrix3 F = transpose(set(v@F_1, v@F_2, v@F_3));
-    3@F_mat = F;
-    f@J = determinant(F);
+if (!(haspointattrib(0, "F_1") && haspointattrib(0, "F_2")
+      && haspointattrib(0, "F_3")))
+    return;
 
-    matrix3 I = ident();
+int want_F_mat = haspointattrib(0, "F_mat");
+int want_J = haspointattrib(0, "J");
 
+int want_rcg = haspointattrib(0, "right_cauchy_green");
+int want_rcg_vals = haspointattrib(0, "right_cauchy_green_eigenvalues");
+int want_rcg_vecs = haspointattrib(0, "right_cauchy_green_eigenvectors");
+int want_stretches = haspointattrib(0, "principal_stretches");
+int want_right_stretch = haspointattrib(0, "right_stretch");
+int want_hencky = haspointattrib(0, "hencky_strain");
+int want_hencky_vals = haspointattrib(0, "hencky_strain_eigenvalues");
+int want_green = haspointattrib(0, "green_lagrange_strain");
+int want_green_vals = haspointattrib(0, "green_lagrange_eigenvalues");
+int want_green_vecs = haspointattrib(0, "green_lagrange_eigenvectors");
+int need_C_eigen = want_rcg_vals || want_rcg_vecs || want_stretches
+    || want_right_stretch || want_hencky || want_hencky_vals
+    || want_green_vals || want_green_vecs;
+int need_C = need_C_eigen || want_rcg || want_green;
+
+int want_lcg = haspointattrib(0, "left_cauchy_green");
+int want_lcg_vals = haspointattrib(0, "left_cauchy_green_eigenvalues");
+int want_lcg_vecs = haspointattrib(0, "left_cauchy_green_eigenvectors");
+int want_left_stretch = haspointattrib(0, "left_stretch");
+int want_almansi = haspointattrib(0, "almansi_strain");
+int want_almansi_vals = haspointattrib(0, "almansi_strain_eigenvalues");
+int need_B_eigen = want_lcg_vals || want_lcg_vecs || want_left_stretch
+    || want_almansi_vals;
+int need_B = need_B_eigen || want_lcg || want_almansi;
+
+int want_inf = haspointattrib(0, "infinitesimal_strain");
+int want_inf_vals = haspointattrib(0, "infinitesimal_strain_eigenvalues");
+int want_inf_vecs = haspointattrib(0, "infinitesimal_strain_eigenvectors");
+int need_inf_eigen = want_inf_vals || want_inf_vecs;
+int need_inf = need_inf_eigen || want_inf;
+
+int want_cauchy_mat = haspointattrib(0, "cauchy_mat");
+int want_cauchy_vals = haspointattrib(0, "cauchy_eigenvalues");
+int want_cauchy_vecs = haspointattrib(0, "cauchy_eigenvectors");
+int want_cauchy_trace = haspointattrib(0, "cauchy_trace");
+int want_hydro = haspointattrib(0, "hydrostatic_stress");
+int want_dev = haspointattrib(0, "deviatoric_stress");
+int want_J2 = haspointattrib(0, "stress_J2");
+int want_J3 = haspointattrib(0, "stress_J3");
+int want_vm_derived = haspointattrib(0, "von_mises_derived");
+int want_max_shear = haspointattrib(0, "max_shear_stress");
+int want_triax = haspointattrib(0, "stress_triaxiality");
+int fill_vm = int(detail(0, "__derived_fill_von_mises", 0));
+int want_pk1 = haspointattrib(0, "pk1");
+int want_pk2 = haspointattrib(0, "pk2");
+int want_pk2_vals = haspointattrib(0, "pk2_eigenvalues");
+int want_pk2_vecs = haspointattrib(0, "pk2_eigenvectors");
+int need_cauchy_eigen = want_cauchy_vals || want_cauchy_vecs || want_max_shear;
+int need_pk_eigen = want_pk2_vals || want_pk2_vecs;
+int need_pk = want_pk1 || want_pk2 || need_pk_eigen;
+int need_dev = want_dev || want_J2 || want_J3 || want_vm_derived
+    || want_triax || fill_vm;
+int need_stress = want_cauchy_mat || need_cauchy_eigen || want_cauchy_trace
+    || want_hydro || need_dev || need_pk;
+
+if (!(want_F_mat || want_J || need_C || need_B || need_inf || need_stress))
+    return;
+
+// PolyFEM flattens tensors column-major: the exported X_i arrays are
+// the COLUMNS of the tensor, while VEX set(a, b, c) fills rows --
+// transpose to recover the true matrix (verified against PolyFEM's own
+// pk1_stess export, which is asymmetric and exposes the convention).
+vector F1 = point(0, "F_1", @ptnum);
+vector F2 = point(0, "F_2", @ptnum);
+vector F3 = point(0, "F_3", @ptnum);
+matrix3 F = transpose(set(F1, F2, F3));
+if (want_F_mat)
+    setpointattrib(0, "F_mat", @ptnum, F);
+float J_val = determinant(F);
+if (want_J)
+    setpointattrib(0, "J", @ptnum, J_val);
+
+matrix3 I = ident();
+
+if (need_C) {
     // Right Cauchy-Green deformation tensor C = F^T F (Lagrangian) and its
     // Lagrangian principal directions, reused for the stretch/strain measures
     // that share those axes (right stretch U, Green-Lagrange, Hencky).
     matrix3 C = transpose(F) * F;
-    vector rcg_vals = {0, 0, 0};
-    matrix3 rcg_vecs = 0;
-    sorted_eigen(C, rcg_vals, rcg_vecs);
-    vector lam = sqrt(max(rcg_vals, {0, 0, 0}));   // principal stretches
-    v@principal_stretches = lam;
-    3@right_cauchy_green = C;
-    v@right_cauchy_green_eigenvalues = rcg_vals;
-    3@right_cauchy_green_eigenvectors = rcg_vecs;
-    3@right_stretch = rebuild_symmetric(lam, rcg_vecs);
-    // Material logarithmic (Hencky) strain = 0.5 ln C = sum ln(lambda) n (x) n,
-    // defined only where every stretch is positive (J != 0).
-    if (abs(f@J) > 1e-12) {
-        vector ln_lam = log(max(lam, 1e-20));
-        3@hencky_strain = rebuild_symmetric(ln_lam, rcg_vecs);
-        v@hencky_strain_eigenvalues = ln_lam;
-    } else {
-        3@hencky_strain = 0;
-        v@hencky_strain_eigenvalues = 0;
+    if (want_rcg)
+        setpointattrib(0, "right_cauchy_green", @ptnum, C);
+    if (want_green)
+        setpointattrib(0, "green_lagrange_strain", @ptnum, 0.5 * (C - I));
+    if (need_C_eigen) {
+        vector rcg_vals = {0, 0, 0};
+        matrix3 rcg_vecs = 0;
+        sorted_eigen(C, rcg_vals, rcg_vecs);
+        vector lam = sqrt(max(rcg_vals, {0, 0, 0}));   // principal stretches
+        if (want_stretches)
+            setpointattrib(0, "principal_stretches", @ptnum, lam);
+        if (want_rcg_vals)
+            setpointattrib(0, "right_cauchy_green_eigenvalues", @ptnum,
+                           rcg_vals);
+        if (want_rcg_vecs)
+            setpointattrib(0, "right_cauchy_green_eigenvectors", @ptnum,
+                           rcg_vecs);
+        if (want_right_stretch)
+            setpointattrib(0, "right_stretch", @ptnum,
+                           rebuild_symmetric(lam, rcg_vecs));
+        // E = 0.5 * (C - I) shares C's eigenvectors and shifts/scales its
+        // eigenvalues directly -- no second eigendecomposition needed.
+        if (want_green_vals)
+            setpointattrib(0, "green_lagrange_eigenvalues", @ptnum,
+                           0.5 * (rcg_vals - {1, 1, 1}));
+        if (want_green_vecs)
+            setpointattrib(0, "green_lagrange_eigenvectors", @ptnum, rcg_vecs);
+        // Material logarithmic (Hencky) strain = 0.5 ln C = sum ln(lambda) n (x) n,
+        // defined only where every stretch is positive (J != 0).
+        if (want_hencky || want_hencky_vals) {
+            if (abs(J_val) > 1e-12) {
+                vector ln_lam = log(max(lam, 1e-20));
+                if (want_hencky)
+                    setpointattrib(0, "hencky_strain", @ptnum,
+                                   rebuild_symmetric(ln_lam, rcg_vecs));
+                if (want_hencky_vals)
+                    setpointattrib(0, "hencky_strain_eigenvalues", @ptnum,
+                                   ln_lam);
+            }
+        }
     }
+}
 
+if (need_B) {
     // Left Cauchy-Green deformation tensor B = F F^T (Eulerian) and its
     // Eulerian principal directions, shared with the left stretch V and the
     // Almansi strain.
     matrix3 B = F * transpose(F);
-    vector lcg_vals = {0, 0, 0};
-    matrix3 lcg_vecs = 0;
-    sorted_eigen(B, lcg_vals, lcg_vecs);
-    3@left_cauchy_green = B;
-    v@left_cauchy_green_eigenvalues = lcg_vals;
-    3@left_cauchy_green_eigenvectors = lcg_vecs;
-    3@left_stretch = rebuild_symmetric(sqrt(max(lcg_vals, {0, 0, 0})),
-                                       lcg_vecs);
-    // Almansi (Eulerian) strain e = 0.5 (I - B^-1); defined only where B is
-    // invertible (J != 0). Its eigenvalues share B's (Eulerian) axes, so
-    // 0.5 (1 - 1/lambda^2) in descending order.
-    if (abs(f@J) > 1e-12) {
-        3@almansi_strain = 0.5 * (I - invert(B));
-        v@almansi_strain_eigenvalues = set(
-            0.5 * (1.0 - 1.0 / max(lcg_vals.x, 1e-20)),
-            0.5 * (1.0 - 1.0 / max(lcg_vals.y, 1e-20)),
-            0.5 * (1.0 - 1.0 / max(lcg_vals.z, 1e-20)));
-    } else {
-        3@almansi_strain = 0;
-        v@almansi_strain_eigenvalues = 0;
+    if (want_lcg)
+        setpointattrib(0, "left_cauchy_green", @ptnum, B);
+    if (need_B_eigen) {
+        vector lcg_vals = {0, 0, 0};
+        matrix3 lcg_vecs = 0;
+        sorted_eigen(B, lcg_vals, lcg_vecs);
+        if (want_lcg_vals)
+            setpointattrib(0, "left_cauchy_green_eigenvalues", @ptnum, lcg_vals);
+        if (want_lcg_vecs)
+            setpointattrib(0, "left_cauchy_green_eigenvectors", @ptnum,
+                           lcg_vecs);
+        if (want_left_stretch)
+            setpointattrib(0, "left_stretch", @ptnum,
+                           rebuild_symmetric(sqrt(max(lcg_vals, {0, 0, 0})),
+                                             lcg_vecs));
+        if (want_almansi_vals && abs(J_val) > 1e-12) {
+            setpointattrib(0, "almansi_strain_eigenvalues", @ptnum, set(
+                0.5 * (1.0 - 1.0 / max(lcg_vals.x, 1e-20)),
+                0.5 * (1.0 - 1.0 / max(lcg_vals.y, 1e-20)),
+                0.5 * (1.0 - 1.0 / max(lcg_vals.z, 1e-20))));
+        }
     }
+    // Almansi (Eulerian) strain e = 0.5 (I - B^-1); defined only where B is
+    // invertible (J != 0).
+    if (want_almansi && abs(J_val) > 1e-12)
+        setpointattrib(0, "almansi_strain", @ptnum, 0.5 * (I - invert(B)));
+}
 
-    matrix3 green = 0.5 * (C - I);
-    3@green_lagrange_strain = green;
-    v@green_lagrange_eigenvalues = {0, 0, 0};
-    3@green_lagrange_eigenvectors = 0;
-    sorted_eigen(green, v@green_lagrange_eigenvalues,
-                 3@green_lagrange_eigenvectors);
-
+if (need_inf) {
     matrix3 infinitesimal = 0.5 * (F + transpose(F)) - I;
-    3@infinitesimal_strain = infinitesimal;
-    v@infinitesimal_strain_eigenvalues = {0, 0, 0};
-    3@infinitesimal_strain_eigenvectors = 0;
-    sorted_eigen(infinitesimal, v@infinitesimal_strain_eigenvalues,
-                 3@infinitesimal_strain_eigenvectors);
+    if (want_inf)
+        setpointattrib(0, "infinitesimal_strain", @ptnum, infinitesimal);
+    if (need_inf_eigen) {
+        vector inf_vals = {0, 0, 0};
+        matrix3 inf_vecs = 0;
+        sorted_eigen(infinitesimal, inf_vals, inf_vecs);
+        if (want_inf_vals)
+            setpointattrib(0, "infinitesimal_strain_eigenvalues", @ptnum,
+                           inf_vals);
+        if (want_inf_vecs)
+            setpointattrib(0, "infinitesimal_strain_eigenvectors", @ptnum,
+                           inf_vecs);
+    }
+}
 
+if (need_stress) {
     // Cauchy stress from the exported field, or reconstructed from the 1st
     // Piola-Kirchhoff stress (sigma = (1/J) P F^T) when only that was written,
     // so PolyFEM can export just F + pk1 and everything else is derived.
@@ -305,48 +538,89 @@ if (haspointattrib(0, "F_1") && haspointattrib(0, "F_2") && haspointattrib(0, "F
     int have_pk1 = haspointattrib(0, "pk1_stress_1")
         && haspointattrib(0, "pk1_stress_2")
         && haspointattrib(0, "pk1_stress_3");
-    if (have_cauchy || (have_pk1 && abs(f@J) > 1e-12)) {
+    if (have_cauchy || (have_pk1 && abs(J_val) > 1e-12)) {
         matrix3 cauchy;
-        if (have_cauchy)
+        if (have_cauchy) {
             // symmetric, so the column-major transpose is a no-op; kept for
             // consistency with the F / pk1 assembly convention above
-            cauchy = transpose(set(v@cauchy_stress_1, v@cauchy_stress_2,
-                                   v@cauchy_stress_3));
-        else {
-            matrix3 P = transpose(set(v@pk1_stress_1, v@pk1_stress_2,
-                                      v@pk1_stress_3));
-            cauchy = (1.0 / f@J) * P * transpose(F);
-        }
-        3@cauchy_mat = cauchy;
-        v@cauchy_eigenvalues = {0, 0, 0};
-        3@cauchy_eigenvectors = 0;
-        sorted_eigen(cauchy, v@cauchy_eigenvalues, 3@cauchy_eigenvectors);
-
-        f@cauchy_trace = matrix_trace(cauchy);
-        f@hydrostatic_stress = f@cauchy_trace / 3.0;
-        matrix3 dev = cauchy - f@hydrostatic_stress * I;
-        3@deviatoric_stress = dev;
-        f@stress_J2 = 0.5 * matrix_norm_squared(dev);
-        f@stress_J3 = determinant(dev);
-        f@von_mises_derived = sqrt(max(0.0, 3.0 * f@stress_J2));
-        f@max_shear_stress =
-            0.5 * (v@cauchy_eigenvalues.x - v@cauchy_eigenvalues.z);
-        f@stress_triaxiality = f@von_mises_derived > 1e-12
-            ? f@hydrostatic_stress / f@von_mises_derived : 0.0;
-        if (!haspointattrib(0, "von_mises"))
-            f@von_mises = f@von_mises_derived;
-
-        if (abs(f@J) > 1e-12) {
-            matrix3 Finv = invert(F);
-            3@pk1 = f@J * cauchy * transpose(Finv);
-            3@pk2 = f@J * Finv * cauchy * transpose(Finv);
+            vector s1 = point(0, "cauchy_stress_1", @ptnum);
+            vector s2 = point(0, "cauchy_stress_2", @ptnum);
+            vector s3 = point(0, "cauchy_stress_3", @ptnum);
+            cauchy = transpose(set(s1, s2, s3));
         } else {
-            3@pk1 = 0;
-            3@pk2 = 0;
+            vector p1 = point(0, "pk1_stress_1", @ptnum);
+            vector p2 = point(0, "pk1_stress_2", @ptnum);
+            vector p3 = point(0, "pk1_stress_3", @ptnum);
+            matrix3 P = transpose(set(p1, p2, p3));
+            cauchy = (1.0 / J_val) * P * transpose(F);
         }
-        v@pk2_eigenvalues = {0, 0, 0};
-        3@pk2_eigenvectors = 0;
-        sorted_eigen(3@pk2, v@pk2_eigenvalues, 3@pk2_eigenvectors);
+        if (want_cauchy_mat)
+            setpointattrib(0, "cauchy_mat", @ptnum, cauchy);
+        if (need_cauchy_eigen) {
+            vector c_vals = {0, 0, 0};
+            matrix3 c_vecs = 0;
+            sorted_eigen(cauchy, c_vals, c_vecs);
+            if (want_cauchy_vals)
+                setpointattrib(0, "cauchy_eigenvalues", @ptnum, c_vals);
+            if (want_cauchy_vecs)
+                setpointattrib(0, "cauchy_eigenvectors", @ptnum, c_vecs);
+            if (want_max_shear)
+                setpointattrib(0, "max_shear_stress", @ptnum,
+                               0.5 * (c_vals.x - c_vals.z));
+        }
+
+        if (want_cauchy_trace || want_hydro || need_dev) {
+            float tr = matrix_trace(cauchy);
+            float hydro = tr / 3.0;
+            if (want_cauchy_trace)
+                setpointattrib(0, "cauchy_trace", @ptnum, tr);
+            if (want_hydro)
+                setpointattrib(0, "hydrostatic_stress", @ptnum, hydro);
+            if (need_dev) {
+                matrix3 dev = cauchy - hydro * I;
+                if (want_dev)
+                    setpointattrib(0, "deviatoric_stress", @ptnum, dev);
+                float j2 = 0.5 * matrix_norm_squared(dev);
+                if (want_J2)
+                    setpointattrib(0, "stress_J2", @ptnum, j2);
+                if (want_J3)
+                    setpointattrib(0, "stress_J3", @ptnum, determinant(dev));
+                if (want_vm_derived || want_triax || fill_vm) {
+                    float vm = sqrt(max(0.0, 3.0 * j2));
+                    if (want_vm_derived)
+                        setpointattrib(0, "von_mises_derived", @ptnum, vm);
+                    if (want_triax)
+                        setpointattrib(0, "stress_triaxiality", @ptnum,
+                                       vm > 1e-12 ? hydro / vm : 0.0);
+                    if (fill_vm)
+                        setpointattrib(0, "von_mises", @ptnum, vm);
+                }
+            }
+        }
+
+        if (need_pk) {
+            matrix3 pk2_mat = 0;
+            if (abs(J_val) > 1e-12) {
+                matrix3 Finv = invert(F);
+                matrix3 FinvT = transpose(Finv);
+                if (want_pk1)
+                    setpointattrib(0, "pk1", @ptnum, J_val * cauchy * FinvT);
+                if (want_pk2 || need_pk_eigen) {
+                    pk2_mat = J_val * Finv * cauchy * FinvT;
+                    if (want_pk2)
+                        setpointattrib(0, "pk2", @ptnum, pk2_mat);
+                }
+            }
+            if (need_pk_eigen) {
+                vector pk2_vals = {0, 0, 0};
+                matrix3 pk2_vecs = 0;
+                sorted_eigen(pk2_mat, pk2_vals, pk2_vecs);
+                if (want_pk2_vals)
+                    setpointattrib(0, "pk2_eigenvalues", @ptnum, pk2_vals);
+                if (want_pk2_vecs)
+                    setpointattrib(0, "pk2_eigenvectors", @ptnum, pk2_vecs);
+            }
+        }
     }
 }
 """
@@ -1656,6 +1930,21 @@ def _parms():
              "principal values, von Mises, invariants and more. Turn off to "
              "load faster when you only need the exported fields.")
     ana.addParmTemplate(derived_toggle)
+    derived_mode = hou.MenuParmTemplate(
+        "derived_mode", "Derived Fields Scope",
+        ("on_demand", "all"),
+        menu_labels=("Active Display / Glyphs / Probe (fast)",
+                     "All Mechanics Fields (downstream SOPs)"),
+        default_value=0,
+        help="Controls which derived mechanics attributes are computed and "
+             "attached to the geometry. 'Active Display / Glyphs / Probe' "
+             "computes only the fields needed by the current Color Field, "
+             "glyphs, fibers, and probe (much faster and far less memory on "
+             "large meshes). Switch to 'All Mechanics Fields' when downstream "
+             "SOPs need every derived tensor and invariant simultaneously.")
+    derived_mode.setConditional(
+        hou.parmCondType.DisableWhen, "{ derived == 0 }")
+    ana.addParmTemplate(derived_mode)
     glyph_toggle = hou.ToggleParmTemplate(
         "add_glyphs", "Show Principal-Direction Glyphs", default_value=False,
         script_callback="hou.phm().auto_glyph_scale(kwargs)",
@@ -2321,17 +2610,29 @@ def build(out_dir):
     cache.parm("maxframes").setExpression(
         "hou.pwd().parent().hdaModule().cache_frame_limit(hou.pwd())",
         hou.exprLanguage.Python)
+    # Deduplicate cache entries by output step: under Simulation Time (or past
+    # the last step) several Houdini frames show the same PVD step, so shifting
+    # cache lookups to the step's canonical frame stores one copy per step.
+    step_shift = asset.createNode("timeshift", "step_shift")
+    step_shift.setNextInput(cache)
+    step_shift.parm("frame").setExpression(
+        "hou.pwd().parent().hdaModule().cache_frame(hou.pwd().parent())",
+        hou.exprLanguage.Python)
     # Cache Frames selects the cached stream by expression. Bypassing cache1
     # from a callback would need allowEditingOfContents(), which unlocks the
     # instance so it silently stops receiving asset updates.
     cache_switch = asset.createNode("switch", "cache_switch")
     cache_switch.parm("input").setExpression('ch("../cache")')
     cache_switch.setNextInput(frame)            # 0: read every frame
-    cache_switch.setNextInput(cache)            # 1: cached frames
+    cache_switch.setNextInput(step_shift)       # 1: cached frames (per step)
 
     # Mechanics are independent of whether the user draws the rest or
     # displaced positions, so calculate them on the raw PVD geometry.
-    derived = wrangle("derived", 2, DERIVED_VEX, cache_switch)
+    # derived_prepare allocates only the needed point attributes; derived runs
+    # multi-threaded over points to fill them.
+    derived_prepare = wrangle(
+        "derived_prepare", 0, DERIVED_PREPARE_VEX, cache_switch)
+    derived = wrangle("derived", 2, DERIVED_VEX, derived_prepare)
     derived_switch = asset.createNode("switch", "derived_switch")
     derived_switch.parm("input").setExpression('ch("../derived")')
     derived_switch.setNextInput(cache_switch)

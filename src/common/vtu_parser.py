@@ -8,6 +8,7 @@ optional zlib compression, and vectorized linearization of higher-order
 
 import base64
 import binascii
+import mmap
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -161,7 +162,7 @@ def _predicted_close(data, begin, raw_header):
     close = start + 4 * -(-(header_size + nbytes) // 3)
     while data[close:close + 1] and data[close:close + 1] in _WHITESPACE:
         close += 1
-    return close if data.startswith(b"</DataArray>", close) else None
+    return close if data[close:close + 12] == b"</DataArray>" else None
 
 
 def _strip_inline_payloads(data):
@@ -643,13 +644,81 @@ def _field_info_from_mesh(mesh):
     return info
 
 
+def _scan_vtu_field_info(data):
+    """Single-pass scan of PointData/CellData <DataArray> headers in a VTU.
+
+    Works on either a bytes buffer or a read-only mmap: never copies the file,
+    stops before <AppendedData, and jumps over uncompressed inline-binary
+    payloads via their encoded length instead of scanning gigabytes of base64.
+    """
+    info = {"point_data": {}, "cell_data": {}}
+    raw_header = _raw_binary_header(data)
+    section = None
+    pos = 0
+    length = len(data)
+    while pos < length:
+        lt = data.find(b"<", pos)
+        if lt < 0:
+            break
+        if data[lt:lt + 4] == b"<!--":
+            end_comment = data.find(b"-->", lt + 4)
+            if end_comment < 0:
+                break
+            pos = end_comment + 3
+            continue
+        if data[lt:lt + 13] == b"<AppendedData":
+            break
+        gt = data.find(b">", lt + 1)
+        if gt < 0:
+            break
+        head = data[lt + 1:gt]
+        self_closing = head.endswith(b"/")
+        if head.startswith(b"PointData") and (
+                len(head) == 9 or head[9:10] in b" \t\r\n/"):
+            section = None if self_closing else "point_data"
+            pos = gt + 1
+            continue
+        if head.startswith(b"CellData") and (
+                len(head) == 8 or head[8:9] in b" \t\r\n/"):
+            section = None if self_closing else "cell_data"
+            pos = gt + 1
+            continue
+        if head.startswith(b"/PointData") or head.startswith(b"/CellData"):
+            section = None
+            pos = gt + 1
+            continue
+        if head.startswith(b"DataArray") and (
+                len(head) == 9 or head[9:10] in b" \t\r\n/"):
+            if section is not None:
+                attrs = dict(_XML_ATTR_RE.findall(head))
+                name = attrs.get(b"Name")
+                if name:
+                    info[section][name.decode()] = int(
+                        attrs.get(b"NumberOfComponents", b"1"))
+            if self_closing:
+                pos = gt + 1
+                continue
+            close = None
+            if raw_header is not None and b'format="binary"' in head:
+                close = _predicted_close(data, gt + 1, raw_header)
+            if close is None:
+                close = data.find(b"</DataArray>", gt + 1)
+            if close < 0:
+                break
+            pos = close + 12
+            continue
+        pos = gt + 1
+    return info
+
+
 def read_vtu_field_info(path):
     """Field names -> component counts without decoding any array data.
 
     Returns {"point_data": {name: components}, "cell_data": {...}}. If the
     frame is already fully parsed (in the LRU) the info is taken from it for
-    free; otherwise it is a raw byte scan of the PointData/CellData sections
-    (inline payloads contain no '<', so only real DataArray tags match).
+    free; otherwise maps the file read-only and walks XML tags directly,
+    stopping at <AppendedData and jumping over uncompressed inline-binary
+    payloads by length so multi-GB files touch only header pages.
     """
     key = _file_key(path)
     cached = _FIELD_INFO_CACHE.get(key)
@@ -661,25 +730,15 @@ def read_vtu_field_info(path):
         _FIELD_INFO_CACHE[key] = info
         return info
     with open(path, "rb") as f:
-        data = f.read()
-    info = {"point_data": {}, "cell_data": {}}
-    for tag, out_key in ((b"PointData", "point_data"),
-                         (b"CellData", "cell_data")):
-        start = data.find(b"<" + tag)
-        if start < 0:
-            continue
-        open_end = data.find(b">", start)
-        if open_end > 0 and data[open_end - 1:open_end] == b"/":
-            continue  # <PointData/> : empty section
-        end = data.find(b"</" + tag + b">", start)
-        if end < 0:
-            end = len(data)
-        for match in _DATA_ARRAY_RE.finditer(data, open_end, end):
-            attrs = dict(_XML_ATTR_RE.findall(match.group(0)))
-            name = attrs.get(b"Name")
-            if name:
-                info[out_key][name.decode()] = int(
-                    attrs.get(b"NumberOfComponents", b"1"))
+        size = os.fstat(f.fileno()).st_size
+        if size == 0:
+            info = {"point_data": {}, "cell_data": {}}
+        else:
+            try:
+                with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+                    info = _scan_vtu_field_info(mm)
+            except (ValueError, OSError):
+                info = _scan_vtu_field_info(f.read())
     if len(_FIELD_INFO_CACHE) > 4096:
         _FIELD_INFO_CACHE.clear()
     _FIELD_INFO_CACHE[key] = info
