@@ -48,6 +48,7 @@ hython tests/test_polyfem_materials.py   # fiber models, composites, per-element
 hython tests/test_readpvd_materials.py   # material fields + fiber visualization
 hython tests/test_patch1_fixes.py        # 2026-11-19 review Patch 1 regressions
 hython tests/test_patch2_fixes.py        # 2026-11-19 review Patch 2 regressions
+hython tests/test_ux_improvements.py     # 2026-11-19 UX improvements (3-axis BC inputs, Run Summary, etc.)
 ```
 
 ## MSH_Reader 3.0
@@ -409,6 +410,17 @@ Targets the current build's strict-validated schema — the old fork keys
    viewport overlay legend, and scene gnomon; try both Auto Range buttons;
    toggle field smoothing; click-probe a point and scrub; clip with glyphs on;
    on a multi-body result, toggle Visible Bodies to isolate/hide bodies.
+
+### UX improvements (2026-11-19)
+
+Usability upgrades across `PolyFEM 2.0` and `Read PVD 1.0` (`tests/test_ux_improvements.py`):
+
+| Asset | Improvement |
+| --- | --- |
+| PolyFEM | **Separate X / Y / Z expression boxes** (`bc_vec`, `ic_vec`, `obstacle_disp_vec`, `rhs_vec`) and unquoted scalar `value_` replace hand-typed JSON lists (`["0*t","0*t","0*t"]`). Enter plain numbers (`0`, `-0.01`) or PolyFEM TinyExpr expressions of `x, y, z, t` directly without brackets or quotes (quotes are still accepted if pasted). `Check Setup` validates TinyExpr syntax and PolyFEM's built-in helpers (`min`, `max`, `smoothstep`, `half_smoothstep`, `deg2rad`, `rotate_2D_x/y`, `if`, `compare`, `smooth_abs`, `sign`), and `OnLoaded` migrates legacy saved `.hipnc` scenes automatically |
+| PolyFEM | **Viewport & setup polish:** disabled geometries (`Enabled = 0`) dim in the viewport (`Alpha = 0.25`); subdomain default colors use distinct bright hues instead of darkening with `1/vol`; transform sliders use usable ranges (`Rotate: -180..180`, `Scale: 0.01..10`); **Set dhat (0.001 × Diag)** button added next to *Calc Min Edge Length*; **Global ▸ Units** uses editable preset menus (`m/cm/mm/um`, `kg/g/tonne`, `s/ms`); **Linear Solver** / **Nonlinear Solver** are labeled clearly and Hypre/AMGCL `Max Iterations` and `Tolerance` are visible without Expert Mode |
+| Read PVD | **Run diagnostics from `run-manifest.json`:** read-only **Run Summary** on *Main* (completion status, exit code, wall time, peak RSS, non-accepted steps, stall retunes, AL stagnations, continuation losses/split pairs), per-step diagnostic flags in **Simulation Time**, and CLI fallback to `run-manifest.json` units in Export |
+| Read PVD | **Display & multi-node polish:** off-diagonal tensor entries (`XY`, `YZ`, `XZ`) added to *Field Value To Display*; toggling *Compare With Reference Frame* or changing *Visible Bodies* auto-ranges when unlocked; **Set Playbar Range on Refresh** toggle prevents multi-node playbar stomping; `start()` invalidates disk caches scoped to the node's own PVD folder; Help card updated with Comparison, Multi-Block, Glyphs, Fibers, Gnomon, and Run Summary |
 
 ### Pipeline review Patch 2 fixes (2026-11-19)
 

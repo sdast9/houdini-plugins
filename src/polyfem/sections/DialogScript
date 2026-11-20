@@ -1155,7 +1155,7 @@
                     size    3
                     default { "0" "0" "0" }
                     help    "Rotate the mesh (degrees about x, y, z) before export. The rotation moves the mesh only: PolyFEM does not apply it to material fiber directions, which remain in simulation/world coordinates."
-                    range   { -1 1 }
+                    range   { -180 180 }
                     parmtag { "cook_dependent" "1" }
                     parmtag { "spare_category" "Pre-Transform" }
                 }
@@ -1166,7 +1166,7 @@
                     size    3
                     default { "1" "1" "1" }
                     help    "Scale the mesh before export (1 = original size). Non-uniform values stretch it. Material and fiber directions are not scaled."
-                    range   { -1 1 }
+                    range   { 0.01 10 }
                     parmtag { "cook_dependent" "1" }
                     parmtag { "spare_category" "Pre-Transform" }
                 }
@@ -2381,23 +2381,36 @@
                                 parmtag { "script_callback_language" "python" }
                             }
                             parm {
-                                name    "vector_#_#_#_#"
+                                name    "bc_vec#_#_#_#"
                                 label   "Value [x, y, z]"
                                 type    string
+                                size    3
+                                default { "0" "0" "0" }
+                                disablewhen "{ boundary_type#_#_#_# != Neumann boundary_type#_#_#_# != Dirichlet }"
+                                hidewhen "{ boundary_type#_#_#_# != Neumann boundary_type#_#_#_# != Dirichlet }"
+                                help    "Displacement (Dirichlet, length units) or traction (Neumann, force per area) for X, Y, Z. Enter a plain number (0, -0.01) or any PolyFEM TinyExpr formula of x, y, z, t without quotes (quotes are also accepted): e.g. -0.01*t, 1000*smoothstep(t)*sin(pi*x), if(t-0.5, -0.02, -0.04*t). Functions: sin, cos, tan, exp, ln, log, log10, pow, sqrt, abs, ceil, floor, pi, e, min, max, smoothstep, half_smoothstep, deg2rad, rotate_2D_x, rotate_2D_y, if, compare, smooth_abs, sign. Use ^ for powers (not **)."
+                                parmtag { "script_callback" "hou.pwd().hm().sync_expr_vector(kwargs)" }
+                                parmtag { "script_callback_language" "python" }
+                            }
+                            parm {
+                                name    "vector_#_#_#_#"
+                                label   "Value [x, y, z] (legacy)"
+                                type    string
+                                invisible
                                 default { "[\"0*t\",\"0*t\",\"0*t\"]" }
                                 disablewhen "{ boundary_type#_#_#_# != Neumann boundary_type#_#_#_# != Dirichlet }"
                                 hidewhen "{ boundary_type#_#_#_# != Neumann boundary_type#_#_#_# != Dirichlet }"
-                                help    "The displacement (Dirichlet, length units) or traction (Neumann, force per area) as [x, y, z]. Each component is a number or an expression of time t in quotes: [\"0\",\"0\",\"-0.01*t\"] moves the surface down as time advances; [0,0,0] holds it fixed."
+                                help    "Legacy JSON-list storage kept hidden for compatibility with older scenes."
                                 parmtag { "script_callback_language" "python" }
                             }
                             parm {
                                 name    "value_#_#_#_#"
                                 label   "Value"
                                 type    string
-                                default { "\"0*t\"" }
+                                default { "0" }
                                 disablewhen "{ boundary_type#_#_#_# != Normal_Aligned_Neumann boundary_type#_#_#_# != Pressure_Boundary boundary_type#_#_#_# != Pressure_Cavity }"
                                 hidewhen "{ boundary_type#_#_#_# != Normal_Aligned_Neumann boundary_type#_#_#_# != Pressure_Boundary boundary_type#_#_#_# != Pressure_Cavity }"
-                                help    "Scalar magnitude (force per area) of the normal traction or pressure. A number or an expression of time t in quotes, e.g. \"1000*t\" ramps the load up."
+                                help    "Scalar magnitude (force per area) of the normal traction or pressure. Enter a plain number (1000) or a PolyFEM TinyExpr formula of x, y, z, t without quotes (quotes are also accepted): e.g. 1000*t, 500*smoothstep(t), if(t-1, 1000, 1000*t)."
                                 parmtag { "script_callback_language" "python" }
                             }
                             parm {
@@ -2547,11 +2560,22 @@
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
-                            name    "condition_vector_#_#_#"
+                            name    "ic_vec#_#_#"
                             label   "Value [x, y, z]"
                             type    string
+                            size    3
+                            default { "0" "0" "0" }
+                            help    "Initial value for X, Y, Z. Enter plain numbers or PolyFEM TinyExpr expressions of x, y, z without quotes (quotes are also accepted): e.g. 0, -1.5, 0.1*sin(pi*x)."
+                            parmtag { "script_callback" "hou.pwd().hm().sync_expr_vector(kwargs)" }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "condition_vector_#_#_#"
+                            label   "Value [x, y, z] (legacy)"
+                            type    string
+                            invisible
                             default { "[0,0,0]" }
-                            help    "Initial value as [x, y, z]; numbers, or expressions of position x, y, z in quotes for a field that varies over the body."
+                            help    "Legacy JSON-list storage kept hidden for compatibility with older scenes."
                             parmtag { "script_callback_language" "python" }
                         }
                         parm {
@@ -2577,13 +2601,26 @@
             }
 
             parm {
-                name    "obstacle_disp#"
+                name    "obstacle_disp_vec#"
                 label   "Obstacle Displacement [x, y, z]"
                 type    string
+                size    3
+                default { "0" "0" "0" }
+                disablewhen "{ is_obstacle# != 1 }"
+                hidewhen "{ is_obstacle# != 1 }"
+                help    "Prescribed motion of this obstacle for X, Y, Z. Enter plain numbers or PolyFEM TinyExpr expressions of x, y, z, t without quotes (quotes are also accepted): e.g. 0, -0.1*t, 0 pushes it down along Y over time. Leave at 0, 0, 0 to hold fixed (or keyframe the Transform above for animated motion)."
+                parmtag { "script_callback" "hou.pwd().hm().sync_expr_vector(kwargs)" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "obstacle_disp#"
+                label   "Obstacle Displacement [x, y, z] (legacy)"
+                type    string
+                invisible
                 default { "[0,0,0]" }
                 disablewhen "{ is_obstacle# != 1 }"
                 hidewhen "{ is_obstacle# != 1 }"
-                help    "Prescribed motion of this obstacle as a 3-component displacement [x, y, z]. Each entry may be a number or an expression of time t in quotes, e.g. [\"0\", \"-0.1*t\", \"0\"] pushes it down over time. [0,0,0] keeps it fixed. Units follow your mesh and the optional Global units."
+                help    "Legacy JSON-list storage kept hidden for compatibility with older scenes."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -2834,9 +2871,20 @@
                 label   "Min Edge Length"
                 type    string
                 nolabel
+                joinnext
                 default { "-1" }
                 disablewhen "{ working_dir != __polyfem_report_edit_sentinel__ }"
                 help    "Shortest mesh edge found by Calc Min Edge (length units). Read-only reference; -1 means not computed yet."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "suggest_dhat_button"
+                label   "Set dhat (0.001 × Diag)"
+                type    button
+                default { "0" }
+                disablewhen "{ enable == 0 }"
+                help    "Set dhat to 0.001 times the bounding-box diagonal of the loaded enabled geometries (a typical starting point matching Check Setup's guidance)."
+                parmtag { "script_callback" "hou.pwd().hm().suggest_dhat(kwargs)" }
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -3419,7 +3467,7 @@
 
             parm {
                 name    "solver"
-                label   "Solver"
+                label   "Linear Solver"
                 type    ordinal
                 default { "0" }
                 disablewhen "{ solver_nl == BFGS }"
@@ -3515,8 +3563,8 @@
                 type    intlog
                 default { "1000" }
                 disablewhen "{ solver != Hypre }"
-                hidewhen "{ solver != Hypre } { expert_mode == 0 }"
-                range   { 0 100000 }
+                hidewhen "{ solver != Hypre }"
+                range   { 1! 100000 }
                 help    "Maximum iterations of the Hypre algebraic-multigrid solver per Newton step."
                 parmtag { "script_callback_language" "python" }
             }
@@ -3558,7 +3606,7 @@
                 type    log
                 default { "1e-10" }
                 disablewhen "{ solver != Hypre solver != AMGCL }"
-                hidewhen "{ solver != Hypre solver != AMGCL } { expert_mode == 0 }"
+                hidewhen "{ solver != Hypre solver != AMGCL }"
                 range   { 1e-20 1 }
                 help    "Relative residual at which the Hypre or AMGCL iterative solver stops."
                 parmtag { "script_callback_language" "python" }
@@ -3795,7 +3843,7 @@
 
         parm {
             name    "solver_nl"
-            label   "Solver"
+            label   "Nonlinear Solver"
             type    ordinal
             default { "0" }
             menu {
@@ -5044,11 +5092,22 @@
         label   "Global"
 
         parm {
-            name    "RHS"
+            name    "rhs_vec"
             label   "Body Load (rhs = minus acceleration)"
             type    string
+            size    3
+            default { "0" "0" "0" }
+            help    "Body force per unit mass applied everywhere, for X, Y, Z; PolyFEM multiplies by each material's density. Sign convention: rhs is the NEGATIVE of acceleration, so gravity pulling down along -Y is entered as 0, 9.81, 0. Plain numbers or PolyFEM TinyExpr formulas of x, y, z, t without quotes (quotes are also accepted). Leave at 0, 0, 0 for no body force."
+            parmtag { "script_callback" "hou.pwd().hm().sync_expr_vector(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "RHS"
+            label   "Body Load (legacy)"
+            type    string
+            invisible
             default { "[0, 0, 0]" }
-            help    "Body force per unit mass applied everywhere, as [x, y, z]; PolyFEM multiplies it by each material's density. Note PolyFEM's sign convention: the value is the NEGATIVE of the acceleration, so gravity pulling down along -y is written [0, 9.81, 0] (this is how PolyFEM's own bouncing-ball examples write it). Entries may be expressions of x, y, z, t in quotes. [0, 0, 0] means no body force."
+            help    "Legacy JSON-list storage kept hidden for compatibility with older scenes."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -5071,7 +5130,13 @@
             type    string
             default { "m" }
             disablewhen "{ units == 0 }"
-            help    "Length unit of the mesh coordinates and displacements, e.g. m, mm, cm."
+            menureplace {
+                "m"     "m (meters)"
+                "cm"    "cm (centimeters)"
+                "mm"    "mm (millimeters)"
+                "um"    "um (micrometers)"
+            }
+            help    "Length unit of the mesh coordinates and displacements (pick a preset or type any unit, e.g. m, mm, cm)."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -5080,7 +5145,12 @@
             type    string
             default { "kg" }
             disablewhen "{ units == 0 }"
-            help    "Mass unit used by densities and forces, e.g. kg, g."
+            menureplace {
+                "kg"    "kg (kilograms)"
+                "g"     "g (grams)"
+                "tonne" "tonne (metric tons, mm-tonne-s -> MPa/N)"
+            }
+            help    "Mass unit used by densities and forces (pick a preset or type any unit, e.g. kg, g, tonne)."
             parmtag { "script_callback_language" "python" }
         }
         parm {
@@ -5089,7 +5159,11 @@
             type    string
             default { "s" }
             disablewhen "{ units == 0 }"
-            help    "Time unit of dt, t and time expressions, e.g. s, ms."
+            menureplace {
+                "s"     "s (seconds)"
+                "ms"    "ms (milliseconds)"
+            }
+            help    "Time unit of dt, t and time expressions (pick a preset or type any unit, e.g. s, ms)."
             parmtag { "script_callback_language" "python" }
         }
         parm {

@@ -1185,11 +1185,18 @@ def main():
     assert "keeping settings" in gnode.evalParm("availability_status")
     hou.setFrame(1)
 
-    # loading a DIFFERENT pvd (start) is the one path that flushes caches
-    gphm._VTU_CACHE["sentinel"] = {}
+    # loading a DIFFERENT pvd (start) flushes this PVD's caches while keeping
+    # unrelated Read PVD nodes' caches warm
+    same_dir_sentinel = (os.path.join(os.path.dirname(os.path.abspath(pvd)),
+                                      "sentinel.vtu"), 0, 0)
+    other_dir_sentinel = ("/unrelated/run/sentinel.vtu", 0, 0)
+    gphm._VTU_CACHE[same_dir_sentinel] = {}
+    gphm._VTU_CACHE[other_dir_sentinel] = {}
     gnode.setParms({"PVD_file": pvd})
     gphm.start({"node": gnode})
-    assert "sentinel" not in gphm._VTU_CACHE, "start did not flush caches"
+    assert same_dir_sentinel not in gphm._VTU_CACHE, "start did not flush caches"
+    assert other_dir_sentinel in gphm._VTU_CACHE, "start evicted unrelated PVD cache"
+    gphm._VTU_CACHE.pop(other_dir_sentinel, None)
     gnode.destroy()
 
     # the timeline plot was removed; nothing may still build it

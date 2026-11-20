@@ -53,7 +53,35 @@ __Time Mapping__ says which time step a frame shows:
 
 On a timeline a frame shows the last step at or before its simulation time.
 __Simulation Time__ (the read-only line under it) shows the step on screen
-and its time.
+and its time (plus any solver diagnostic flag from `run-manifest.json`).
+__Run Summary__ shows overall completion status, exit code, wall time, peak
+memory, and step/contact diagnostics from `run-manifest.json` when present.
+Turn off __Set Playbar Range on Refresh__ when using multiple Read PVD nodes
+or preserving an existing animation timeline.
+
+== Principal-direction glyphs and fibers ==
+
+* __Analysis > Show Principal-Direction Glyphs__: draws the 1st, 2nd, and/or
+  3rd principal directions of Cauchy stress, PK2 stress, Green-Lagrange
+  strain, or right/left Cauchy-Green tensors. Enable __Stress Sign Colors__
+  for tension (red) vs compression (blue), and __Show Glyph Arrowheads__ for
+  bi-directional tips.
+* __Analysis > Fibers__: visualizes reference (`a0`) and/or deformed
+  (`normalize(F a0)`) fiber directions from exported material fields or the
+  PolyFEM node's companion `input/fibers.vtk`.
+
+== Multi-Block, Comparison, Clip / Slice, and Gnomon ==
+
+* __Multi-Block__: overlays additional PVD blocks (`Surface`, `Contact`,
+  `Points`, `Volume`) on top of the primary block with independent field,
+  range, and color ramp controls.
+* __Comparison__: colors the active field by its difference, absolute
+  difference, or percentage change relative to a chosen __Reference Frame__.
+* __Clip / Slice__: __Clipping Plane__ hides one side of a plane; __Thin
+  Slice__ keeps a symmetric slab centered on __Plane Origin__. Interior
+  element faces are revealed automatically while clipping/slicing; glyphs
+  and fibers remain unclipped.
+* __Gnomon__: adds a renderable XYZ world-axis orientation marker.
 
 == Force curves ==
 

@@ -76,12 +76,18 @@ def main():
 
     assert_close(node.parmTuple("color_1_1").eval(), (1, 0, 0),
                  "geometry 1 default")
-    assert_close(node.parmTuple("color_1_2").eval(), (0.5, 0, 0),
+    assert_close(node.parmTuple("color_1_2").eval(), mod.default_color(1, 2),
                  "geometry 1 subdomain 2 default")
+    assert not np.allclose(node.parmTuple("color_1_1").eval(),
+                           node.parmTuple("color_1_2").eval()), \
+        "subdomains 1 and 2 must have distinct default colors"
     assert_close(node.parmTuple("color_2_1").eval(), (0, 1, 0),
                  "geometry 2 default")
-    assert_close(node.parmTuple("color_2_2").eval(), (0, 0.5, 0),
+    assert_close(node.parmTuple("color_2_2").eval(), mod.default_color(2, 2),
                  "geometry 2 subdomain 2 default")
+    assert not np.allclose(node.parmTuple("color_2_1").eval(),
+                           node.parmTuple("color_2_2").eval()), \
+        "geometry 2 subdomains 1 and 2 must have distinct default colors"
 
     custom = {
         "color_1_1": (0.1, 0.2, 0.3),

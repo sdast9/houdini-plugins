@@ -157,28 +157,236 @@ def bool_check(var):
     return bool(var)
 
 
+_TINYEXPR_NAMES = frozenset({
+    "x", "y", "z", "t", "pi", "e",
+    "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+    "sinh", "cosh", "tanh", "exp", "ln", "log", "log10",
+    "pow", "sqrt", "abs", "ceil", "floor", "fac", "ncr", "npr",
+    # PolyFEM custom helpers in src/polyfem/utils/ExpressionValue.cpp
+    "min", "max", "smoothstep", "half_smoothstep", "deg2rad",
+    "rotate_2D_x", "rotate_2D_y", "if", "compare", "smooth_abs", "sign",
+})
+_EXPR_IDENT_RE = re.compile(r"(?<![0-9.])\b([A-Za-z_][A-Za-z0-9_]*)\b")
+
+
+def _strip_outer_quotes(text):
+    text = text.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ("'", '"'):
+        return text[1:-1].strip()
+    return text
+
+
+def _parse_expr_component(raw, name="value"):
+    """Parse one axis/scalar entry: plain number -> int/float, expression
+    string (with or without outer quotes) -> clean string, empty -> 0."""
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        return raw
+    text = str(raw).strip()
+    if not text:
+        return 0
+    unquoted = _strip_outer_quotes(text)
+    if not unquoted:
+        return 0
+    try:
+        val = ast.literal_eval(unquoted)
+        if isinstance(val, (int, float)) and not isinstance(val, bool) \
+                and math.isfinite(float(val)):
+            return val
+    except (ValueError, SyntaxError):
+        pass
+    return unquoted
+
+
+def _format_expr_box(value):
+    """Format one JSON scalar/expression value for an unquoted UI box."""
+    if value is None:
+        return "0"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f"{value:g}"
+    return _strip_outer_quotes(str(value)) or "0"
+
+
+def _validate_tinyexpr(value, label):
+    """Return an error message if a string expression has obvious TinyExpr
+    syntax errors, or None when valid (or a numeric literal / file path)."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if not math.isfinite(float(value)):
+            return f"{label}: value must be finite (got {value})."
+        return None
+    if not isinstance(value, str):
+        return None
+    expr = _strip_outer_quotes(value)
+    if not expr:
+        return None
+    # PolyFEM also allows a value-file path in expression fields.
+    if "/" in expr or "\\" in expr or expr.lower().endswith(
+            (".txt", ".csv", ".dat", ".npy", ".json")):
+        return None
+    if "[" in expr or "]" in expr:
+        return (f"{label}: '{expr}' contains brackets — enter one scalar "
+                "value or expression per axis box without brackets or quotes.")
+    if "**" in expr:
+        return (f"{label}: '{expr}' uses '**' for power; PolyFEM's TinyExpr "
+                "uses '^' or pow(a, b) instead.")
+    depth = 0
+    for ch in expr:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth < 0:
+                return f"{label}: '{expr}' has an unmatched ')'."
+    if depth != 0:
+        return f"{label}: '{expr}' has an unclosed '('."
+    # Strip scientific-notation exponents (e.g. 1e-5, 2.5E+3) before checking
+    # identifiers so 'e' inside a numeric literal isn't misread.
+    cleaned = re.sub(r"(?<![A-Za-z0-9_])(\d+\.?\d*|\.\d+)[eE][+-]?\d+",
+                     "0", expr)
+    unknown = [tok for tok in _EXPR_IDENT_RE.findall(cleaned)
+               if tok not in _TINYEXPR_NAMES]
+    if unknown:
+        bad = ", ".join(dict.fromkeys(unknown))
+        return (f"{label}: unknown name(s) {bad} in '{expr}'. PolyFEM "
+                "expressions allow x, y, z, t, pi, e, standard math "
+                "(sin, cos, exp, pow, sqrt, abs, ...) and helpers "
+                "(min, max, smoothstep, half_smoothstep, deg2rad, "
+                "rotate_2D_x, rotate_2D_y, if, compare, smooth_abs, sign).")
+    return None
+
+
 def parse_vector(text, name):
     """Parse a user vector/scalar parm. Numeric literals via ast; entries that
-    are expression strings (polyfem supports them) pass through unchanged."""
+    are expression strings (polyfem supports them) pass through unchanged,
+    with optional outer quotes stripped."""
     text = text.strip()
     if not text:
         raise hou.NodeError(f"Empty value for {name}")
     try:
-        return ast.literal_eval(text)
+        val = ast.literal_eval(text)
+        if isinstance(val, list):
+            return [_parse_expr_component(item, name) for item in val]
+        if isinstance(val, str):
+            return _parse_expr_component(val, name)
+        return val
     except (ValueError, SyntaxError):
         pass
-    # allow ["0", "-0.1*t", "0"] style lists with expression strings
-    if text.startswith("["):
-        inner = text.strip("[]")
+    # allow ["0", "-0.1*t", "0"] or [0, -0.1*t, 0] lists with expressions
+    if text.startswith("[") and text.endswith("]"):
+        inner = text[1:-1]
         parts = [p.strip() for p in inner.split(",") if p.strip()]
-        out = []
-        for p in parts:
-            try:
-                out.append(ast.literal_eval(p))
-            except (ValueError, SyntaxError):
-                out.append(p.strip("'\""))
-        return out
-    return text  # single expression string
+        return [_parse_expr_component(p, name) for p in parts]
+    return _parse_expr_component(text, name)
+
+
+def _read_expr_vector(parent, vec_base, legacy_name, label):
+    """Read a 3-component expression vector from the 3-box UI parm, falling
+    back to the hidden legacy JSON-string parm for older scenes / tests."""
+    vec_tuple = parent.parmTuple(vec_base)
+    legacy = parent.parm(legacy_name)
+    if vec_tuple is not None and not vec_tuple.isAtDefault():
+        return [_parse_expr_component(p.eval(), label) for p in vec_tuple]
+    if legacy is not None and not legacy.isAtDefault():
+        parsed = parse_vector(legacy.eval(), label)
+        if isinstance(parsed, list):
+            return [_parse_expr_component(item, label) for item in parsed]
+        return parsed
+    if vec_tuple is not None:
+        return [_parse_expr_component(p.eval(), label) for p in vec_tuple]
+    if legacy is not None:
+        return parse_vector(legacy.eval(), label)
+    return [0, 0, 0]
+
+
+def _set_expr_vector(parent, vec_base, legacy_name, value):
+    """Populate both the visible 3-box parm and the hidden legacy JSON string."""
+    if isinstance(value, str):
+        try:
+            parsed = parse_vector(value, vec_base)
+        except hou.Error:
+            parsed = [0, 0, 0]
+    else:
+        parsed = value
+    items = list(parsed) if isinstance(parsed, (list, tuple)) else [parsed]
+    while len(items) < 3:
+        items.append(0)
+    vec_tuple = parent.parmTuple(vec_base)
+    if vec_tuple is not None:
+        vec_tuple.set(tuple(_format_expr_box(v) for v in items[:3]))
+    legacy = parent.parm(legacy_name)
+    if legacy is not None:
+        legacy.set(_format_vector(items[:3]))
+
+
+def _legacy_name_for_expr_vec(tuple_name):
+    if tuple_name.startswith("bc_vec"):
+        return "vector_" + tuple_name[len("bc_vec"):]
+    if tuple_name.startswith("ic_vec"):
+        return "condition_vector_" + tuple_name[len("ic_vec"):]
+    if tuple_name.startswith("obstacle_disp_vec"):
+        return "obstacle_disp" + tuple_name[len("obstacle_disp_vec"):]
+    if tuple_name == "rhs_vec":
+        return "RHS"
+    return None
+
+
+def sync_expr_vector(kwargs):
+    """Callback on the 3-box expression parms: keep hidden legacy JSON parm
+    in sync so resetting a box back to '0' never falls back to a stale value."""
+    parent = kwargs["node"]
+    parm = kwargs.get("parm")
+    if parm is None:
+        return
+    vec_tuple = parm.tuple()
+    legacy_name = _legacy_name_for_expr_vec(vec_tuple.name())
+    if not legacy_name:
+        return
+    legacy = parent.parm(legacy_name)
+    if legacy is None:
+        return
+    vals = [_parse_expr_component(p.eval(), vec_tuple.name())
+            for p in vec_tuple]
+    legacy.set(_format_vector(vals))
+
+
+def migrate_legacy_expr_vectors(parent):
+    """Populate the visible 3-box expression inputs from hidden legacy JSON
+    strings when loading an older .hipnc scene."""
+    if parent.parmTuple("rhs_vec") is not None \
+            and parent.parmTuple("rhs_vec").isAtDefault():
+        legacy = parent.parm("RHS")
+        if legacy is not None and not legacy.isAtDefault():
+            _set_expr_vector(parent, "rhs_vec", "RHS", legacy.eval())
+    num_geos = parent.evalParm("num_geos") \
+        if parent.parm("num_geos") is not None else 0
+    for geo in range(1, num_geos + 1):
+        obs_vec = parent.parmTuple(f"obstacle_disp_vec{geo}")
+        obs_leg = parent.parm(f"obstacle_disp{geo}")
+        if obs_vec is not None and obs_vec.isAtDefault() \
+                and obs_leg is not None and not obs_leg.isAtDefault():
+            _set_expr_vector(parent, f"obstacle_disp_vec{geo}",
+                             f"obstacle_disp{geo}", obs_leg.eval())
+        nvol_parm = parent.parm(f"num_volumes{geo}")
+        num_vols = nvol_parm.eval() if nvol_parm is not None else 0
+        for vol in range(1, num_vols + 1):
+            ic_parm = parent.parm(f"initial_conditions{geo}_{vol}")
+            for l in range(1, (ic_parm.eval() if ic_parm else 0) + 1):
+                base = f"ic_vec{geo}_{vol}_{l}"
+                leg_name = f"condition_vector_{geo}_{vol}_{l}"
+                vt, lp = parent.parmTuple(base), parent.parm(leg_name)
+                if vt is not None and vt.isAtDefault() \
+                        and lp is not None and not lp.isAtDefault():
+                    _set_expr_vector(parent, base, leg_name, lp.eval())
+            ss_parm = parent.parm(f"sideset_selection{geo}_{vol}")
+            for j in range(1, (ss_parm.eval() if ss_parm else 0) + 1):
+                bc_parm = parent.parm(f"Boundary_Condition__{geo}_{vol}_{j}")
+                for k in range(1, (bc_parm.eval() if bc_parm else 0) + 1):
+                    suffix = f"{geo}_{vol}_{j}_{k}"
+                    vt = parent.parmTuple(f"bc_vec{suffix}")
+                    lp = parent.parm(f"vector_{suffix}")
+                    if vt is not None and vt.isAtDefault() \
+                            and lp is not None and not lp.isAtDefault():
+                        _set_expr_vector(parent, f"bc_vec{suffix}",
+                                         f"vector_{suffix}", lp.eval())
 
 
 def colors():
@@ -188,9 +396,10 @@ def colors():
 
 
 def default_color(geo, vol=1):
+    """Distinct bright palette color per (geometry, subdomain)."""
     palette = colors()
-    base = palette[(int(geo) - 1) % len(palette) + 1]
-    return tuple(channel / int(vol) for channel in base)
+    idx = (int(geo) - 1 + 3 * (int(vol) - 1)) % len(palette) + 1
+    return palette[idx]
 
 
 def _color_tuple(parent, name):
@@ -224,6 +433,10 @@ def _entity_color_vex(geo, num_vols, mode="subdomains", fiber_attribs=(),
 f@Alpha = chi("../show_fibers{int(geo)}")
     ? clamp(chf("../fiber_surface_alpha{int(geo)}"), 0.0, 1.0)
     : 1.0;
+if (!chi("../is_enabled{int(geo)}")) {{
+    v@Cd = lerp(v@Cd, {{0.35, 0.35, 0.35}}, 0.7);
+    f@Alpha = 0.25;
+}}
 """
     channels = ",\n    ".join(
         f'chv("../color_{int(geo)}_{vol}")' for vol in range(1, num_vols + 1))
@@ -479,7 +692,7 @@ def working_dir_check(kwargs):
     parm = parent.parm("working_dir")
     working_dir = parm.eval()
     if not working_dir:
-        _message("Please provide working directory location.")
+        _message("Please set Main > Working Directory before loading a mesh.")
         return False
     try:
         os.makedirs(os.path.join(working_dir, "input"), exist_ok=True)
@@ -1499,7 +1712,12 @@ def create_obstacle_tree(parent, geo_number):
     color_node = parent.createNode("attribwrangle", "color_" + geo_number)
     color_node.setParms({"class": 1, "snippet": (
         "if (!hasprimattrib(0, 'Cd'))\n"
-        f"    v@Cd = chv('../color_{geo_number}');")})
+        f"    v@Cd = chv('../color_{geo_number}');\n"
+        "f@Alpha = 1.0;\n"
+        f"if (!chi('../is_enabled{geo_number}')) {{\n"
+        "    v@Cd = lerp(v@Cd, {0.35, 0.35, 0.35}, 0.7);\n"
+        "    f@Alpha = 0.25;\n"
+        "}")})
     color_node.setNextInput(promote_node)
     null_node = parent.createNode("null", "null_" + geo_number)
     null_node.setNextInput(color_node)
@@ -1910,6 +2128,22 @@ def deter_min_edge(kwargs):
         _message("No surface geometry found; import a volume mesh first.")
         return
     parent.parm("min_edge").set(str(total_min))
+
+
+def suggest_dhat(kwargs):
+    """Set dhat to 0.001 x bounding-box diagonal of loaded enabled meshes."""
+    parent = kwargs["node"]
+    geos = [g for g in range(1, parent.evalParm("num_geos") + 1)
+            if parent.parm(f"is_enabled{g}").eval()
+            and parent.node(f"transform_{g}") is not None]
+    diagonal = _model_diagonal(parent, geos)
+    if not diagonal or diagonal <= 0:
+        _message("No loaded enabled geometry found; import a mesh first.")
+        return None
+    suggested = max(1e-12, 1e-3 * diagonal)
+    parent.parm("dhat").set(suggested)
+    _status(f"Set dhat = {suggested:.4g} (0.001 × model diagonal {diagonal:.4g}).")
+    return suggested
 
 
 # =============================================================================
@@ -2558,14 +2792,23 @@ def _sideset_conditions(parent, geo, vol, sideset, lazy_timeline=None):
         kind = parent.evalParm(f"boundary_type{suffix}")
         if not 0 <= kind < len(_BC_TYPE_NAMES):
             raise hou.NodeError(f"Unknown boundary type {kind} on {suffix}")
-        vector_text = parent.evalParm(f"vector_{suffix}")
-        value_text = parent.evalParm(f"value_{suffix}")
-        text = vector_text if kind in (0, 1) else value_text
         label = (f"geo {geo} subdomain {vol} sideset {sideset} "
                  f"condition {k} ({_BC_TYPE_NAMES[kind]})")
+        if kind in (0, 1):
+            parsed_val = _read_expr_vector(
+                parent, f"bc_vec{suffix}", f"vector_{suffix}",
+                f"BC {geo}/{vol}/{sideset}/{k}")
+            vector_text = _format_vector(parsed_val)
+            value_text = parent.evalParm(f"value_{suffix}")
+        else:
+            vector_text = _format_vector(_read_expr_vector(
+                parent, f"bc_vec{suffix}", f"vector_{suffix}",
+                f"BC {geo}/{vol}/{sideset}/{k}"))
+            value_text = parent.evalParm(f"value_{suffix}")
+            parsed_val = parse_vector(value_text, f"BC {geo}/{vol}/{sideset}/{k}")
         condition = {
             "k": k, "type": kind, "label": label,
-            "value": parse_vector(text, f"BC {geo}/{vol}/{sideset}/{k}"),
+            "value": parsed_val,
             "curves": _condition_curves(parent, suffix, kind, lazy_timeline,
                                         label),
             "record": {"type": int(kind), "vector": vector_text,
@@ -4805,8 +5048,9 @@ ANIMATED_OBSTACLE_EXPRESSION_ERROR = (
 
 def _obstacle_displacement_is_zero(parent, geo):
     try:
-        value = parse_vector(parent.evalParm(f"obstacle_disp{geo}"),
-                             f"obstacle {geo}")
+        value = _read_expr_vector(
+            parent, f"obstacle_disp_vec{geo}", f"obstacle_disp{geo}",
+            f"obstacle {geo}")
     except hou.Error:
         return False
     return isinstance(value, list) and all(
@@ -5204,8 +5448,9 @@ def obstacle_displacement_entry(parent, geo, motion):
                   for d in range(3)]
         return {"id": obstacle_id(geo), "value": [1, 1, 1],
                 "interpolation": [table.as_json() for table in tables]}
-    vector = parse_vector(parent.evalParm(f"obstacle_disp{geo}"),
-                          f"obstacle {geo}")
+    vector = _read_expr_vector(
+        parent, f"obstacle_disp_vec{geo}", f"obstacle_disp{geo}",
+        f"obstacle {geo}")
     return {"id": obstacle_id(geo), "value": vector}
 
 
@@ -5238,8 +5483,9 @@ def build_conditions(parent, data, plans=None, motions=None):
         for vol in range(1, num_vols + 1):
             for l in range(1, parent.evalParm(
                     f"initial_conditions{geo}_{vol}") + 1):
-                vector = parse_vector(
-                    parent.evalParm(f"condition_vector_{geo}_{vol}_{l}"),
+                vector = _read_expr_vector(
+                    parent, f"ic_vec{geo}_{vol}_{l}",
+                    f"condition_vector_{geo}_{vol}_{l}",
                     f"initial condition {geo}/{vol}/{l}")
                 ctype = parent.evalParm(f"conditiontype{geo}_{vol}_{l}")
                 target = (solution, velocity, acceleration)[ctype]
@@ -5258,14 +5504,14 @@ def build_conditions(parent, data, plans=None, motions=None):
             if lst:
                 data["initial_conditions"][key] = lst
 
-    rhs = parent.evalParm("RHS")
+    rhs = _read_expr_vector(parent, "rhs_vec", "RHS", "rhs")
     bc = {}
     for key, lst in [(key, lists[key]) for key in _BC_LIST_KEYS] \
             + [("obstacle_displacements", obstacle)]:
         if lst:
             bc[key] = lst
-    if rhs:
-        bc["rhs"] = parse_vector(rhs, "rhs")
+    if rhs is not None:
+        bc["rhs"] = rhs
     if bc:
         data["boundary_conditions"] = bc
 
@@ -5712,11 +5958,10 @@ def force_field_names(parent):
     for a form a scene does not have, so those are not requested."""
     names = ["elastic_forces"]
     kinds = _condition_kinds_used(parent)
-    rhs = parent.evalParm("RHS").strip()
     try:
-        gravity = parse_vector(rhs, "rhs") if rhs else [0, 0, 0]
+        gravity = _read_expr_vector(parent, "rhs_vec", "RHS", "rhs")
     except hou.Error:
-        gravity = rhs
+        gravity = None
     no_gravity = isinstance(gravity, list) and all(
         isinstance(v, (int, float)) and v == 0 for v in gravity)
     if kinds & {1, 2} or not no_gravity:
@@ -6935,10 +7180,63 @@ def check_setup(parent, purpose="check"):
         fixed = [False, False, False]
         for entries in plan["conditions"].values():
             for key, entry in entries:
+                val = entry.get("value")
+                items = val if isinstance(val, list) else [val]
+                for axis_i, comp in enumerate(items):
+                    err = _validate_tinyexpr(
+                        comp,
+                        f"Geometry {geo} {key} (axis {'xyz'[axis_i]})"
+                        if isinstance(val, list) and axis_i < 3
+                        else f"Geometry {geo} {key}")
+                    if err:
+                        errors.append(err)
                 if key == "dirichlet_boundary":
                     fixed = [a or bool(b) for a, b in
                              zip(fixed, entry.get("dimension", [1, 1, 1]))]
+        for vol in range(1, num_vols + 1):
+            for l in range(1, parent.evalParm(
+                    f"initial_conditions{geo}_{vol}") + 1):
+                try:
+                    ic_vec = _read_expr_vector(
+                        parent, f"ic_vec{geo}_{vol}_{l}",
+                        f"condition_vector_{geo}_{vol}_{l}",
+                        f"initial condition {geo}/{vol}/{l}")
+                except hou.Error as exc:
+                    errors.append(f"Geometry {geo} subdomain {vol} initial "
+                                  f"condition {l}: {_error_text(exc)}")
+                    continue
+                for axis_i, comp in enumerate(
+                        ic_vec if isinstance(ic_vec, list) else [ic_vec]):
+                    err = _validate_tinyexpr(
+                        comp, f"Geometry {geo} subdomain {vol} initial "
+                        f"condition {l} ({'xyz'[axis_i]})")
+                    if err:
+                        errors.append(err)
         bodies.append((geo, fixed))
+
+    for geo in obstacles:
+        try:
+            obs_vec = _read_expr_vector(
+                parent, f"obstacle_disp_vec{geo}", f"obstacle_disp{geo}",
+                f"obstacle {geo}")
+        except hou.Error as exc:
+            errors.append(f"Obstacle {geo} displacement: {_error_text(exc)}")
+            continue
+        for axis_i, comp in enumerate(
+                obs_vec if isinstance(obs_vec, list) else [obs_vec]):
+            err = _validate_tinyexpr(
+                comp, f"Obstacle {geo} displacement ({'xyz'[axis_i]})")
+            if err:
+                errors.append(err)
+    try:
+        rhs_vec = _read_expr_vector(parent, "rhs_vec", "RHS", "rhs")
+        for axis_i, comp in enumerate(
+                rhs_vec if isinstance(rhs_vec, list) else [rhs_vec]):
+            err = _validate_tinyexpr(comp, f"Global Body Load ({'xyz'[axis_i]})")
+            if err:
+                errors.append(err)
+    except hou.Error as exc:
+        errors.append(f"Global Body Load: {_error_text(exc)}")
 
     if quasistatic:
         for geo, fixed in bodies:
@@ -7181,15 +7479,11 @@ _EXPERT_PARMS = (
     (("solver_type",), "Solver > Linear > AMGCL",
      lambda p: _menu_token(p, "solver_nl") != "BFGS"
      and _menu_token(p, "solver") == "AMGCL"),
-    (("max_iter_hypre", "pre_max_iter_hypre", "theta_hypre",
+    (("pre_max_iter_hypre", "theta_hypre",
       "nodal_coarsening_hypre"),
      "Solver > Linear > Hypre",
      lambda p: _menu_token(p, "solver_nl") != "BFGS"
      and _menu_token(p, "solver") == "Hypre"),
-    (("tolerance_hypre_AMGCL",),
-     "Solver > Linear",
-     lambda p: _menu_token(p, "solver_nl") != "BFGS"
-     and _menu_token(p, "solver") in ("Hypre", "AMGCL")),
     (("wolfe_c2", "wolfe_growth_factor", "wolfe_growth_limit",
       "wolfe_max_evaluations", "wolfe_max_objective_restarts",
       "wolfe_approximate_epsilon"), "Solver > Line Search > Wolfe",
@@ -8239,13 +8533,13 @@ def _restore_conditions(parent, data, volume_remap=None, scene=None,
     for geo, vol, l, type_idx, value in entries:
         if parent.parm(f"conditiontype{geo}_{vol}_{l}") is None:
             continue
-        parent.setParms({
-            f"conditiontype{geo}_{vol}_{l}": type_idx,
-            f"condition_vector_{geo}_{vol}_{l}": _format_vector(value)})
+        parent.setParms({f"conditiontype{geo}_{vol}_{l}": type_idx})
+        _set_expr_vector(parent, f"ic_vec{geo}_{vol}_{l}",
+                         f"condition_vector_{geo}_{vol}_{l}", value)
 
     bc = data.get("boundary_conditions", {})
     if "rhs" in bc and parent.parm("RHS") is not None:
-        parent.setParms({"RHS": _format_vector(bc["rhs"])})
+        _set_expr_vector(parent, "rhs_vec", "RHS", bc["rhs"])
     notes = notes if notes is not None else []
     recorded = (scene or {}).get("obstacles", {})
     for geo_text, obstacle in recorded.items():
@@ -8259,8 +8553,8 @@ def _restore_conditions(parent, data, volume_remap=None, scene=None,
         if parent.parm(f"obstacle_disp{geo}") is None:
             continue
         if entry.get("interpolation") is None:
-            parent.setParms(
-                {f"obstacle_disp{geo}": _format_vector(entry.get("value"))})
+            _set_expr_vector(parent, f"obstacle_disp_vec{geo}",
+                             f"obstacle_disp{geo}", entry.get("value"))
             continue
         if recorded.get(str(geo), {}).get("motion") == "translation":
             continue  # the record's keys say it exactly
@@ -8425,14 +8719,14 @@ def _set_condition_parms(parent, suffix, kind, vector=None, value=None,
     if parent.parm(f"boundary_type{suffix}") is None:
         return
     parms = {f"boundary_type{suffix}": int(kind)}
-    if vector is not None:
-        parms[f"vector_{suffix}"] = vector
     if value is not None:
-        parms[f"value_{suffix}"] = value
+        parms[f"value_{suffix}"] = _format_expr_box(value)
     if dimension is not None:
         for axis, flag in zip("xyz", dimension):
             parms[f"{axis}_dimension{suffix}"] = int(bool(flag))
     parent.setParms(parms)
+    if vector is not None:
+        _set_expr_vector(parent, f"bc_vec{suffix}", f"vector_{suffix}", vector)
     if curve_record is not None:
         _restore_curve_record(parent, suffix, int(kind), curve_record)
     elif functions is not None and line is not None:
@@ -8801,15 +9095,15 @@ def _restore_legacy_scene(parent, data, geometry, input_dir, material_slots):
         parent.setParms({f"initial_conditions{geo}_{vol}": len(entries)})
         for index, (type_index, value) in enumerate(entries, start=1):
             parent.setParms({
-                f"conditiontype{geo}_{vol}_{index}": type_index,
-                f"condition_vector_{geo}_{vol}_{index}":
-                    _format_vector(value)})
+                f"conditiontype{geo}_{vol}_{index}": type_index})
+            _set_expr_vector(parent, f"ic_vec{geo}_{vol}_{index}",
+                             f"condition_vector_{geo}_{vol}_{index}", value)
 
     bc = data.get("boundary_conditions", {})
     if not isinstance(bc, dict):
         return skipped
     if "rhs" in bc:
-        parent.setParms({"RHS": _format_vector(bc["rhs"])})
+        _set_expr_vector(parent, "rhs_vec", "RHS", bc["rhs"])
     type_names = (
         "dirichlet_boundary", "neumann_boundary",
         "normal_aligned_neumann_boundary", "pressure_boundary",
@@ -8836,28 +9130,27 @@ def _restore_legacy_scene(parent, data, geometry, input_dir, material_slots):
                     f"Boundary_Condition__{geo}_{vol}_{sideset}")
                 if count is not None and count.eval() < index:
                     count.set(index)
-                parms = {
-                    f"boundary_type{geo}_{vol}_{sideset}_{index}": type_index}
+                suffix = f"{geo}_{vol}_{sideset}_{index}"
+                parms = {f"boundary_type{suffix}": type_index}
                 if type_index in (0, 1):
-                    parms[f"vector_{geo}_{vol}_{sideset}_{index}"] = \
-                        _format_vector(entry.get("value"))
                     if type_index == 0:
                         for axis, flag in zip(
                                 "xyz", entry.get(
                                     "dimension", [True, True, True])):
-                            parms[
-                                f"{axis}_dimension{geo}_{vol}_{sideset}_{index}"
-                            ] = int(bool(flag))
+                            parms[f"{axis}_dimension{suffix}"] = int(bool(flag))
+                    parent.setParms(parms)
+                    _set_expr_vector(parent, f"bc_vec{suffix}",
+                                     f"vector_{suffix}", entry.get("value"))
                 else:
-                    parms[f"value_{geo}_{vol}_{sideset}_{index}"] = \
-                        _format_vector(entry.get("value"))
-                parent.setParms(parms)
+                    parms[f"value_{suffix}"] = _format_expr_box(
+                        entry.get("value"))
+                    parent.setParms(parms)
     for entry in bc.get("obstacle_displacements", []):
         value = int(entry.get("id", 0))
         geo = (value - 100000) // 1000
         if parent.parm(f"obstacle_disp{geo}") is not None:
-            parent.setParms({
-                f"obstacle_disp{geo}": _format_vector(entry.get("value"))})
+            _set_expr_vector(parent, f"obstacle_disp_vec{geo}",
+                             f"obstacle_disp{geo}", entry.get("value"))
     return skipped
 
 

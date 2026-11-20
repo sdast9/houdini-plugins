@@ -160,6 +160,7 @@ REDUCTION_LABELS = {
     "auto": "Automatic Value", "magnitude": "Magnitude / Frobenius Norm",
     "x": "X Component / XX Entry", "y": "Y Component / YY Entry",
     "z": "Z Component / ZZ Entry",
+    "xy": "XY Entry", "yz": "YZ Entry", "xz": "XZ Entry",
     "principal_max": "First Principal Value (Largest)",
     "principal_middle": "Second Principal Value",
     "principal_min": "Third Principal Value (Smallest)", "trace": "Tensor Trace",
@@ -839,6 +840,140 @@ def playbar_range(node):
             int(max(entry_frame(node, 0), entry_frame(node, len(times) - 1))))
 
 
+_MANIFEST_CACHE = {}
+
+
+def run_manifest(node_or_path):
+    """Parsed run-manifest.json next to the PVD file, cached by file identity,
+    or None when absent or unreadable."""
+    if isinstance(node_or_path, str):
+        pvd = node_or_path
+    else:
+        pvd = node_or_path.evalParm("PVD_file") if node_or_path is not None else ""
+    if not pvd:
+        return None
+    manifest_path = os.path.join(os.path.dirname(os.path.abspath(pvd)),
+                                 "run-manifest.json")
+    try:
+        key = _file_key(manifest_path)
+    except OSError:
+        return None
+    cached = _MANIFEST_CACHE.get(manifest_path)
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    try:
+        with open(manifest_path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        data = None
+    if not isinstance(data, dict):
+        data = None
+    if len(_MANIFEST_CACHE) > 8:
+        _MANIFEST_CACHE.clear()
+    _MANIFEST_CACHE[manifest_path] = (key, data)
+    return data
+
+
+def _format_duration(seconds):
+    seconds = float(seconds)
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, rem = divmod(seconds, 60.0)
+    if minutes < 60:
+        return f"{int(minutes)}m {rem:.0f}s"
+    hours, minutes = divmod(minutes, 60.0)
+    return f"{int(hours)}h {int(minutes)}m"
+
+
+def run_summary_text(node):
+    """Read-only Run Summary from PolyFEM's run-manifest.json."""
+    if node.parm("data_epoch") is not None:
+        node.evalParm("data_epoch")
+    pvd = node.evalParm("PVD_file")
+    if not pvd:
+        return "Load a PVD file."
+    manifest = run_manifest(pvd)
+    if not manifest:
+        return "No run-manifest.json found next to this PVD."
+    completion = manifest.get("completion") or {}
+    status = completion.get("status") or "unknown"
+    exit_code = completion.get("exit_status")
+    wall = completion.get("wall_seconds")
+    rss = completion.get("peak_rss_mb")
+    head = [f"Status: {status}" + (
+        f" (exit {exit_code})" if exit_code is not None else "")]
+    if isinstance(wall, (int, float)):
+        head.append(f"Wall: {_format_duration(wall)}")
+    if isinstance(rss, (int, float)):
+        head.append(f"Peak RSS: {rss / 1024.0:.2f} GB" if rss >= 1024
+                    else f"Peak RSS: {rss:.0f} MB")
+    lines = [" | ".join(head)]
+    steps = manifest.get("steps")
+    if isinstance(steps, list) and steps:
+        n_steps = len(steps)
+        non_accepted = sum(
+            1 for s in steps
+            if isinstance(s, dict) and s.get("outcome") not in (None, "accepted"))
+        retunes = sum(
+            int(s.get("stall_retunes") or 0) for s in steps
+            if isinstance(s, dict))
+        stagnations = sum(
+            1 for s in steps
+            if isinstance(s, dict) and s.get("al_stagnation"))
+        losses = 0
+        splits = 0
+        for s in steps:
+            if not isinstance(s, dict):
+                continue
+            hs = (s.get("contact") or {}).get("history_sensitivity") or {}
+            cont = hs.get("continuation") or {}
+            loss_map = cont.get("losses") or {}
+            if isinstance(loss_map, dict):
+                losses += sum(int(v or 0) for v in loss_map.values())
+            splits += int(cont.get("split_pairs") or 0)
+        parts = [f"Steps logged: {n_steps}"]
+        if non_accepted:
+            parts.append(f"non-accepted: {non_accepted}")
+        if retunes:
+            parts.append(f"stall retunes: {retunes}")
+        if stagnations:
+            parts.append(f"AL stagnations: {stagnations}")
+        if losses or splits:
+            parts.append(f"continuation losses: {losses}, split pairs: {splits}")
+        lines.append(", ".join(parts))
+    msg = completion.get("message")
+    if msg:
+        lines.append(f"Message: {msg}")
+    return "\n".join(lines)
+
+
+def _step_health_tag(node, step_index):
+    """Compact per-step diagnostic tag from run-manifest.json, or ''."""
+    manifest = run_manifest(node)
+    if not manifest:
+        return ""
+    steps = manifest.get("steps")
+    if not isinstance(steps, list) or not steps:
+        return ""
+    match = None
+    for entry in steps:
+        if isinstance(entry, dict) and entry.get("step") == step_index:
+            match = entry
+            break
+    if match is None:
+        return ""
+    flags = []
+    outcome = match.get("outcome")
+    if outcome and outcome != "accepted":
+        flags.append(str(outcome))
+    if match.get("al_stagnation"):
+        flags.append("AL stagnation")
+    retunes = int(match.get("stall_retunes") or 0)
+    if retunes:
+        flags.append(f"{retunes} stall retune{'s' if retunes != 1 else ''}")
+    return f"  [{', '.join(flags)}]" if flags else ""
+
+
 def sim_time_text(node):
     """Read-only Simulation Time line: the step on screen and its time."""
     hou.frame()  # time-dependent, so it follows the playbar
@@ -854,7 +989,7 @@ def sim_time_text(node):
     else:
         how = "simulation time"
     return (f"Step {index} of {len(times) - 1}: t = {times[index]:.6g}  "
-            f"({how})")
+            f"({how}){_step_health_tag(node, index)}")
 
 
 def time_mapping_changed(kwargs):
@@ -1056,6 +1191,9 @@ def color_reduction_menu(kwargs):
             ("x", "XX Entry"),
             ("y", "YY Entry"),
             ("z", "ZZ Entry"),
+            ("xy", "XY Entry"),
+            ("yz", "YZ Entry"),
+            ("xz", "XZ Entry"),
             ("principal_max", "First Principal Value (Largest)"),
             ("principal_middle", "Second Principal Value"),
             ("principal_min", "Third Principal Value (Smallest)"),
@@ -1287,7 +1425,19 @@ def source_changed(kwargs):
 
 
 def analysis_options_changed(kwargs):
+    node = kwargs["node"]
     sync_available_options(kwargs)
+    parm = kwargs.get("parm")
+    if parm is not None and parm.name() == "visible_bodies":
+        auto_range_default(node)
+    update_color_status(kwargs)
+
+
+def reference_options_changed(kwargs):
+    """Comparison tab callback: re-range displayed colors when enabling or
+    adjusting reference-frame comparison (unless locked)."""
+    node = kwargs["node"]
+    auto_range_default(node)
     update_color_status(kwargs)
 
 
@@ -1389,6 +1539,9 @@ def _reduce_array(values, reduction):
         if reduction in ("x", "y", "z"):
             index = {"x": 0, "y": 1, "z": 2}[reduction]
             return matrices[:, index, index]
+        if reduction in ("xy", "yz", "xz"):
+            row, col = {"xy": (0, 1), "yz": (1, 2), "xz": (0, 2)}[reduction]
+            return matrices[:, row, col]
         return np.linalg.norm(matrices, axis=(1, 2))
     if reduction in ("principal_max", "principal_middle", "principal_min"):
         return values[:, {
@@ -2776,7 +2929,9 @@ def refresh(kwargs=None, force_clear_cache=False):
                 f"Read PVD: {len(stale)} cached frame(s) no longer match the "
                 "result files (rerun or new steps); the cache was cleared.",
                 hou.severityType.Message)
-    if hou.isUIAvailable():
+    if hou.isUIAvailable() and (
+            node.parm("update_playbar") is None
+            or node.evalParm("update_playbar")):
         first, last = playbar_range(node)
         hou.playbar.setUseIntegerFrames(True)
         hou.playbar.setFrameIncrement(1)
@@ -2787,18 +2942,42 @@ def refresh(kwargs=None, force_clear_cache=False):
         clear_cache(kwargs)
 
 
+def _invalidate_pvd_caches(pvd_path):
+    """Drop cached disk data belonging to this PVD's folder without evicting
+    other Read PVD nodes in the same Houdini session."""
+    if not pvd_path:
+        return
+    folder = os.path.dirname(os.path.abspath(pvd_path))
+    prefix = folder + os.sep
+
+    def _matches(key):
+        first = key[0] if isinstance(key, tuple) and key else key
+        if not isinstance(first, str):
+            return False
+        norm = os.path.abspath(first)
+        return norm == os.path.abspath(pvd_path) or norm.startswith(prefix)
+
+    for cache_dict in (_PVD_CACHE, _FIELD_INFO_CACHE, _VTU_CACHE,
+                       _SEQUENCE_METADATA_CACHE, _FIBER_COMPANION_CACHE,
+                       _FIBER_POINT_CACHE, _MANIFEST_CACHE):
+        for k in [k for k in list(cache_dict) if _matches(k)]:
+            cache_dict.pop(k, None)
+    scan_key = _SCAN_CACHE.get("key")
+    if scan_key and _matches(scan_key):
+        _SCAN_CACHE.clear()
+
+
 def start(kwargs=None):
-    # A PVD file change is new data: drop every cache (parsed files AND
-    # cooked frames) and jump to frame 0, unlike the Refresh button.
-    clear_caches()
-    _SEQUENCE_METADATA_CACHE.clear()
-    _SCAN_CACHE.clear()
-    _FIBER_COMPANION_CACHE.clear()
-    _FIBER_POINT_CACHE.clear()
-    refresh(kwargs, force_clear_cache=True)
+    # A PVD file change is new data: drop this PVD's disk caches (leaving
+    # other Read PVD nodes warm) and cooked frames, then jump to first frame
+    # when Set Playbar Range on Refresh is enabled.
     node = hou.pwd() if kwargs is None else kwargs["node"]
+    _invalidate_pvd_caches(node.evalParm("PVD_file"))
+    refresh(kwargs, force_clear_cache=True)
     _autocenter_clip(node)
-    if hou.isUIAvailable():
+    if hou.isUIAvailable() and (
+            node.parm("update_playbar") is None
+            or node.evalParm("update_playbar")):
         hou.setFrame(playbar_range(node)[0])
     # First look: colors spread over the result's values instead of the
     # 0..1 a new node starts with, and the model centered in the viewport.
@@ -4850,13 +5029,20 @@ def run_units(node):
     path = node.evalParm("PVD_file")
     params = run_params(path) if path else None
     units = params.get("units") if params else None
+    source_label = "recorded by the PolyFEM node"
+    if params is None and path:
+        manifest = run_manifest(path)
+        m_units = ((manifest or {}).get("input") or {}).get("units")
+        if isinstance(m_units, dict) and m_units.get("length"):
+            units = m_units
+            source_label = "recorded in run-manifest.json"
     if isinstance(units, dict) and units.get("length"):
         names = (str(units.get("length", "m")), str(units.get("mass", "kg")),
                  str(units.get("time", "s")))
         if names[0] in _LENGTH_SI and names[1] in _MASS_SI \
                 and names[2] in _TIME_SI:
-            return names, "recorded by the PolyFEM node"
-        return None, (f"The PolyFEM node recorded units {', '.join(names)}, "
+            return names, source_label
+        return None, (f"The run recorded units {', '.join(names)}, "
                       "which this export does not know: choose the run's "
                       "unit system.")
     return None, ("The run did not record its units (the PolyFEM node's "

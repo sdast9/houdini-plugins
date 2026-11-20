@@ -102,12 +102,33 @@ over each sideset and obstacle: the reaction of a fixed or moved sideset,
 the contact force on an obstacle, as force-displacement curves and a CSV. A
 sideset without a condition can be made just to measure a force.
 
+== Expressions for boundary conditions and loads ==
+
+Vector inputs (__Value [x, y, z]__, __Obstacle Displacement__, __Initial
+Conditions__, and __Body Load__) have one box per axis; scalar conditions
+(pressures, normal traction) have a single box. Enter plain numbers (`0`,
+`-0.01`) or PolyFEM TinyExpr formulas directly without brackets or quotes
+(quotes are accepted if pasted):
+
+* __Variables:__ `x`, `y`, `z` (mesh coordinates), `t` (simulation time).
+* __Math:__ `+ - * / ^ %`, `pi`, `e`, `sin`, `cos`, `tan`, `asin`, `acos`,
+  `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `exp`, `ln`, `log`, `log10`,
+  `pow`, `sqrt`, `abs`, `ceil`, `floor`. Use `^` (or `pow(a, b)`) for
+  powers, not `**`.
+* __PolyFEM helpers:__ `min(a, b)`, `max(a, b)`, `smoothstep(u)`,
+  `half_smoothstep(u)`, `deg2rad(deg)`, `rotate_2D_x(x, y, theta)`,
+  `rotate_2D_y(x, y, theta)`, `if(cond, then_val, else_val)` (positive
+  `cond` selects `then_val`), `compare(a, b)`, `smooth_abs(u, eps)`,
+  `sign(u)`.
+* __Examples:__ `-0.01*t`, `1000*smoothstep(t)*sin(pi*x)`,
+  `if(t-0.5, -0.02, -0.04*t)`.
+
 == Gravity and other body loads ==
 
 __Body Load (rhs = minus acceleration)__ on the Global tab is PolyFEM's
 right-hand side, which is the __negative__ of the body acceleration. Gravity
-pulling along -y is therefore
-`[0, 9.81, 0]` (in m/s^2), __not__ `[0, -9.81, 0]`.
+pulling along -y is therefore entered as
+`[0, 9.81, 0]` (in m/s^2), __not__ `[0, -9.81, 0]` (one entry per axis box).
 
 == Units ==
 

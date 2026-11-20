@@ -482,7 +482,7 @@ def build_round_trip_scene(root):
     top = scene.faces(lambda x, y, z: z > 0.99, vol=2)
     scene.sideset(top, (0, "[0, 0, 0]", X), (0, '[0, 0, "-0.1*t"]', Z),
                   vol=2)
-    scene.sideset("box:[-1,-1,0.3],[2,2,0.7]", (3, '"-50*t"', ALL), vol=2)
+    scene.sideset("box:[-1,-1,0.3],[2,2,0.7]", (3, "-50*t", ALL), vol=2)
     return scene
 
 
@@ -570,7 +570,7 @@ def check_import(root):
     assert "differ from the ones the asset wrote" in report, report
     values = [c[1] for s in node_sidesets(follower) for c in s[4]
               if c[0] == 3]
-    assert values == ['"-75*t"'], values
+    assert values == ["-75*t"], values
     print("PASS: a params.json edited after export wins over the record")
 
 

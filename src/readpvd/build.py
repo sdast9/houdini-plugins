@@ -424,6 +424,12 @@ if (present) {
         } else if (reduction == "x" || reduction == "y" || reduction == "z") {
             int component = reduction == "x" ? 0 : reduction == "y" ? 1 : 2;
             value = getcomp(m, component, component);
+        } else if (reduction == "xy") {
+            value = getcomp(m, 0, 1);
+        } else if (reduction == "yz") {
+            value = getcomp(m, 1, 2);
+        } else if (reduction == "xz") {
+            value = getcomp(m, 0, 2);
         }
         else
             value = sqrt(matrix_norm_squared(m));
@@ -1267,9 +1273,15 @@ def _parms():
         "refresh", "Refresh / Set Playbar",
         script_callback="hou.phm().refresh(kwargs)",
         script_callback_language=hou.scriptLanguage.Python,
+        join_with_next=True,
         help="Re-read the PVD file (e.g. while a simulation is still writing "
-             "steps), rebuild the field menus, and set the playbar range to "
-             "the available time steps."))
+             "steps), rebuild the field menus, and optionally set the playbar "
+             "range to the available time steps."))
+    main.addParmTemplate(hou.ToggleParmTemplate(
+        "update_playbar", "Set Playbar Range on Refresh", default_value=True,
+        help="Update Houdini's playbar range when loading a PVD or pressing "
+             "Refresh. Turn off when you have several Read PVD nodes or a "
+             "PolyFEM animation timeline you do not want overwritten."))
     main.addParmTemplate(hou.MenuParmTemplate(
         "time_mapping", "Time Mapping", TIME_MAPPING_TOKENS,
         menu_labels=("Automatic", "One Frame per Output Step",
@@ -1339,6 +1351,13 @@ def _parms():
              "usable.")
     avail.setConditional(hou.parmCondType.DisableWhen, READ_ONLY)
     main.addParmTemplate(avail)
+    main.addParmTemplate(_read_only_text(
+        "run_summary_status", "Run Summary",
+        "hou.pwd().hdaModule().run_summary_text(hou.pwd())",
+        "Read-only summary from PolyFEM's run-manifest.json (status, exit "
+        "code, wall time, peak memory, rollbacks, AL stagnations, and "
+        "contact history-sensitivity counters when present).",
+        lines="2-5"))
     main.addParmTemplate(hou.MenuParmTemplate(
         "field_time_scope", "Field Availability Scope",
         ("current", "every", "any"),
@@ -1933,12 +1952,16 @@ def _parms():
     compare.addParmTemplate(hou.ToggleParmTemplate(
         "reference_enable", "Compare With Reference Frame",
         default_value=False,
+        script_callback="hou.phm().reference_options_changed(kwargs)",
+        script_callback_language=hou.scriptLanguage.Python,
         help="Colors the active field by its change from a selected frame. "
              "Requires matching point topology. Parses the reference frame in "
              "addition to the current one, so each frame change does a little "
              "more work while this is on."))
     ref_frame = hou.IntParmTemplate(
         "reference_frame", "Reference Frame", 1, default_value=(0,), min=0,
+        script_callback="hou.phm().reference_options_changed(kwargs)",
+        script_callback_language=hou.scriptLanguage.Python,
         help="Houdini frame to compare against: the time step that frame "
              "shows (through Time Mapping, like the playbar) is the "
              "reference; the status line names the step. 0 shows the first "
@@ -1952,6 +1975,8 @@ def _parms():
         ("difference", "absolute", "percent"),
         menu_labels=("Current Minus Reference", "Absolute Difference",
                      "Percentage Change"), default_value=0,
+        script_callback="hou.phm().reference_options_changed(kwargs)",
+        script_callback_language=hou.scriptLanguage.Python,
         help="What to color: the signed change since the reference frame, "
              "its magnitude, or the change as a percentage of the reference "
              "value.")
