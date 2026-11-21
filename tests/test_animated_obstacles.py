@@ -250,16 +250,53 @@ def check_msh_obstacle(root):
     first = os.path.join(keyed.work, "input",
                          data["geometry"][1]["mesh_sequence"][0])
     vertices, faces = keyed.mod._read_obj_surface(first)
-    # the surface of the 48-tet block: PolyFEM's own reading has the same
-    # points (26 surface nodes of 27), in some order
-    rest = static_obstacle[0]
-    assert len(vertices) == len(rest) == 26 and len(faces) == 48, \
-        (len(vertices), len(rest), len(faces))
-    distance = [float(np.min(np.linalg.norm(rest - v, axis=1)))
-                for v in vertices]
-    assert max(distance) < 1e-14, max(distance)
-    print("PASS: a rotating .msh (tet) obstacle is written as its surface, "
-          "matching PolyFEM's own reading of the file")
+    # Upstream retains all tet obstacle nodes for volume output (obstacle_volume
+    # defaults to true). Compare the exterior boundary faces and nodes.
+    from collections import Counter
+    volume = vtu_parser.load_frame(
+        os.path.join(static.work, "output", "sim.pvd"), 0)["Volume"]
+    points = np.asarray(volume["points"])
+    ids = np.asarray(volume["point_data"]["body_ids"]).ravel()
+    tets = np.asarray(volume["cells"]["tet"])
+    obstacle_tets = tets[np.all(ids[tets] == 0, axis=1)]
+    assert len(obstacle_tets) == 48, len(obstacle_tets)
+    counts = Counter(tuple(sorted(tet[list(face)]))
+                     for tet in obstacle_tets
+                     for face in ((0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)))
+    assert all(count in (1, 2) for count in counts.values()), counts
+    boundary = [face for face, count in counts.items() if count == 1]
+    boundary_nodes = sorted({node for face in boundary for node in face})
+    assert len(static_obstacle[0]) == 27
+    assert len(vertices) == len(boundary_nodes) == 26
+    assert len(faces) == len(boundary) == 48
+    rest = points[boundary_nodes]
+    mapping = [int(np.argmin(np.linalg.norm(rest - vertex, axis=1)))
+               for vertex in vertices]
+    assert len(set(mapping)) == 26
+    assert max(float(np.linalg.norm(rest[index] - vertex))
+               for index, vertex in zip(mapping, vertices)) < 1e-14
+    local = {node: index for index, node in enumerate(boundary_nodes)}
+    expected_faces = {tuple(sorted(local[node] for node in face))
+                      for face in boundary}
+    actual_faces = {tuple(sorted(mapping[node] for node in face))
+                    for face in faces}
+    assert actual_faces == expected_faces, (actual_faces, expected_faces)
+    print("PASS: static volume output retains 27 nodes/48 tets; animated OBJ "
+          "matches its exact exterior 26 nodes/48 triangles, not the interior node")
+
+    # The extra volume-output node must not create a collision primitive.
+    volume_run = Scene(root, "msh_contact", obstacle=ball)
+    surface_run = Scene(root, "obj_contact", obstacle=first)
+    for scene in (volume_run, surface_run):
+        scene.node.parm("barrier_mode").set("fixed")
+        scene.node.parm("obstacle_disp2").set('["0", "0", "-0.08*t"]')
+    volume_frames, _ = volume_run.run()
+    surface_frames, _ = surface_run.run()
+    volume_body, _ = split(volume_frames)
+    surface_body, _ = split(surface_frames)
+    assert max(float(np.abs(body).max()) for body in volume_body) > 1e-3
+    assert max_difference(volume_body, surface_body) < 1e-12
+    print("PASS: volume and boundary-only obstacles produce the same contacting body response")
 
 
 def check_refusals(root):

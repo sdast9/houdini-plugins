@@ -752,6 +752,14 @@
             parmtag { "script_callback_language" "python" }
         }
         parm {
+            name    "resume_checkpoint"
+            label   "Resume Checkpoint"
+            type    file
+            default { "" }
+            help    "Optional self-contained checkpoint file. When set, the checkpoint's saved geometry, materials, time and solver settings govern continuation; current physics controls are ignored. Working Directory chooses the new output location; binary, maximum threads and log level still come from this node. Clear this field to run the current scene. The solver validates compatibility; old state.txt and restart.json are not checkpoints."
+            parmtag { "filechooser_mode" "read" }
+        }
+        parm {
             name    "main_sep"
             label   "Separator"
             type    separator
@@ -1618,6 +1626,27 @@
                         disablewhen "@SHOW_FOR(AMIPS)@"
                         hidewhen "@SHOW_FOR(AMIPS)@"
                         help    "Off (default): penalize distortion relative to an ideal regular element. On: penalize distortion relative to the input mesh's rest shape."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "amips_power#_#"
+                        label   "AMIPS Power"
+                        type    float
+                        default { "1" }
+                        disablewhen "@SHOW_FOR(AMIPS)@"
+                        hidewhen "@SHOW_FOR(AMIPS)@"
+                        range   { 1e-06! 100 }
+                        help    "Power exponent applied to the AMIPS distortion energy before weighting (default 1). Values above 1 penalize severe element distortion more strongly; omitted from JSON when 1."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "amips_normalized#_#"
+                        label   "AMIPS Normalized"
+                        type    toggle
+                        default { "0" }
+                        disablewhen "@SHOW_FOR(AMIPS)@"
+                        hidewhen "@SHOW_FOR(AMIPS)@"
+                        help    "Divide the AMIPS distortion measure by the spatial dimension before raising it to Power (default off). Omitted from JSON when off."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
@@ -3149,6 +3178,17 @@
                 help    "Starting stiffness for the classic Adaptive heuristic; PolyFEM then raises it automatically when the gap gets too small."
                 parmtag { "script_callback_language" "python" }
             }
+            parm {
+                name    "dhat_epsilon_scale"
+                label   "Adaptive Distance Scale"
+                type    log
+                default { "1e-09" }
+                disablewhen "{ enable == 0 } { barrier_mode != adaptive }"
+                hidewhen "{ expert_mode == 0 }"
+                range   { 0 1 }
+                help    "Passed to ipc::update_barrier_stiffness in transient Adaptive mode (default 1e-9): stiffness is doubled only while the minimum distance is below dhat_epsilon_scale * bbox_diagonal and still decreasing. Expert Mode only; omitted from JSON when at default."
+                parmtag { "script_callback_language" "python" }
+            }
             groupcollapsible {
                 name    "semi_implicit_folder"
                 label   "Semi-Implicit Options"
@@ -4237,6 +4277,15 @@
                 parmtag { "script_callback_language" "python" }
             }
             parm {
+                name    "ls_accept_energy_in_grad_mode"
+                label   "Accept Energy Decrease in Grad Mode"
+                type    toggle
+                default { "0" }
+                hidewhen "{ expert_mode == 0 }"
+                help    "When line search is judging steps by gradient norm (below Grad Norm Tol), also accept a step that decreases the energy (default off). Helps near convergence when the gradient plateaus while energy is still descending. Expert Mode only; omitted from JSON when off."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
                 name    "min_step_size"
                 label   "Min Step Size"
                 type    log
@@ -4643,6 +4692,15 @@
                 default { "0.99" }
                 range   { 0 1 }
                 help    "Progress ratio: if the boundary-condition error shrinks by less than this fraction between rounds, the weight is increased instead of the Lagrange multipliers. 0.99 favors updating the multipliers."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_error"
+                label   "Error Tolerance"
+                type    log
+                default { "0.01" }
+                range   { 0 1 }
+                help    "Augmented Lagrangian stopping error threshold: AL does not stop unless the Dirichlet constraint error is smaller than this number (default 1e-2). Omitted from JSON when at default."
                 parmtag { "script_callback_language" "python" }
             }
             parm {
@@ -5071,7 +5129,7 @@
                 label   "Restart JSON"
                 type    toggle
                 default { "0" }
-                help    "Write output/restart.json after each step, plus the solver state it points to (output/state_N.hdf5, one per step). To continue a stopped run: PolyFEM_bin -j output/restart.json (from any folder). The run resumes after the last completed step with the same dt and end time, and appends frames to the same output. The state file also carries the contact controller (barrier trim, per-contact stiffness, friction lag), so a resumed run matches the uninterrupted one to roundoff (state files from PolyFEM before c133948cf resume with a fresh controller and a warning). Leave Rest Mesh off unless remeshing: with it, restart.json replaces the scene geometry by the bare rest mesh, dropping transforms and selections."
+                help    "Write a self-contained output/checkpoint_N.hdf5 after each step for exact supported continuation. The parameter name and label are retained for existing scenes. Old params.json restart settings import as checkpoint output; old restart.json state files are not supported."
                 parmtag { "filechooser_mode" "write" }
                 parmtag { "script_callback_language" "python" }
             }
@@ -5152,6 +5210,23 @@
                     type    toggle
                     default { "1" }
                     help    "Export each node's body id (one number per node; on by default). The Read PVD node needs it to show or hide individual bodies and to keep its smoothing inside one body where bodies touch. Turn off only to save a little disk space on single-body runs."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "obstacle_volume"
+                    label   "Volumetric Obstacles"
+                    type    toggle
+                    default { "1" }
+                    help    "When an obstacle is loaded from a tetrahedral .msh file, export its full volumetric tetrahedra instead of only its surface triangles in ParaView output (default on, matching PolyFEM). Turn off for lighter surface-only obstacle frames."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "paraview_async"
+                    label   "Async Output Writer"
+                    type    toggle
+                    default { "1" }
+                    hidewhen "{ expert_mode == 0 }"
+                    help    "Write timestep VTU/VTM/PVD files on a background worker thread with one pending frame (default on). Turn off to write synchronously on the solver thread (useful for debugging or single-threaded profiling). Expert Mode only; omitted from JSON when on."
                     parmtag { "script_callback_language" "python" }
                 }
                 parm {
@@ -5370,16 +5445,17 @@
                         label   "State"
                         type    toggle
                         default { "0" }
-                        help    "Write the solver state (displacement, velocity, acceleration history; HDF5 content) to output/state.txt, overwritten each step. Not needed for restarting: Restart JSON writes its own per-step state files."
+                        help    "Write the solver state (displacement, velocity, acceleration history; HDF5 content) to output/state.txt, overwritten each step. Not needed for restarting: Checkpoints carry their own per-step history. This State output is diagnostic only, not restart input."
                         parmtag { "filechooser_mode" "write" }
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
                         name    "rest_mesh_file"
-                        label   "Rest Mesh (.msh file)"
+                        label   "Rest Mesh (retired)"
                         type    toggle
                         default { "0" }
-                        help    "Write the rest (undeformed, possibly remeshed) mesh to output/rest_mesh.msh; needed to restart remeshing runs."
+                        hidewhen "{ rest_mesh_file == 0 }"
+                        help    "Retired: PolyFEM removed output.data.rest_mesh (strict validation rejects it). Retained only so older scenes load cleanly; no longer written to params.json. Turn off to clear Check Setup warnings."
                         parmtag { "filechooser_mode" "write" }
                         parmtag { "script_callback_language" "python" }
                     }
@@ -5645,10 +5721,10 @@
 
         parm {
             name    "remeshing_enabled"
-            label   "Enable Adaptive Remeshing"
+            label   "Enable Adaptive Remeshing (legacy)"
             type    toggle
             default { "0" }
-            help    "Let PolyFEM refine, coarsen and repair the mesh while it runs (adaptive remeshing), based on the energy of the deformation. Off = the mesh you provide is used unchanged. Turning this on forces the convergent (area-weighted) contact formulation."
+            help    "Legacy in-timestep adaptive remeshing is no longer supported by PolyFEM. These controls are retained so older scenes can be inspected; leaving this toggle on blocks forward export. MMG shape-optimization remeshing is separate and is not configured here."
             parmtag { "script_callback_language" "python" }
         }
         parm {

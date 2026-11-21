@@ -22,8 +22,10 @@ import hou
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TYPE = "stevenabramowitch::dev::PolyFEM::2.0"
-POLYFEM_BIN = os.path.abspath(
-    os.path.join(BASE, "..", "polyfem", "build", "PolyFEM_bin"))
+POLYFEM_BIN = os.environ.get(
+    "POLYFEM_BIN",
+    os.path.abspath(
+        os.path.join(BASE, "..", "polyfem", "build", "PolyFEM_bin")))
 
 
 def _write_unit_cube_msh(path):

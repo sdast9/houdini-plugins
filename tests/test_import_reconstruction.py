@@ -65,7 +65,7 @@ def main():
         "adhesion_enable": 1, "dhat_p": 0.03, "dhat_a": 0.015,
         "adhesion_strength": 2.1, "tangent_coeff": 0.45,
         "adhesion_epsa": 0.0002,
-        "remeshing_enabled": 1, "remesh_type": 1,
+        "remeshing_enabled": 0, "remesh_type": 1,
         "split_enabled": 1, "split_acceptance_tol": 0.004,
         "collapse_enabled": 1, "collapse_max_depth": 4,
         "swap_enabled2": 1, "swap_max_depth2": 5,
@@ -120,7 +120,7 @@ def main():
         phm.MATERIAL_TOKENS.index("HGOFiber")
     assert restored.evalParm("integrator") == 7
     assert abs(restored.evalParm("newmark_beta") - 0.31) < 1e-12
-    assert restored.evalParm("remeshing_enabled") == 1
+    assert restored.evalParm("remeshing_enabled") == 0
     assert restored.evalParm("method") == 2
     assert restored.evalParm("broad_phase") == 3
     assert restored.evalParm("num_rayleigh") == 2

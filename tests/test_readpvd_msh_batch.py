@@ -25,8 +25,10 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "src", "common"))
 import vtu_parser
 
-POLYFEM_BIN = os.path.abspath(
-    os.path.join(BASE, "..", "polyfem", "build", "PolyFEM_bin"))
+POLYFEM_BIN = os.environ.get(
+    "POLYFEM_BIN",
+    os.path.abspath(
+        os.path.join(BASE, "..", "polyfem", "build", "PolyFEM_bin")))
 
 
 def _hex_volumes(points, hexes):

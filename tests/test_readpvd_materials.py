@@ -19,6 +19,7 @@ import hou
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT = os.path.dirname(BASE)
+SMOKE_ROOT = os.environ.get("POLYFEM_TEST_SMOKE_ROOT", os.path.join(ROOT, "smoke-out"))
 # POLYFEM_BIN overrides the sibling build (a binary other than the shared one).
 POLYFEM_BIN = os.environ.get(
     "POLYFEM_BIN", os.path.join(ROOT, "polyfem", "build", "PolyFEM_bin"))
@@ -63,7 +64,10 @@ ANCHOR = np.array([0.5, 0.5, -0.75])
 def ensure_material_run():
     """Two-body run: MaterialSum(NeoHookean + HGODispersion with per-element
     fibers) and a plain NeoHookean body -> MultiModels, slash-named fields."""
-    out_dir = os.path.join(ROOT, "smoke-out", "readpvd-materials")
+    out_dir = os.path.join(SMOKE_ROOT, "readpvd-materials")
+    if os.environ.get("POLYFEM_TEST_FRESH") == "1":
+        os.makedirs(SMOKE_ROOT, exist_ok=True)
+        out_dir = tempfile.mkdtemp(prefix="readpvd-materials-fresh-", dir=SMOKE_ROOT)
     pvd = os.path.join(out_dir, "mats.pvd")
     if os.path.isfile(pvd):
         return out_dir, pvd

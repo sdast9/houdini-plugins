@@ -240,4 +240,4 @@ The body load (gravity: see above) and optional units.
 
 == Remeshing ==
 
-Adaptive remeshing during the run (rarely needed).
+Legacy controls are retained for inspecting older scenes, but enabled in-timestep remeshing blocks forward export. Disable the legacy toggle to continue. Upstream MMG remeshing belongs to the separate shape-optimization workflow and is not configured by these controls. Checkpoint resume ignores scene controls.

@@ -234,7 +234,7 @@ def main():
     node.setParms({"quasistatic": 1, "end_time_bool": 1, "tend": 0.5,
                    "time_inc_bool": 1, "dt": 0.125})
     node.setParms({"enable": 1, "dhat": 1e-3})
-    # Restart JSON must bring its own per-step state (State toggle left off).
+    # Checkpoints include their own state (legacy State toggle left off).
     node.setParms({"restart_json": 1, "state_file": 0})
     # barrier_mode default 0 (semi-implicit); al_hessian_scaled default 1
 
@@ -272,10 +272,10 @@ def main():
     assert pv["options"]["scalar_values"] is False
     assert pv["options"]["tensor_values"] is True
     assert pv["options"]["use_hdf5"] is True
-    assert data["space"]["remesh"] == {"enabled": False}
-    assert data["output"]["restart_json"] == "../output/restart.json"
-    assert data["output"]["data"]["state"] == "../output/state_{:d}.hdf5", \
-        data["output"]["data"]
+    assert "remesh" not in data["space"]
+    assert data["output"]["checkpoint"]["path"] == "../output/checkpoint_{:d}.hdf5"
+    assert "restart_json" not in data["output"]
+    assert "state" not in data["output"]["data"]
     assert data["materials"][0]["id"] == 1001
     geo1 = data["geometry"][0]
     sel = geo1["surface_selection"]
@@ -335,21 +335,55 @@ def main():
         r"-- Linf error: ([0-9.e+-]+)", result.stdout)]
     assert linf and linf[-1] > 0.05, f"no displacement; Linf={linf}"
 
-    # restart.json names the last step's state and keeps dt (tend + dt
-    # scene: 0.5 / 0.125 = 4 steps, none left after the last one).
-    with open(os.path.join(out_dir, "restart.json")) as f:
-        restart = json.load(f)
-    state_path = restart["input"]["data"]["state"]
-    assert os.path.isabs(state_path) and state_path.endswith("state_4.hdf5"), state_path
-    assert os.path.isfile(state_path), state_path
-    assert os.path.isabs(restart["root_path"]), restart["root_path"]
-    assert restart["output"]["data"]["file_index_offset"] == 4, restart
-    assert abs(restart["time"]["t0"] - 0.5) < 1e-12, restart["time"]
-    assert restart["time"]["dt"] == 0.125, restart["time"]
-    assert restart["time"]["time_steps"] == 0, restart["time"]
-    assert restart["time"]["tend"] is None, restart["time"]
-    for step in range(1, 5):
-        assert os.path.isfile(os.path.join(out_dir, f"state_{step}.hdf5")), step
+    # Resume mode exports only checkpoint identity, without requiring or
+    # reconstructing geometry or applying this node's physics controls.
+    resume_node = hou.node("/obj").createNode(
+        "stevenabramowitch::dev::PolyFEM::2.0", "checkpoint_resume")
+    resume_mod = resume_node.hdaModule()
+    checkpoint_path = os.path.join(out_dir, "checkpoint_2.hdf5")
+    resume_node.setParms({"working_dir": os.path.join(work, "resume_ui"),
+                          "polyfem_bin": POLYFEM_BIN,
+                          "resume_checkpoint": checkpoint_path,
+                          "num_geos": 0, "dt": 99})
+    setup = resume_mod.check_setup(resume_node, "run")
+    assert not setup["errors"], setup
+    assert any("saved geometry" in note for note in setup["notes"]), setup
+    wrapper_path = resume_mod.write_params_only({"node": resume_node})
+    with open(wrapper_path) as handle:
+        wrapper = json.load(handle)
+    assert wrapper == {"input": {"checkpoint": {"path": checkpoint_path,
+                                                "reorder": False}}}, wrapper
+    launch_dir, cmd = resume_mod._launch_command(resume_node, wrapper_path)
+    assert launch_dir == os.path.dirname(wrapper_path)
+    assert "--checkpoint" not in cmd and "-j" in cmd, cmd
+    ui_result = subprocess.run(cmd, cwd=launch_dir, capture_output=True,
+                               text=True, timeout=900)
+    assert ui_result.returncode == 0, ui_result.stdout + ui_result.stderr
+    assert os.path.isfile(os.path.join(work, "resume_ui", "output", "checkpoint_4.hdf5"))
+
+    resume_node.parm("resume_checkpoint").set(checkpoint_path + ".missing")
+    assert resume_mod.check_setup(resume_node, "run")["errors"]
+    resume_node.parm("old_input_dir").set(os.path.dirname(wrapper_path))
+    resume_mod.read_params({"node": resume_node})
+    assert resume_node.evalParm("resume_checkpoint") == checkpoint_path
+    # Null checkpoint blocks are legal absence, not chained-get failures.
+    resume_mod._restore_output(resume_node, {"output": {"checkpoint": None}})
+    assert resume_node.evalParm("restart_json") == 0
+    resume_mod._restore_output(resume_node, {"output": {"restart_json": "old.json"}})
+    assert resume_node.evalParm("restart_json") == 1
+    resume_mod._restore_output(resume_node, {"output": {"data": {
+        "diagnostic_state": "state.txt", "state": "../output/state_{:d}.hdf5"}}})
+    assert resume_node.evalParm("state_file") == 1
+    # Importing a normal scene clears a stale resume selection.
+    resume_node.parm("old_input_dir").set(input_dir)
+    resume_mod.read_params({"node": resume_node})
+    assert resume_node.evalParm("resume_checkpoint") == ""
+
+    # Verify checkpoint HDF5 metadata and midpoint resume parity.
+    verifier = os.environ.get("POLYFEM_TEST_PYTHON", sys.executable)
+    subprocess.run([verifier, os.path.join(BASE, "tests", "check_checkpoint_payload.py"),
+                    work, POLYFEM_BIN, os.path.join(work, "resume_ui", "output")],
+                   check=True, timeout=1000)
     # Import a legacy positive floor; it must be dropped on re-export.
     data["solver"]["contact"]["semi_implicit"]["constraint_floor"] = 1e-4
     with open(params_path, "w") as f:

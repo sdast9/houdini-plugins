@@ -14,10 +14,11 @@ import hou
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT = os.path.dirname(BASE)
+SMOKE_ROOT = os.environ.get("POLYFEM_TEST_SMOKE_ROOT", os.path.join(ROOT, "smoke-out"))
 # POLYFEM_BIN overrides the sibling build (a binary other than the shared one).
 POLYFEM_BIN = os.environ.get(
     "POLYFEM_BIN", os.path.join(ROOT, "polyfem", "build", "PolyFEM_bin"))
-SMOKE = os.path.join(ROOT, "smoke-out", "quasistatic-semi")
+SMOKE = os.path.join(SMOKE_ROOT, "quasistatic-semi")
 
 
 def cached_run_is_current(pvd):
@@ -39,7 +40,7 @@ def cached_run_is_current(pvd):
 
 def ensure_surface_run():
     """Produce output with a Surface block (contact forces) if missing."""
-    out_dir = os.path.join(ROOT, "smoke-out", "readpvd-surface")
+    out_dir = os.path.join(SMOKE_ROOT, "readpvd-surface")
     pvd = os.path.join(out_dir, "surface.pvd")
     if cached_run_is_current(pvd):
         return pvd
@@ -47,6 +48,7 @@ def ensure_surface_run():
     scene_dir = os.path.join(ROOT, "polyfem", "scenes", "semi-implicit")
     with open(os.path.join(scene_dir, "quasistatic-semi.json")) as f:
         scene = json.load(f)
+    scene["root_path"] = scene_dir
     scene["materials"]["E"] = 1e6
     scene["output"]["paraview"] = {
         "file_name": "surface.pvd", "surface": True,
@@ -66,7 +68,7 @@ def ensure_minimal_run():
     """Re-run the smoke scene with the fields whitelist the PolyFEM HDA
     emits in minimal mode (solution + F + Cauchy stress only); everything
     else is derived by readPVD on load."""
-    out_dir = os.path.join(ROOT, "smoke-out", "readpvd-minimal")
+    out_dir = os.path.join(SMOKE_ROOT, "readpvd-minimal")
     pvd = os.path.join(out_dir, "minimal.pvd")
     if cached_run_is_current(pvd):
         return pvd
@@ -74,6 +76,7 @@ def ensure_minimal_run():
     scene_dir = os.path.join(ROOT, "polyfem", "scenes", "semi-implicit")
     with open(os.path.join(scene_dir, "quasistatic-semi.json")) as f:
         scene = json.load(f)
+    scene["root_path"] = scene_dir
     scene["output"]["paraview"] = {
         "file_name": "minimal.pvd",
         "fields": ["solution", "F", "cauchy_stess"],
@@ -91,7 +94,7 @@ def ensure_minimal_run():
 
 def ensure_hdf_run():
     """Produce the same smoke scene in PolyFEM's VTK-HDF format."""
-    out_dir = os.path.join(ROOT, "smoke-out", "readpvd-hdf")
+    out_dir = os.path.join(SMOKE_ROOT, "readpvd-hdf")
     pvd = os.path.join(out_dir, "hdf.pvd")
     if cached_run_is_current(pvd) and os.path.isfile(
             os.path.join(out_dir, "step_4.hdf")):
@@ -100,6 +103,7 @@ def ensure_hdf_run():
     scene_dir = os.path.join(ROOT, "polyfem", "scenes", "semi-implicit")
     with open(os.path.join(scene_dir, "quasistatic-semi.json")) as f:
         scene = json.load(f)
+    scene["root_path"] = scene_dir
     scene["output"]["paraview"] = {
         "file_name": "hdf.pvd", "options": {"use_hdf5": True}}
     scene_path = os.path.join(out_dir, "scene.json")
@@ -116,7 +120,7 @@ def ensure_hdf_run():
 
 def ensure_two_body_run():
     """Create a tiny PVD with two bodies (body_ids 0 and 1) for show/hide."""
-    out_dir = os.path.join(ROOT, "smoke-out", "readpvd-two-body")
+    out_dir = os.path.join(SMOKE_ROOT, "readpvd-two-body")
     os.makedirs(out_dir, exist_ok=True)
     pvd = os.path.join(out_dir, "two_body.pvd")
     points = ("0 0 0  1 0 0  0 1 0  0 0 1  1 1 1  "        # body 0 (pts 0-4)
@@ -148,7 +152,7 @@ format="ascii">{"0 0 0  " * 10}</DataArray>
 
 def ensure_cell_data_run():
     """Create a tiny two-frame PVD with scalar/vector CellData."""
-    out_dir = os.path.join(ROOT, "smoke-out", "readpvd-cell-data")
+    out_dir = os.path.join(SMOKE_ROOT, "readpvd-cell-data")
     os.makedirs(out_dir, exist_ok=True)
     pvd = os.path.join(out_dir, "cell_data.pvd")
     points = "0 0 0  1 0 0  0 1 0  0 0 1  1 1 1"
@@ -1127,7 +1131,7 @@ def main():
     cnode.destroy()
 
     # ---- growing-sim refresh: caches and frame position survive ---------
-    grow_dir = os.path.join(ROOT, "smoke-out", "readpvd-growing")
+    grow_dir = os.path.join(SMOKE_ROOT, "readpvd-growing")
     os.makedirs(grow_dir, exist_ok=True)
     tet_points = "0 0 0  1 0 0  0 1 0  0 0 1"
 
@@ -1268,7 +1272,7 @@ def main():
     # Higher-order Lagrange tets are subdivided for display (not collapsed to a
     # corner tet): P2/P3/P4 -> 8/27/64 P1 sub-tets, field data preserved.
     phm = node.hdaModule()
-    ho_dir = os.path.join(ROOT, "smoke-out", "readpvd-higher-order")
+    ho_dir = os.path.join(SMOKE_ROOT, "readpvd-higher-order")
     os.makedirs(ho_dir, exist_ok=True)
     for n_nodes, expected in ((10, 8), (20, 27), (35, 64)):
         conn = " ".join(str(i) for i in range(n_nodes))
@@ -1310,7 +1314,7 @@ def main():
             # PolyFEM flattens column-major: X_i arrays are tensor COLUMNS
             name, i + 1, " ".join("%.9g" % v for v in tensor[:, :, i].ravel()))
         for name, tensor in (("F", F), ("pk1_stess", pk1)) for i in range(3))
-    pk1_pvd = os.path.join(ROOT, "smoke-out", "readpvd-pk1", "e.vtu")
+    pk1_pvd = os.path.join(SMOKE_ROOT, "readpvd-pk1", "e.vtu")
     os.makedirs(os.path.dirname(pk1_pvd), exist_ok=True)
     with open(pk1_pvd, "w") as file:
         file.write(

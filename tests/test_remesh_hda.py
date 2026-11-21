@@ -1,4 +1,4 @@
-"""PolyFEM 2.0 remesh JSON write/read round-trip test.
+"""Legacy remeshing import preservation and explicit refusal test.
 
 Run: hython tests/test_remesh_hda.py
 """
@@ -89,43 +89,75 @@ def main():
     make_cube_msh(mesh)
 
     source = make_node("remesh_source", work, mesh)
-    source.setParms(REMESH_PARMS)
-    params_path = source.hdaModule().write_params_only({"node": source})
-    assert load_json(params_path)["space"]["remesh"] == EXPECTED_REMESH
+    module = source.hdaModule()
+    params_path = module.build_params(source)
+    baseline = load_json(params_path)
+    assert "remesh" not in baseline["space"]
+    legacy = json.loads(json.dumps(baseline))
+    legacy["space"]["remesh"] = EXPECTED_REMESH
+    with open(params_path, "w") as handle:
+        json.dump(legacy, handle)
 
     restored = hou.node("/obj").createNode(
         "stevenabramowitch::dev::PolyFEM::2.0", "remesh_restored")
     restored.setParms({"old_input_dir": os.path.dirname(params_path)})
-    restored.hdaModule().read_params({"node": restored})
+    rm = restored.hdaModule()
+    rm.read_params({"node": restored})
     for parm, expected in REMESH_PARMS.items():
         if parm.startswith("collapse_") or parm in (
                 "rel_max_edge_length", "abs_max_edge_length"):
-            continue  # disabled stages restore schema defaults
-        assert restored.evalParm(parm) == expected, (
-            parm, restored.evalParm(parm), expected)
+            continue
+        assert restored.evalParm(parm) == expected, parm
     assert restored.evalParm("collapse_enabled") == 0
     assert restored.evalParm("collapse_acceptance_tol") == -1e-8
-    roundtrip_path = restored.hdaModule().write_params_only({"node": restored})
-    assert load_json(roundtrip_path)["space"]["remesh"] == EXPECTED_REMESH
+    assert "no longer supported" in restored.evalParm("import_report")
+    restored.setParms({"area_weighted": 0})
+    before = open(params_path, "rb").read()
+    for purpose in ("check", "write", "run", "background"):
+        assert any("no longer supported" in error
+                   for error in rm.check_setup(restored, purpose)["errors"])
+    for action in (lambda: rm.build_params(restored),
+                   lambda: rm.build_remesh(restored)):
+        try:
+            action()
+        except hou.NodeError as exc:
+            assert "no longer supported" in str(exc)
+        else:
+            raise AssertionError("Legacy remeshing was exported")
+    assert open(params_path, "rb").read() == before
+    assert restored.evalParm("area_weighted") == 0
+    contact = {}
+    rm.build_contact(restored, contact)
+    assert restored.evalParm("area_weighted") == 0
 
-    # Disabled remeshing is explicit in newly written JSON.
-    restored.setParms({"remeshing_enabled": 0})
-    disabled_path = restored.hdaModule().write_params_only({"node": restored})
-    assert load_json(disabled_path)["space"]["remesh"] == {"enabled": False}
+    # Native checkpoint settings override stale legacy UI settings.
+    checkpoint = os.path.join(work, "placeholder.hdf5")
+    open(checkpoint, "wb").close()
+    restored.setParms({"resume_checkpoint": checkpoint})
+    assert not any("no longer supported" in error for error in
+                   rm.check_setup(restored, "write")["errors"])
+    wrapper = load_json(rm.build_params(restored))
+    assert wrapper == {"input": {"checkpoint": {"path": checkpoint,
+                                                "reorder": False}}}
+    restored.setParms({"resume_checkpoint": "", "remeshing_enabled": 0})
+    assert "remesh" not in load_json(rm.build_params(restored))["space"]
 
-    # Older JSON files may omit remesh entirely; reading one must clear stale UI.
-    older = load_json(disabled_path)
-    del older["space"]["remesh"]
-    with open(disabled_path, "w") as f:
-        json.dump(older, f)
-    restored.setParms({"remeshing_enabled": 1, "remesh_type": 1,
-                       "split_max_depth": 9})
-    restored.hdaModule().read_params({"node": restored})
-    assert restored.evalParm("remeshing_enabled") == 0
-    assert restored.evalParm("remesh_type") == 0
-    assert restored.evalParm("split_max_depth") == 3
+    # Missing/null space and missing remesh must clear stale legacy controls.
+    for candidate in ({}, {"space": None}, {"space": {}}):
+        restored.setParms({"remeshing_enabled": 1, "split_max_depth": 9})
+        rm._restore_space(restored, candidate, {}, False, [])
+        assert restored.evalParm("remeshing_enabled") == 0
+        assert restored.evalParm("split_max_depth") == 3
 
-    print("PASS: PolyFEM remesh JSON round trip")
+    # Optimization inputs must not destructively import as forward scenes.
+    prior_children = tuple(child.path() for child in restored.children())
+    prior_parms = restored.evalParm("num_geos")
+    with open(params_path, "w") as handle:
+        json.dump({"states": [], "remeshing": {"trigger": "periodic"}}, handle)
+    rm.read_params({"node": restored})
+    assert tuple(child.path() for child in restored.children()) == prior_children
+    assert restored.evalParm("num_geos") == prior_parms
+    print("PASS: legacy remeshing retained, explicitly refused, no silent MMG mapping")
 
 
 if __name__ == "__main__":

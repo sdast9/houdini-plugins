@@ -6015,9 +6015,21 @@ def _isotropic_model(parent, geo, vol, token, allow_damping=True):
             raise hou.NodeError(
                 f"{_slot_label(geo, vol, None)}: AMIPS weight must be greater "
                 f"than 0 (got {weight:g}).")
-        return {"type": token, "weight": float(weight),
-                "use_rest_pose": bool(
-                    parent.evalParm(f"amips_use_rest_pose{geo}_{vol}"))}
+        model = {"type": token, "weight": float(weight),
+                 "use_rest_pose": bool(
+                     parent.evalParm(f"amips_use_rest_pose{geo}_{vol}"))}
+        if parent.parm(f"amips_power{geo}_{vol}") is not None:
+            power = float(parent.evalParm(f"amips_power{geo}_{vol}"))
+            if not power > 0:
+                raise hou.NodeError(
+                    f"{_slot_label(geo, vol, None)}: AMIPS power must be "
+                    f"greater than 0 (got {power:g}).")
+            if not math.isclose(power, 1.0, rel_tol=1e-9, abs_tol=1e-12):
+                model["power"] = power
+        if parent.parm(f"amips_normalized{geo}_{vol}") is not None \
+                and bool(parent.evalParm(f"amips_normalized{geo}_{vol}")):
+            model["normalized"] = True
+        return model
     if token in ("HookeLinearElasticity", "SaintVenant"):
         model = {"type": token,
                  "elasticity_tensor": _read_elast_tensor(parent, geo, vol),
@@ -6182,7 +6194,9 @@ def build_material(parent, geo, vol):
 
 
 # PolyFEM formats {:d} with the output step index.
-RESTART_STATE_FILE = "../output/state_{:d}.hdf5"
+LEGACY_RESTART_STATE_FILE = "../output/state_{:d}.hdf5"
+RESTART_CHECKPOINT_FILE = "../output/checkpoint_{:d}.hdf5"
+RESTART_STATE_FILE = LEGACY_RESTART_STATE_FILE  # alias for older tests/callers
 
 
 def build_time(parent, data):
@@ -6217,14 +6231,7 @@ def build_contact(parent, data):
     if not parent.evalParm("enable"):
         data["contact"] = {"enabled": False}
         return
-    remesh_enabled = parent.evalParm("remeshing_enabled")
     area_weighted = parent.evalParm("area_weighted")
-    if not area_weighted and remesh_enabled:
-        _message(
-            "Note: Convergent formulation selected to support remeshing.")
-    if remesh_enabled:
-        area_weighted = 1
-        parent.setParms({"area_weighted": 1})
 
     adhesion = {
         "adhesion_enabled": bool(parent.evalParm("adhesion_enable")),
@@ -6384,51 +6391,22 @@ REMESH_DEFAULTS = {
 }
 
 
-def _remesh_stage(parent, enabled_parm, fields):
-    enabled = bool(parent.evalParm(enabled_parm))
-    stage = {"enabled": enabled}
-    if enabled:
-        stage.update({key: parent.evalParm(parm) for key, parm in fields})
-    return stage
+LEGACY_REMESH_ERROR = (
+    "Legacy in-timestep adaptive remeshing is no longer supported. These "
+    "controls do not configure MMG shape-optimization remeshing. Disable "
+    "legacy remeshing to export a forward simulation.")
 
 
 def build_remesh(parent):
-    """Serialize the HDA remesh controls to PolyFEM's /space/remesh schema."""
-    enabled = bool(parent.evalParm("remeshing_enabled"))
-    if not enabled:
-        return {"enabled": False}
-    return {
-        "enabled": True,
-        "type": "physics" if parent.evalParm("remesh_type") == 0
-                else "sizing_field",
-        "split": _remesh_stage(parent, "split_enabled", (
-            ("acceptance_tolerance", "split_acceptance_tol"),
-            ("culling_threshold", "split_culling_threshold"),
-            ("max_depth", "split_max_depth"),
-            ("min_edge_length", "min_edge_length"))),
-        "collapse": _remesh_stage(parent, "collapse_enabled", (
-            ("acceptance_tolerance", "collapse_acceptance_tol"),
-            ("culling_threshold", "collapse_culling_threshold"),
-            ("max_depth", "collapse_max_depth"),
-            ("rel_max_edge_length", "rel_max_edge_length"),
-            ("abs_max_edge_length", "abs_max_edge_length"))),
-        "swap": _remesh_stage(parent, "swap_enabled2", (
-            ("acceptance_tolerance", "swap_acceptance_tol2"),
-            ("max_depth", "swap_max_depth2"))),
-        "smooth": _remesh_stage(parent, "smooth_enabled", (
-            ("acceptance_tolerance", "smooth_acceptance_tol"),
-            ("max_iters", "smooth_max_iters"))),
-        "local_relaxation": {
-            "local_mesh_n_ring": parent.evalParm("local_mesh_n_ring"),
-            "local_mesh_rel_area": parent.evalParm("local_mesh_rel_area"),
-            "max_nl_iterations": parent.evalParm("max_nl_iterations")},
-    }
+    """Guard retained for callers of the former dynamic-remesh exporter."""
+    if parent.evalParm("remeshing_enabled"):
+        raise hou.NodeError(LEGACY_REMESH_ERROR)
+    return None
 
 
 def build_space(parent, data, orders):
-    space = {"discr_order": orders,
-             "remesh": build_remesh(parent)}
-    data["space"] = space
+    build_remesh(parent)
+    data["space"] = {"discr_order": orders}
 
 
 def _menu_token(parent, name):
@@ -6539,6 +6517,9 @@ def build_nonlinear_solver(parent):
                   parent.evalParm("wolfe_max_objective_restarts"),
               "approximate_wolfe_epsilon":
                   parent.evalParm("wolfe_approximate_epsilon")}}
+    if parent.parm("ls_accept_energy_in_grad_mode") is not None \
+            and bool(parent.evalParm("ls_accept_energy_in_grad_mode")):
+        ls["accept_energy_decrease_in_grad_mode"] = True
 
     # A scene saved with a withdrawn method (see _UNSUPPORTED_NONLINEAR) loads
     # with Houdini's own warning ("Parameter value ... in solver_nl is
@@ -6611,6 +6592,10 @@ def build_solver(parent, data):
                "max_weight": parent.evalParm("al_max_weight"),
                "eta": parent.evalParm("al_eta"),
                "lumping": _menu_token(parent, "al_lumping")})
+    if parent.parm("al_error") is not None:
+        al_err = float(parent.evalParm("al_error"))
+        if not math.isclose(al_err, 0.01, rel_tol=1e-9, abs_tol=1e-12):
+            al["error"] = al_err
     # The AL (boundary-condition preparation) phase reuses the nonlinear
     # settings with its own iteration budget.
     if parent.evalParm("al_max_iterations") != nonlinear["max_iterations"]:
@@ -6712,6 +6697,10 @@ def build_solver(parent, data):
         contact["barrier_stiffness"] = "adaptive"
         contact["initial_barrier_stiffness"] = \
             parent.evalParm("initial_barrier_stiffness")
+        if parent.parm("dhat_epsilon_scale") is not None:
+            eps_scale = float(parent.evalParm("dhat_epsilon_scale"))
+            if not math.isclose(eps_scale, 1e-9, rel_tol=1e-9, abs_tol=1e-18):
+                contact["dhat_epsilon_scale"] = eps_scale
     else:  # fixed
         contact["barrier_stiffness"] = parent.evalParm("barrier_stiffness")
 
@@ -6969,6 +6958,8 @@ def build_output(parent, data):
         "nodes": b("nodes_field"), "forces": b("forces_fields"),
         "force_high_order": b("forces_HO_output"),
         "jacobian_validity": jacobian_validity}
+    if parent.parm("obstacle_volume") is not None and not b("obstacle_volume"):
+        options["obstacle_volume"] = False
     paraview = {
         "file_name": "../output/" + parent.evalParm("paraview_file_name"),
         "vismesh_rel_area": parent.evalParm("vismesh_rel_area"),
@@ -6977,6 +6968,8 @@ def build_output(parent, data):
         "volume": volume or True,  # always write the volume mesh
         "surface": surface, "wireframe": b("paraview_wireframe"),
         "points": points, "options": options}
+    if parent.parm("paraview_async") is not None and not b("paraview_async"):
+        paraview["async"] = False
     if export_fields:
         paraview["fields"] = export_fields
 
@@ -6984,17 +6977,11 @@ def build_output(parent, data):
     for parm, key, fname in (
             ("solution_file", "solution", "solution.txt"),
             ("stress_mat_file", "stress_mat", "stress_mat.txt"),
-            ("state_file", "state", "state.txt"),
-            ("rest_mesh_file", "rest_mesh", "rest_mesh.msh"),
+            ("state_file", "diagnostic_state", "state.txt"),
             ("mises_file", "mises", "mises.txt"),
             ("nodes", "nodes", "nodes.txt")):
         if b(parm):
             data_output[key] = "../output/" + fname
-    # restart.json names the state of its own step, so a restart needs one
-    # state file per step (a single overwritten file can run a step ahead of
-    # restart.json if the solver dies between the two writes).
-    if b("restart_json"):
-        data_output["state"] = RESTART_STATE_FILE
 
     advanced = {
         "timestep_prefix": parent.evalParm("timestep_prefix"),
@@ -7014,7 +7001,7 @@ def build_output(parent, data):
     if b("output_json"):
         data["output"]["json"] = "../output/output.json"
     if b("restart_json"):
-        data["output"]["restart_json"] = "../output/restart.json"
+        data["output"]["checkpoint"] = {"path": RESTART_CHECKPOINT_FILE}
     log = {"level": parent.evalParm("log_level"),
            "quiet": b("log_quiet")}
     if b("write_log"):
@@ -7035,6 +7022,19 @@ def build_output(parent, data):
 # =============================================================================
 
 
+CHECKPOINT_RESUME_NOTE = (
+    "Resume uses the checkpoint's saved geometry, materials, time and solver "
+    "settings, not this node's physics controls. Working Directory selects "
+    "the new output location. Binary, maximum threads and log level still "
+    "come from this node. The solver validates checkpoint compatibility.")
+
+
+def _resume_checkpoint(parent):
+    parm = parent.parm("resume_checkpoint")
+    value = parm.eval().strip() if parm is not None else ""
+    return os.path.abspath(os.path.expandvars(os.path.expanduser(value))) if value else ""
+
+
 def build_params(parent, cache=None):
     working_dir = parent.evalParm("working_dir")
     if not working_dir.strip():
@@ -7048,6 +7048,20 @@ def build_params(parent, cache=None):
     os.makedirs(input_dir, exist_ok=True)
     os.makedirs(os.path.join(working_dir, "output"), exist_ok=True)
 
+    checkpoint = _resume_checkpoint(parent)
+    if checkpoint:
+        if not os.path.isfile(checkpoint):
+            raise hou.NodeError(f"Resume Checkpoint not found: {checkpoint}")
+        params_path = os.path.join(input_dir, "params.json")
+        with open(params_path, "w") as handle:
+            json.dump({"input": {"checkpoint": {"path": checkpoint,
+                                                "reorder": False}}}, handle, indent=4)
+        report = parent.parm("export_report")
+        if report is not None:
+            report.set(CHECKPOINT_RESUME_NOTE)
+        return params_path
+
+    build_remesh(parent)  # Refuse before exporting geometry or changing files.
     if cache is None:
         cache = {}
     data = {}
@@ -7752,6 +7766,12 @@ def _material_findings(parent, geo, vol, quasistatic, errors):
                 errors.append(
                     f"{where} ({name}): AMIPS Weight must be greater than 0 "
                     f"(it is {weight:g}).")
+            if parent.parm(f"amips_power{geo}_{vol}") is not None:
+                power = parent.evalParm(f"amips_power{geo}_{vol}")
+                if not power > 0:
+                    errors.append(
+                        f"{where} ({name}): AMIPS Power must be greater than "
+                        f"0 (it is {power:g}).")
         elif model in _TENSOR_MODELS:
             if _use_raw_elast_tensor(parent, geo, vol):
                 text = parent.evalParm(f"elast_tensor{geo}_{vol}")
@@ -8039,6 +8059,22 @@ def check_setup(parent, purpose="check", cache=None):
         elif platform.system() != "Windows" and not os.access(binary,
                                                               os.X_OK):
             errors.append(f"PolyFEM Binary is not executable: {binary}")
+
+    checkpoint = _resume_checkpoint(parent)
+    if checkpoint:
+        if not os.path.isfile(checkpoint):
+            errors.append(f"Resume Checkpoint not found: {checkpoint}")
+        notes.append(CHECKPOINT_RESUME_NOTE)
+        return {"errors": errors, "warnings": warnings, "notes": notes}
+
+    if parent.evalParm("remeshing_enabled"):
+        errors.append(LEGACY_REMESH_ERROR)
+    if parent.parm("rest_mesh_file") is not None \
+            and parent.evalParm("rest_mesh_file"):
+        warnings.append(
+            "Rest Mesh (.msh file) has been retired in PolyFEM "
+            "(output.data.rest_mesh was removed) and is no longer exported; "
+            "turn it off to clear this warning.")
 
     quasistatic = bool(parent.evalParm("quasistatic"))
     contact = bool(parent.evalParm("enable"))
@@ -8462,6 +8498,13 @@ _EXPERT_PARMS = (
       "wolfe_max_evaluations", "wolfe_max_objective_restarts",
       "wolfe_approximate_epsilon"), "Solver > Line Search > Wolfe",
      lambda p: _menu_token(p, "method") == "Wolfe"),
+    (("ls_accept_energy_in_grad_mode",), "Solver > Line Search",
+     lambda p: True),
+    (("dhat_epsilon_scale",), "Contact > Barrier (IPC)",
+     lambda p: p.evalParm("enable") and not p.evalParm("gcp_enable")
+     and _menu_token(p, "barrier_mode") == "adaptive"),
+    (("paraview_async",), "Output > Paraview > Options",
+     lambda p: True),
     (("adv_stall_restart_enabled", "adv_stall_alpha_threshold",
       "adv_stall_patience", "adv_stall_min_iterations",
       "adv_stall_soft_limit", "adv_stall_max_restarts",
@@ -10139,10 +10182,12 @@ def _import_isotropic(parent, geo, vol, model):
                       ("phi", "phi"), ("psi", "psi"),
                       ("JBarrierThreshold", "inv_barrier_thresh"),
                       ("weight", "amips_weight"),
-                      ("use_rest_pose", "amips_use_rest_pose")):
+                      ("use_rest_pose", "amips_use_rest_pose"),
+                      ("power", "amips_power"),
+                      ("normalized", "amips_normalized")):
         if key in model and parent.parm(f"{base}{geo}_{vol}") is not None:
             parms[f"{base}{geo}_{vol}"] = (
-                int(bool(model[key])) if key == "use_rest_pose"
+                int(bool(model[key])) if key in ("use_rest_pose", "normalized")
                 else model[key])
     if model.get("type") == "GrowthNeoHookean" \
             or any(k in model for k in ("g11", "g22", "g33")):
@@ -10171,6 +10216,12 @@ def _import_isotropic(parent, geo, vol, model):
         if "use_rest_pose" not in model \
                 and parent.parm(f"amips_use_rest_pose{geo}_{vol}") is not None:
             parms[f"amips_use_rest_pose{geo}_{vol}"] = 0
+        if "power" not in model \
+                and parent.parm(f"amips_power{geo}_{vol}") is not None:
+            parms[f"amips_power{geo}_{vol}"] = 1.0
+        if "normalized" not in model \
+                and parent.parm(f"amips_normalized{geo}_{vol}") is not None:
+            parms[f"amips_normalized{geo}_{vol}"] = 0
     if "phi" in model or "psi" in model:
         parms[f"damping{geo}_{vol}"] = 1
     for keys, base in (
@@ -10568,6 +10619,11 @@ def _restore_contact(parent, data):
 
 
 def _restore_space(parent, data, material_slots, legacy, warnings):
+    _restore_remesh(parent, data)
+    if parent.evalParm("remeshing_enabled"):
+        warnings.append(
+            "Legacy remeshing values retained for inspection. "
+            + LEGACY_REMESH_ERROR)
     space = data.get("space")
     if isinstance(space, list):
         entries = [entry for entry in space if isinstance(entry, dict)]
@@ -10595,7 +10651,6 @@ def _restore_space(parent, data, material_slots, legacy, warnings):
             parm = parent.parm(f"mainOrder{geo}_{vol}")
             if parm is not None:
                 parm.set(max(0, int(entry["order"]) - 1))
-    _restore_remesh(parent, data)
 
 
 def _restore_solver(parent, data, legacy, warnings):
@@ -10733,6 +10788,10 @@ def _restore_solver(parent, data, legacy, warnings):
                     ("step_ratio", "step_ratio")):
                 if key in line_search:
                     parms[parm] = line_search[key]
+            if "accept_energy_decrease_in_grad_mode" in line_search \
+                    and parent.parm("ls_accept_energy_in_grad_mode") is not None:
+                parms["ls_accept_energy_in_grad_mode"] = int(bool(
+                    line_search["accept_energy_decrease_in_grad_mode"]))
             armijo = line_search.get("Armijo", {})
             robust = line_search.get("RobustArmijo", {})
             wolfe = line_search.get("Wolfe", {})
@@ -10865,6 +10924,9 @@ def _restore_solver(parent, data, legacy, warnings):
             if "initial_barrier_stiffness" in contact:
                 parms["initial_barrier_stiffness"] = \
                     contact["initial_barrier_stiffness"]
+            if "dhat_epsilon_scale" in contact \
+                    and parent.parm("dhat_epsilon_scale") is not None:
+                parms["dhat_epsilon_scale"] = contact["dhat_epsilon_scale"]
             if "adaptive_barrier_stiffness_multiplier" in contact:
                 warnings.append(
                     "solver.contact.adaptive_barrier_stiffness_multiplier has "
@@ -10889,6 +10951,8 @@ def _restore_solver(parent, data, legacy, warnings):
                 ("eta", "al_eta")):
             if key in al:
                 parms[parm] = al[key]
+        if "error" in al and parent.parm("al_error") is not None:
+            parms["al_error"] = al["error"]
         lumpings = {"row_sum": 0, "hrz": 1}
         if al.get("lumping") in lumpings:
             parms["al_lumping"] = lumpings[al["lumping"]]
@@ -11091,13 +11155,17 @@ def _restore_linear_solver(parent, linear, parms, warnings):
                     parms["eps_strong"] = aggr["eps_strong"]
 
 
-def _restore_output(parent, data):
+def _restore_output(parent, data, warnings=None):
     output = data.get("output")
     if not isinstance(output, dict):
         return
+    checkpoint_output = output.get("checkpoint")
+    checkpoint_output = (checkpoint_output
+                         if isinstance(checkpoint_output, dict) else {})
     parms = {
         "output_json": int("json" in output),
-        "restart_json": int("restart_json" in output)}
+        "restart_json": int("restart_json" in output
+                            or bool(checkpoint_output.get("path", "")))}
     paraview = output.get("paraview", {})
     if isinstance(paraview, dict):
         filename = paraview.get("file_name")
@@ -11111,6 +11179,8 @@ def _restore_output(parent, data):
                 ("points", "paraview_points")):
             if key in paraview:
                 parms[parm] = paraview[key]
+        if "async" in paraview and parent.parm("paraview_async") is not None:
+            parms["paraview_async"] = int(bool(paraview["async"]))
         options = paraview.get("options", {})
         if isinstance(options, dict):
             for key, parm in (
@@ -11133,6 +11203,9 @@ def _restore_output(parent, data):
                     ("jacobian_validity", "validity_fields")):
                 if key in options:
                     parms[parm] = options[key]
+            if "obstacle_volume" in options \
+                    and parent.parm("obstacle_volume") is not None:
+                parms["obstacle_volume"] = int(bool(options["obstacle_volume"]))
             # Contact forces are written only with contact on: a file without
             # contact says nothing about the toggle, so keep its default.
             contact = data.get("contact")
@@ -11155,14 +11228,22 @@ def _restore_output(parent, data):
     if isinstance(output_data, dict):
         for key, parm in (
                 ("solution", "solution_file"),
-                ("stress_mat", "stress_mat_file"), ("state", "state_file"),
-                ("rest_mesh", "rest_mesh_file"), ("mises", "mises_file"),
+                ("stress_mat", "stress_mat_file"),
+                ("diagnostic_state", "state_file"),
+                ("mises", "mises_file"),
                 ("nodes", "nodes")):
             parms[parm] = int(key in output_data)
-        # The per-step restart state is implied by restart_json, not the
-        # State toggle.
-        if output_data.get("state") == RESTART_STATE_FILE:
-            parms["state_file"] = 0
+        # Legacy state key: the per-step restart state was implied by
+        # restart_json, not the diagnostic State toggle.
+        if "diagnostic_state" not in output_data and "state" in output_data:
+            parms["state_file"] = int(
+                output_data["state"] != LEGACY_RESTART_STATE_FILE)
+        if parent.parm("rest_mesh_file") is not None:
+            parms["rest_mesh_file"] = 0
+        if "rest_mesh" in output_data and warnings is not None:
+            warnings.append(
+                "output.data.rest_mesh has been retired in PolyFEM and was "
+                "not restored.")
     advanced = output.get("advanced", {})
     if isinstance(advanced, dict):
         for key, parm in (
@@ -11311,6 +11392,36 @@ def read_params(kwargs):
     if not isinstance(data, dict):
         _message("The root of params.json must be a JSON object.")
         return
+    # Native CLI dispatches every object containing states to OptState.
+    # Refuse before clearing geometry or changing any imported scene controls.
+    if "states" in data:
+        _message("Optimization configurations cannot be imported as forward "
+                 "simulation scenes. MMG shape-optimization remeshing must be "
+                 "configured through PolyFEM's optimization workflow.")
+        return
+    input_block = data.get("input")
+    input_block = input_block if isinstance(input_block, dict) else {}
+    checkpoint_block = input_block.get("checkpoint")
+    checkpoint_block = (checkpoint_block
+                        if isinstance(checkpoint_block, dict) else {})
+    checkpoint = checkpoint_block.get("path", "")
+    if isinstance(checkpoint, str) and checkpoint.strip():
+        checkpoint = os.path.expandvars(os.path.expanduser(checkpoint))
+        if not os.path.isabs(checkpoint):
+            checkpoint = os.path.join(input_dir, checkpoint)
+        norm_input = os.path.normpath(input_dir)
+        working_dir = (os.path.dirname(norm_input)
+                       if os.path.basename(norm_input) == "input"
+                       else norm_input)
+        parent.setParms({"resume_checkpoint": os.path.abspath(checkpoint),
+                         "working_dir": working_dir + "/"})
+        if parent.userData(_OVERWRITE_APPROVED) is not None:
+            parent.destroyUserData(_OVERWRITE_APPROVED)
+        report = parent.parm("export_report")
+        if report is not None:
+            report.set(CHECKPOINT_RESUME_NOTE)
+        _message(CHECKPOINT_RESUME_NOTE)
+        return
     if hou.isUIAvailable() and _has_loaded_geometry(parent):
         choice = hou.ui.displayMessage(
             "Importing a previous run replaces the current geometries, "
@@ -11320,6 +11431,8 @@ def read_params(kwargs):
             severity=hou.severityType.Warning, title="Import params.json")
         if choice != 0:
             return
+    if parent.parm("resume_checkpoint") is not None:
+        parent.parm("resume_checkpoint").set("")
     root_path = data.get("root_path")
     if isinstance(root_path, str) and root_path.strip():
         expanded_root = os.path.expandvars(root_path)
@@ -11507,7 +11620,7 @@ def read_params(kwargs):
     _restore_contact(parent, data)
     _restore_space(parent, data, material_slots, legacy, warnings)
     _restore_solver(parent, data, legacy, warnings)
-    _restore_output(parent, data)
+    _restore_output(parent, data, warnings)
     _restore_units(parent, data)
 
     # Current collision-free ids round-trip directly. Older HDA decimal ids and

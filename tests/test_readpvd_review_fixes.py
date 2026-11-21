@@ -31,7 +31,8 @@ import hou
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT = os.path.dirname(BASE)
-SMOKE = os.path.join(ROOT, "smoke-out", "quasistatic-semi",
+SMOKE_ROOT = os.environ.get("POLYFEM_TEST_SMOKE_ROOT", os.path.join(ROOT, "smoke-out"))
+SMOKE = os.path.join(SMOKE_ROOT, "quasistatic-semi",
                      "quasistatic-semi.pvd")
 TET = "0 0 0  1 0 0  0 1 0  0 0 1"
 
