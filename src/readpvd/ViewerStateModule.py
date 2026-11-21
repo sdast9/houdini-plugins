@@ -99,7 +99,8 @@ class State:
         self.probe_marker = hou.GeometryDrawable(
             scene_viewer, hou.drawableGeometryType.Point,
             "readpvd_probe_marker",
-            params={"color1": hou.Vector4(1, 1, 0, 1), "radius": 8.0})
+            params={"color1": hou.Vector4(1, 1, 0, 1), "radius": 8.0,
+                    "fade_factor": 0.6})
 
     def onEnter(self, kwargs):
         self.node = kwargs["node"]
@@ -184,8 +185,8 @@ class State:
                     marker_geo.createPoint().setPosition(position)
                     self.probe_marker.setGeometry(marker_geo)
                     self._probe_marker_pos = pos_key
-                self.probe_marker.draw(
-                    handle, {"xform": self.node.worldTransform()})
+                self.probe_marker.setTransform(self.node.worldTransform())
+                self.probe_marker.draw(handle)
                 self.probe_text.draw(handle, {
                     "text": readout.replace("\n", "<br>"),
                     "multi_line": True,

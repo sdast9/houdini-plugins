@@ -2464,6 +2464,8 @@ def _parms():
                              "XZ Plane, +X Up", "XZ Plane, -X Up",
                              "XZ Plane, +Z Up", "XZ Plane, -Z Up"),
                 default_value=2,
+                script_callback="hou.phm().legend_orientation_changed(kwargs)",
+                script_callback_language=hou.scriptLanguage.Python,
                 help="Which world plane the scene legend lies in and which "
                      "way its 'up' points. Choose the plane facing your usual "
                      "camera."),
@@ -2516,16 +2518,27 @@ def _parms():
                                     folder_type=hou.folderType.Tabs)
     gnomon.addParmTemplate(hou.ToggleParmTemplate(
         "gnomon_show", "Show Scene Gnomon", default_value=False,
-        help="Adds a renderable XYZ orientation marker to the final geometry."))
+        script_callback="hou.phm().gnomon_show_changed(kwargs)",
+        script_callback_language=hou.scriptLanguage.Python,
+        help="Adds a renderable XYZ orientation marker to the final geometry. "
+             "Automatically scales and positions beside the scene geometry "
+             "when first enabled."))
     gnomon_off = "{ gnomon_show == 0 }"
     for template in (
             hou.FloatParmTemplate(
                 "gnomon_center", "Gnomon Center", 3, default_value=(0, 0, 0),
-                help="World position of the gnomon's origin (scene units)."),
+                help="World position of the gnomon's origin (scene units). "
+                     "Place Gnomon Beside Model sets it automatically."),
             hou.FloatParmTemplate(
                 "gnomon_scale", "Gnomon Axis Length", 1, default_value=(1.0,),
                 min=0.0001, max=1000,
-                help="Length of each gnomon axis line (scene units).")):
+                help="Length of each gnomon axis line (scene units)."),
+            hou.ButtonParmTemplate(
+                "gnomon_autoplace", "Place Gnomon Beside Model",
+                script_callback="hou.phm().autoplace_gnomon(kwargs)",
+                script_callback_language=hou.scriptLanguage.Python,
+                help="Move and size the gnomon so it sits cleanly beside the "
+                     "scene geometry at a compact, readable scale.")):
         template.setConditional(hou.parmCondType.DisableWhen, gnomon_off)
         gnomon.addParmTemplate(template)
     for name, label, what in (

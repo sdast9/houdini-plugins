@@ -281,6 +281,94 @@ def test_single_block_loading(work):
     print("PASS: Read PVD single-block load avoids parsing unused sibling VTM blocks")
 
 
+def test_legend_and_gnomon_autoplace(work):
+    # Small 0.02 x 0.03 x 0.02 m specimen (similar scale to ball_burst)
+    case_dir = os.path.join(work, "autoplace_case")
+    os.makedirs(case_dir, exist_ok=True)
+    vtu_path = os.path.join(case_dir, "step_0.vtu")
+    pts = [
+        (-0.01, 0.00, -0.01),
+        (0.01, 0.00, -0.01),
+        (0.00, 0.03, 0.01),
+        (0.00, 0.00, 0.01),
+    ]
+    pts_str = " ".join(f"{x} {y} {z}" for x, y, z in pts)
+    xml = (
+        '<?xml version="1.0"?>\n'
+        '<VTKFile type="UnstructuredGrid" version="0.1" byte_order="LittleEndian">\n'
+        '  <UnstructuredGrid>\n'
+        '    <Piece NumberOfPoints="4" NumberOfCells="1">\n'
+        '      <PointData Scalars="von_mises">\n'
+        '        <DataArray type="Float64" Name="von_mises" format="ascii">0 10 20 30</DataArray>\n'
+        '      </PointData>\n'
+        '      <Points>\n'
+        f'        <DataArray type="Float64" NumberOfComponents="3" format="ascii">{pts_str}</DataArray>\n'
+        '      </Points>\n'
+        '      <Cells>\n'
+        '        <DataArray type="Int32" Name="connectivity" format="ascii">0 1 2 3</DataArray>\n'
+        '        <DataArray type="Int32" Name="offsets" format="ascii">4</DataArray>\n'
+        '        <DataArray type="UInt8" Name="types" format="ascii">10</DataArray>\n'
+        '      </Cells>\n'
+        '    </Piece>\n'
+        '  </UnstructuredGrid>\n'
+        '</VTKFile>\n'
+    )
+    with open(vtu_path, "w") as handle:
+        handle.write(xml)
+    pvd_path = os.path.join(case_dir, "sim.pvd")
+    with open(pvd_path, "w") as handle:
+        handle.write(
+            '<?xml version="1.0"?>\n<VTKFile type="Collection" version="0.1">\n'
+            '  <Collection><DataSet timestep="0.0" file="step_0.vtu"/></Collection>\n'
+            '</VTKFile>\n')
+
+    node = hou.node("/obj").createNode("readPVD::1.0", "autoplace_viewer")
+    mod = node.hdaModule()
+    node.setParms({"PVD_file": pvd_path})
+    mod.start({"node": node})
+    node.node("OUT_result").cook(force=True)
+
+    # 1. Enabling Scene Legend auto-sizes and places cleanly to the right
+    node.parm("legend_mode").set(1)
+    mod.overlay_feature_changed({"node": node})
+    l_scale = node.evalParm("legend_scale")
+    l_tx, l_ty, l_tz = node.evalParmTuple("legend_translate")
+    assert 0.015 < l_scale < 0.03, f"expected proportional legend scale, got {l_scale}"
+    assert l_tx > 0.01, f"legend should clear +X side (>0.01), got {l_tx}"
+    assert 0.0 < l_ty < 0.015, f"legend should be vertically centered, got {l_ty}"
+    assert abs(l_tz) < 1e-4, f"legend should align with model Z midpoint, got {l_tz}"
+
+    # 2. Enabling Gnomon auto-sizes compactly and places cleanly on lower-left
+    node.parm("gnomon_show").set(1)
+    mod.gnomon_show_changed({"node": node})
+    g_scale = node.evalParm("gnomon_scale")
+    g_x, g_y, g_z = node.evalParmTuple("gnomon_center")
+    assert 0.002 < g_scale < 0.01, f"expected compact gnomon scale, got {g_scale}"
+    assert g_x + g_scale < -0.01, (
+        f"gnomon +X tip ({g_x + g_scale}) should clear model min X (-0.01)")
+    assert abs(g_y - 0.0) < 1e-5, f"gnomon base Y should align with model base, got {g_y}"
+    assert abs(g_z) < 1e-4, f"gnomon Z should align with model midpoint, got {g_z}"
+
+    # 3. Manual user adjustments are preserved by only_if_default callbacks
+    node.parmTuple("gnomon_center").set((0.123, 0.456, 0.789))
+    mod.gnomon_show_changed({"node": node})
+    assert abs(node.evalParm("gnomon_centerx") - 0.123) < 1e-6
+
+    # 4. Another visible /obj object beside the model expands placement bounds
+    neighbor = hou.node("/obj").createNode("geo", "neighbor_prop")
+    box = neighbor.createNode("box")
+    box.parmTuple("size").set((0.02, 0.02, 0.02))
+    box.parmTuple("t").set((0.04, 0.01, 0.0))  # extends up to x = 0.05
+    box.setDisplayFlag(True)
+    mod.autoplace_legend({"node": node})
+    l_tx2 = node.evalParm("legend_translatex")
+    assert l_tx2 > 0.05, f"legend should clear visible neighbor (x=0.05), got {l_tx2}"
+
+    neighbor.destroy()
+    node.destroy()
+    print("PASS: Read PVD scene-aware Legend & Gnomon auto-placement and sizing")
+
+
 def test_msh_reader_introspection_and_order(work):
     # 1. Mixed 3D tet+hex mesh with:
     #    - 1 positive tet (file order 0, phys 1 "body_a")
@@ -401,6 +489,7 @@ def main():
         test_higher_order_hex_subdivision(work)
         test_follow_running_simulation(work)
         test_single_block_loading(work)
+        test_legend_and_gnomon_autoplace(work)
         test_msh_reader_introspection_and_order(work)
         print("ALL READPVD & MSH READER BATCH TESTS PASSED")
     finally:

@@ -3073,6 +3073,10 @@ def start(kwargs=None):
     # is already warm in _VTU_CACHE when _autocenter_clip inspects its bounds.
     auto_range_default(node)
     _autocenter_clip(node)
+    if node.parm("legend_mode") is not None and node.evalParm("legend_mode") in (1, 3):
+        autoplace_legend({"node": node}, only_if_default=True)
+    if node.parm("gnomon_show") is not None and node.evalParm("gnomon_show"):
+        autoplace_gnomon({"node": node}, only_if_default=True)
     update_color_status({"node": node})
     _frame_result(node)
 
@@ -3637,30 +3641,219 @@ def show_overlay(kwargs):
         _message(f"Could not activate the viewport overlay: {exc}")
 
 
+_AUTOPLACED_LEGEND = {}
+_AUTOPLACED_GNOMON = {}
+
+
+def _same_placement(current, reference, tol=1e-6):
+    """Compare ((x, y, z), scale) tuples with scale-aware tolerance."""
+    if reference is None:
+        return False
+    (cx, cy, cz), cs = current
+    (rx, ry, rz), rs = reference
+    eps = max(tol, abs(rs) * 1e-4)
+    return (abs(cx - rx) <= eps and abs(cy - ry) <= eps
+            and abs(cz - rz) <= eps and abs(cs - rs) <= eps)
+
+
+def _scene_reference_bbox(node):
+    """Bounding box (in `node`'s local space) of this result plus any nearby
+    visible scene geometry in /obj so legends and gnomons never overlap what
+    is already visible in the viewport."""
+    own_bbox = None
+    src = node.node("OUT_result")
+    if src is not None:
+        try:
+            cand = src.geometry().boundingBox()
+            if cand.isValid():
+                own_bbox = cand
+        except hou.OperationFailed:
+            pass
+    if own_bbox is None:
+        path = node.evalParm("PVD_file") if node.parm("PVD_file") else ""
+        if path:
+            try:
+                block_paths = _frame_block_paths(path, 0)
+                low = np.full(3, np.inf)
+                high = np.full(3, -np.inf)
+                for block_path in block_paths.values():
+                    if not os.path.isfile(block_path):
+                        continue
+                    pts = np.asarray(read_mesh_points(block_path), dtype=np.float64)
+                    if pts.ndim == 2 and len(pts):
+                        low = np.minimum(low, pts.min(axis=0))
+                        high = np.maximum(high, pts.max(axis=0))
+                if np.isfinite(low).all():
+                    own_bbox = hou.BoundingBox(
+                        float(low[0]), float(low[1]), float(low[2]),
+                        float(high[0]), float(high[1]), float(high[2]))
+            except Exception:
+                pass
+    if own_bbox is None or not own_bbox.isValid():
+        return None
+    own_size = own_bbox.sizevec()
+    own_span = max(float(own_size[0]), float(own_size[1]), float(own_size[2]))
+    if own_span <= 0.0:
+        return None
+
+    bmin = list(own_bbox.minvec())
+    bmax = list(own_bbox.maxvec())
+    own_center = own_bbox.center()
+    parent = node.parent()
+    if parent is not None:
+        try:
+            inv_node = node.worldTransform().inverted()
+        except Exception:
+            inv_node = None
+        if inv_node is not None:
+            for sibling in parent.children():
+                if sibling == node:
+                    continue
+                try:
+                    if not sibling.isDisplayFlagSet():
+                        continue
+                    if sibling.childTypeCategory() != hou.sopNodeTypeCategory():
+                        continue
+                    target = sibling.node("OUT_result") or sibling.displayNode()
+                    if target is None:
+                        continue
+                    sib_bbox = target.geometry().boundingBox()
+                    if not sib_bbox.isValid():
+                        continue
+                    rel = sibling.worldTransform() * inv_node
+                    smin = sib_bbox.minvec()
+                    smax = sib_bbox.maxvec()
+                    corners = [
+                        hou.Vector3(
+                            smin[0] if i & 1 else smax[0],
+                            smin[1] if i & 2 else smax[1],
+                            smin[2] if i & 4 else smax[2]) * rel
+                        for i in range(8)
+                    ]
+                    xs = [c[0] for c in corners]
+                    ys = [c[1] for c in corners]
+                    zs = [c[2] for c in corners]
+                    sib_span = max(max(xs) - min(xs), max(ys) - min(ys),
+                                   max(zs) - min(zs))
+                    sib_center = hou.Vector3(
+                        0.5 * (min(xs) + max(xs)),
+                        0.5 * (min(ys) + max(ys)),
+                        0.5 * (min(zs) + max(zs)))
+                    if not (1e-6 * own_span <= sib_span <= 10.0 * own_span):
+                        continue
+                    if (sib_center - own_center).length() > 10.0 * own_span:
+                        continue
+                    bmin = [min(bmin[0], min(xs)), min(bmin[1], min(ys)),
+                            min(bmin[2], min(zs))]
+                    bmax = [max(bmax[0], max(xs)), max(bmax[1], max(ys)),
+                            max(bmax[2], max(zs))]
+                except Exception:
+                    continue
+    return hou.BoundingBox(bmin[0], bmin[1], bmin[2],
+                           bmax[0], bmax[1], bmax[2])
+
+
 def overlay_feature_changed(kwargs):
-    """Auto-activate the state when an overlay legend or the probe is enabled
-    (both are drawn/handled by the viewer state)."""
+    """Auto-place the scene legend when first enabled, and auto-activate the
+    viewer state when an overlay legend or the probe is enabled."""
     node = kwargs["node"]
-    if node.evalParm("legend_mode") in (2, 3) or node.evalParm("probe_enabled"):
+    mode = node.evalParm("legend_mode")
+    if mode in (1, 3):
+        autoplace_legend(kwargs, only_if_default=True)
+    if mode in (2, 3) or node.evalParm("probe_enabled"):
         show_overlay(kwargs)
 
 
-def autoplace_legend(kwargs):
+def legend_orientation_changed(kwargs):
+    """Reposition an uncustomized scene legend when its plane/up changes."""
     node = kwargs["node"]
-    src = node.node("OUT_result")
-    if src is None:
-        return
-    try:
-        bbox = src.geometry().boundingBox()
-    except hou.OperationFailed:
+    if node.evalParm("legend_mode") in (1, 3):
+        autoplace_legend(kwargs, only_if_default=True)
+
+
+def gnomon_show_changed(kwargs):
+    """Auto-size and place the scene gnomon beside the model when first shown."""
+    node = kwargs["node"]
+    if node.evalParm("gnomon_show"):
+        autoplace_gnomon(kwargs, only_if_default=True)
+
+
+def autoplace_legend(kwargs, only_if_default=False):
+    """Size and position the scene legend cleanly beside the visible scene
+    geometry, respecting the chosen plane/up orientation."""
+    node = kwargs["node"]
+    sid = node.sessionId()
+    if only_if_default:
+        current = (tuple(float(v) for v in node.evalParmTuple("legend_translate")),
+                   float(node.evalParm("legend_scale")))
+        is_factory = _same_placement(current, ((0.0, 0.0, 0.0), 1.0))
+        is_auto = _same_placement(current, _AUTOPLACED_LEGEND.get(sid))
+        if not (is_factory or is_auto):
+            return
+    bbox = _scene_reference_bbox(node)
+    if bbox is None:
         return
     size = bbox.sizevec()
-    span = max(float(size[0]), float(size[1]), float(size[2]))
-    margin = max(span, 1e-9) * 0.1
-    scale = max(float(size[1]), float(size[2]), span * 0.5, 1e-9)
-    node.parmTuple("legend_translate").set(
-        (bbox.maxvec()[0] + margin, bbox.minvec()[1], bbox.minvec()[2]))
-    node.parm("legend_scale").set(scale)
+    center = bbox.center()
+    span = max(float(size[0]), float(size[1]), float(size[2]), 1e-9)
+
+    base_rot = legend_rotation(node)
+    extra_rot = tuple(float(v) for v in node.evalParmTuple("legend_rotate"))
+    rot_mat = hou.hmath.buildRotate((
+        base_rot[0] + extra_rot[0],
+        base_rot[1] + extra_rot[1],
+        base_rot[2] + extra_rot[2],
+    ), "xyz")
+    right_dir = (hou.Vector3(1.0, 0.0, 0.0) * rot_mat).normalized()
+    up_dir = (hou.Vector3(0.0, 1.0, 0.0) * rot_mat).normalized()
+
+    up_extent = (abs(up_dir[0]) * float(size[0])
+                 + abs(up_dir[1]) * float(size[1])
+                 + abs(up_dir[2]) * float(size[2]))
+    right_extent = (abs(right_dir[0]) * float(size[0])
+                    + abs(right_dir[1]) * float(size[1])
+                    + abs(right_dir[2]) * float(size[2]))
+
+    scale = max(min(max(0.75 * up_extent, 0.45 * span), 0.90 * span), 1e-6)
+    margin = max(0.15 * span, 0.08 * scale)
+    pos = (center
+           + right_dir * (0.5 * right_extent + margin)
+           - up_dir * (0.5 * scale))
+    translate = (float(pos[0]), float(pos[1]), float(pos[2]))
+    node.parmTuple("legend_translate").set(translate)
+    node.parm("legend_scale").set(float(scale))
+    _AUTOPLACED_LEGEND[sid] = (translate, float(scale))
+
+
+def autoplace_gnomon(kwargs, only_if_default=False):
+    """Size and position the scene gnomon cleanly at the lower-left of the
+    visible scene geometry (opposite the scene legend) so all three axes sit
+    clear of the model."""
+    node = kwargs["node"]
+    sid = node.sessionId()
+    if only_if_default:
+        current = (tuple(float(v) for v in node.evalParmTuple("gnomon_center")),
+                   float(node.evalParm("gnomon_scale")))
+        is_factory = _same_placement(current, ((0.0, 0.0, 0.0), 1.0))
+        is_auto = _same_placement(current, _AUTOPLACED_GNOMON.get(sid))
+        if not (is_factory or is_auto):
+            return
+    bbox = _scene_reference_bbox(node)
+    if bbox is None:
+        return
+    size = bbox.sizevec()
+    bmin = bbox.minvec()
+    center = bbox.center()
+    span = max(float(size[0]), float(size[1]), float(size[2]), 1e-9)
+
+    scale = max(0.18 * span, 1e-6)
+    margin = 0.12 * span
+    origin = (float(bmin[0] - margin - scale),
+              float(bmin[1]),
+              float(center[2]))
+    node.parmTuple("gnomon_center").set(origin)
+    node.parm("gnomon_scale").set(float(scale))
+    _AUTOPLACED_GNOMON[sid] = (origin, float(scale))
 
 
 _GLYPH_VALUE_ATTR = {

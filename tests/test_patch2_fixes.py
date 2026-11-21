@@ -390,10 +390,11 @@ def test_readpvd_batch_2b(root):
     assert node.node("multi_block_display").parm("dataepoch") is not None
     assert node.node("reference_comparison").parm("dataepoch") is not None
 
-    # 4. ViewerStateModule world-to-local ray & probe marker xform
+    # 4. ViewerStateModule world-to-local ray & probe marker setTransform
     vsm = node.type().definition().sections()["ViewerStateModule"].contents()
     assert "worldTransform().inverted()" in vsm
-    assert '"xform": self.node.worldTransform()' in vsm
+    assert "self.probe_marker.setTransform(self.node.worldTransform())" in vsm
+    assert '"xform"' not in vsm
 
     # 5. Synthetic 2-step PVD with unit cube (x in [0, 1]) + body_ids +
     #    F + cauchy_stress (no von_mises) + intermittent field on step 1
