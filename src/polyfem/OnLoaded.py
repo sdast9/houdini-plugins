@@ -32,3 +32,7 @@ try:
     node.hdaModule().reattach_run(node)
 except Exception as exc:  # loading the scene must never fail on this
     print(f"[PolyFEM HDA] {node.path()}: could not follow its last run: {exc}")
+try:
+    node.hdaModule().warn_saint_venant_axes(node)
+except Exception as exc:  # loading the scene must never fail on this
+    print(f"[PolyFEM HDA] {node.path()}: could not check Material Axes: {exc}")

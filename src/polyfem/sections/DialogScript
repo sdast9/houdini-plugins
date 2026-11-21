@@ -760,6 +760,14 @@
             parmtag { "filechooser_mode" "read" }
         }
         parm {
+            name    "resume_reorder"
+            label   "Reorder Checkpoint Mesh"
+            type    toggle
+            default { "0" }
+            disablewhen "{ resume_checkpoint == \"\" }"
+            help    "Reorder the checkpoint mesh before solving. This is restored from input.checkpoint.reorder when importing a checkpoint configuration."
+        }
+        parm {
             name    "main_sep"
             label   "Separator"
             type    separator
@@ -1824,13 +1832,20 @@
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {
+                        name    "material_axes_identity#_#"
+                        label   "Material Axes Are Identity"
+                        type    toggle
+                        invisible
+                        default { [ "hou.pwd().hm()._material_axes_are_identity(hou.pwd().evalParm('material_coord' + hou.evaluatingParm().name().removeprefix('material_axes_identity')))" python ] }
+                    }
+                    parm {
                         name    "material_coord#_#"
                         label   "Material Axes (3x3)"
                         type    string
                         default { "[1,0,0,0,1,0,0,0,1]" }
-                        disablewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@"
+                        disablewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@ { materials#_# == SaintVenant material_axes_identity#_# == 1 } { materials#_# == MaterialSum matrix_model#_# == SaintVenant material_axes_identity#_# == 1 }"
                         hidewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@"
-                        help    "Material coordinate frame for the orthotropic constants: a 3x3 rotation matrix written row by row as 9 numbers (identity = [1,0,0,0,1,0,0,0,1] aligns the material axes with x, y, z)."
+                        help    "Material coordinate frame for HookeLinearElasticity. Enter a rotation matrix row by row as 9 numbers. Identity [1,0,0,0,1,0,0,0,1] aligns the material axes with x, y, z. SaintVenant always uses global coordinates. An older SaintVenant scene with different axes keeps this field editable so you can reset it to identity."
                         parmtag { "script_callback_language" "python" }
                     }
                     parm {

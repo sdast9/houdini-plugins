@@ -201,8 +201,10 @@ def _format_expr_box(value):
     """Format one JSON scalar/expression value for an unquoted UI box."""
     if value is None:
         return "0"
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return f"{value:g}"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    if isinstance(value, float):
+        return str(int(value)) if value.is_integer() else repr(value)
     return _strip_outer_quotes(str(value)) or "0"
 
 
@@ -219,8 +221,10 @@ def _validate_tinyexpr(value, label):
     if not expr:
         return None
     # PolyFEM also allows a value-file path in expression fields.
-    if "/" in expr or "\\" in expr or expr.lower().endswith(
-            (".txt", ".csv", ".dat", ".npy", ".json")):
+    if (expr.startswith(("/", "./", "../", "~")) or "\\" in expr
+            or re.match(r"^[A-Za-z]:/", expr)
+            or expr.lower().endswith((".txt", ".csv", ".dat", ".npy", ".json"))
+            or ("/" in expr and os.path.isfile(expr))):
         return None
     if "[" in expr or "]" in expr:
         return (f"{label}: '{expr}' contains brackets — enter one scalar "
@@ -333,6 +337,7 @@ def _set_expr_vector(parent, vec_base, legacy_name, value):
     else:
         parsed = value
     items = list(parsed) if isinstance(parsed, (list, tuple)) else [parsed]
+    items = [0 if item is None else item for item in items[:3]]
     while len(items) < 3:
         items.append(0)
     vec_tuple = parent.parmTuple(vec_base)
@@ -374,45 +379,52 @@ def sync_expr_vector(kwargs):
     legacy.set(_format_vector(vals))
 
 
+def _has_legacy_expression(parm):
+    if parm.keyframes():
+        return True
+    if parm.parmTemplate().type() == hou.parmTemplateType.String:
+        raw = parm.unexpandedString()
+        if "$" in raw or "`" in raw or raw != parm.eval():
+            return True
+    try:
+        return bool(parm.expression())
+    except hou.OperationFailed:
+        return False
+
+
 def migrate_legacy_expr_vectors(parent):
-    """Populate the visible 3-box expression inputs from hidden legacy JSON
-    strings when loading an older .hipnc scene."""
-    if parent.parmTuple("rhs_vec") is not None \
-            and parent.parmTuple("rhs_vec").isAtDefault():
-        legacy = parent.parm("RHS")
-        if legacy is not None and not legacy.isAtDefault():
-            _set_expr_vector(parent, "rhs_vec", "RHS", legacy.eval())
+    """Migrate literal vectors while leaving live legacy channels intact."""
+    skipped = []
+
+    def migrate(base, legacy_name):
+        visible = parent.parmTuple(base)
+        legacy = parent.parm(legacy_name)
+        if visible is None or not visible.isAtDefault() \
+                or legacy is None or legacy.isAtDefault():
+            return
+        if _has_legacy_expression(legacy):
+            skipped.append(legacy_name)
+            return
+        _set_expr_vector(parent, base, legacy_name, legacy.eval())
+
+    migrate("rhs_vec", "RHS")
     num_geos = parent.evalParm("num_geos") \
         if parent.parm("num_geos") is not None else 0
     for geo in range(1, num_geos + 1):
-        obs_vec = parent.parmTuple(f"obstacle_disp_vec{geo}")
-        obs_leg = parent.parm(f"obstacle_disp{geo}")
-        if obs_vec is not None and obs_vec.isAtDefault() \
-                and obs_leg is not None and not obs_leg.isAtDefault():
-            _set_expr_vector(parent, f"obstacle_disp_vec{geo}",
-                             f"obstacle_disp{geo}", obs_leg.eval())
+        migrate(f"obstacle_disp_vec{geo}", f"obstacle_disp{geo}")
         nvol_parm = parent.parm(f"num_volumes{geo}")
         num_vols = nvol_parm.eval() if nvol_parm is not None else 0
         for vol in range(1, num_vols + 1):
             ic_parm = parent.parm(f"initial_conditions{geo}_{vol}")
-            for l in range(1, (ic_parm.eval() if ic_parm else 0) + 1):
-                base = f"ic_vec{geo}_{vol}_{l}"
-                leg_name = f"condition_vector_{geo}_{vol}_{l}"
-                vt, lp = parent.parmTuple(base), parent.parm(leg_name)
-                if vt is not None and vt.isAtDefault() \
-                        and lp is not None and not lp.isAtDefault():
-                    _set_expr_vector(parent, base, leg_name, lp.eval())
+            for index in range(1, (ic_parm.eval() if ic_parm else 0) + 1):
+                suffix = f"{geo}_{vol}_{index}"
+                migrate(f"ic_vec{suffix}", f"condition_vector_{suffix}")
             ss_parm = parent.parm(f"sideset_selection{geo}_{vol}")
             for j in range(1, (ss_parm.eval() if ss_parm else 0) + 1):
                 bc_parm = parent.parm(f"Boundary_Condition__{geo}_{vol}_{j}")
                 for k in range(1, (bc_parm.eval() if bc_parm else 0) + 1):
                     suffix = f"{geo}_{vol}_{j}_{k}"
-                    vt = parent.parmTuple(f"bc_vec{suffix}")
-                    lp = parent.parm(f"vector_{suffix}")
-                    if vt is not None and vt.isAtDefault() \
-                            and lp is not None and not lp.isAtDefault():
-                        _set_expr_vector(parent, f"bc_vec{suffix}",
-                                         f"vector_{suffix}", lp.eval())
+                    migrate(f"bc_vec{suffix}", f"vector_{suffix}")
             # Migrate legacy orthotropic raw elast_tensor to structured inputs
             mode_parm = parent.parm(f"elast_mode{geo}_{vol}")
             et_parm = parent.parm(f"elast_tensor{geo}_{vol}")
@@ -424,6 +436,10 @@ def migrate_legacy_expr_vectors(parent):
                     _set_ortho_parms(parent, geo, vol, vals)
                 elif vals is not None:
                     mode_parm.set(1)  # raw mode (5 or 21 numbers)
+    if skipped and not parent.cachedUserData("polyfem_legacy_expr_notice"):
+        parent.setCachedUserData("polyfem_legacy_expr_notice", True)
+        _status(f"{parent.path()}: kept animated or expression-driven legacy "
+                "vectors active (" + ", ".join(skipped) + ").")
     migrate_legacy_time_mode(parent)
 
 
@@ -1080,11 +1096,19 @@ def reset_zero(kwargs):
 # =============================================================================
 
 _PROTECTED_NODES = {"output", "all"}
+_GEOMETRY_IMPORT_PREFIXES = {
+    "geo", "subdomains", "attrib", "transform", "elements", "vex", "branch",
+}
+_GEOMETRY_DISPLAY_PREFIXES = {
+    "fiberdata", "surface", "entitycolor", "mindist", "null", "cdpromote",
+    "color", "solo", "group", "fiberviz", "fibervizswitch", "nofiberviz",
+}
 
 
 def _geo_index_of(name):
     parts = name.split("_")
-    if len(parts) >= 2 and parts[1].isdigit():
+    if (len(parts) >= 2 and parts[1].isdigit()
+            and parts[0] in _GEOMETRY_IMPORT_PREFIXES | _GEOMETRY_DISPLAY_PREFIXES):
         return int(parts[1])
     return None
 
@@ -1368,32 +1392,28 @@ def _write_sop_volume_msh(sop_geo, dst_path):
                 dtype=np.int32).astype(np.int64)
             break
 
-    tets, tet_ent = [], []
-    hexes, hex_ent = [], []
+    tets, hexes = [], []
+    rows = []
     for prim in sop_geo.prims():
         ptype = prim.type()
+        tag = int(entity_vals[prim.number()]) if entity_vals is not None else 1
         if ptype == hou.primType.Tetrahedron:
             verts = [v.point().number() for v in prim.vertices()]
             if len(verts) == 4:
+                rows.append((4, len(tets), tag))
                 tets.append(verts)
-                tet_ent.append(
-                    int(entity_vals[prim.number()])
-                    if entity_vals is not None else 1)
         elif ptype == hou.primType.Hexahedron:
             verts = [v.point().number() for v in prim.vertices()]
             if len(verts) == 8:
+                rows.append((5, len(hexes), tag))
                 # Houdini hex vertex order [0,1,3,2,4,5,7,6] -> Gmsh [0..7]
                 hexes.append([verts[0], verts[1], verts[3], verts[2],
                               verts[4], verts[5], verts[7], verts[6]])
-                hex_ent.append(
-                    int(entity_vals[prim.number()])
-                    if entity_vals is not None else 1)
 
     if not tets and not hexes:
         return {"n_points": n_pts, "n_tets": 0, "n_hexes": 0}
 
-    all_ent = np.asarray(tet_ent + hex_ent, dtype=np.int64)
-    shift = (1 - int(all_ent.min())) if int(all_ent.min()) <= 0 else 0
+    shift = max(0, 1 - min(tag for _, _, tag in rows))
 
     tets_arr = np.asarray(tets, dtype=np.int64).reshape(-1, 4)
     if len(tets_arr):
@@ -1429,17 +1449,13 @@ def _write_sop_volume_msh(sop_geo, dst_path):
             handle.write(f"{idx} {x!r} {y!r} {z!r}\n")
         handle.write("$EndNodes\n")
         handle.write(f"$Elements\n{n_elems}\n")
-        eid = 1
-        for row, tag in zip(tets_arr.tolist(), tet_ent):
-            ptag = int(tag) + shift
-            a, b, c, d = (v + 1 for v in row)
-            handle.write(f"{eid} 4 2 {ptag} {ptag} {a} {b} {c} {d}\n")
-            eid += 1
-        for row, tag in zip(hexes_arr.tolist(), hex_ent):
-            ptag = int(tag) + shift
-            vs = " ".join(str(v + 1) for v in row)
-            handle.write(f"{eid} 5 2 {ptag} {ptag} {vs}\n")
-            eid += 1
+        cells = {4: tets_arr.tolist(), 5: hexes_arr.tolist()}
+        for row in solver_element_order(sop_geo, is_direct_sop=True):
+            kind, index, tag = rows[row]
+            eid = row + 1
+            ptag = tag + shift
+            vertices = " ".join(str(v + 1) for v in cells[kind][index])
+            handle.write(f"{eid} {kind} 2 {ptag} {ptag} {vertices}\n")
         handle.write("$EndElements\n")
     os.replace(tmp_path, dst_path)
     return {"n_points": n_pts, "n_tets": len(tets_arr), "n_hexes": len(hexes_arr)}
@@ -1477,8 +1493,28 @@ def _write_sop_surface_obj(sop_geo, dst_path):
     return {"n_points": n_pts, "n_tris": len(tris)}
 
 
+def _sop_staging_path(parent, geo, is_obstacle):
+    name = f"sop_obs{geo}.obj" if is_obstacle else f"sop_geo{geo}.msh"
+    input_dir = os.path.abspath(os.path.join(parent.evalParm("working_dir"), "input"))
+    path = os.path.join(input_dir, name)
+    if path in _staged_meshes(parent, input_dir, exclude=geo):
+        raise hou.NodeError(
+            f"Geometry {geo}: {path} is already used by another geometry. "
+            "Reload or replace that geometry's mesh first.")
+    return path
+
+
 def load_sop_mesh(kwargs):
-    """Export a Houdini SOP into <working_dir>/input and load it as geometry."""
+    """Stage a SOP mesh. An unsuccessful reload invalidates its solver input."""
+    parent = kwargs["node"]
+    geo = str(kwargs.get("script_multiparm_index", "1"))
+    if _load_sop_mesh(kwargs):
+        return True
+    parent.parm(f"file_location{geo}").revertToDefaults()
+    return False
+
+
+def _load_sop_mesh(kwargs):
     parent = kwargs["node"]
     geo_number = str(kwargs.get("script_multiparm_index", "1"))
     if not working_dir_check(kwargs):
@@ -1500,12 +1536,10 @@ def load_sop_mesh(kwargs):
         _message(f"Geometry {geo_number}: failed to cook SOP {sop_path}: {exc}")
         return False
 
-    working_dir = parent.evalParm("working_dir")
-    input_dir = os.path.join(working_dir, "input")
     is_obstacle = bool(parent.evalParm(f"is_obstacle{geo_number}"))
     try:
+        dst_abs = _sop_staging_path(parent, geo_number, is_obstacle)
         if is_obstacle:
-            dst_abs = os.path.join(input_dir, f"sop_obs{geo_number}.obj")
             stats = _write_sop_surface_obj(sop_geo, dst_abs)
             if stats["n_tris"] == 0:
                 _message(
@@ -1513,7 +1547,6 @@ def load_sop_mesh(kwargs):
                     "faces to export as an obstacle surface.")
                 return False
         else:
-            dst_abs = os.path.join(input_dir, f"sop_geo{geo_number}.msh")
             stats = _write_sop_volume_msh(sop_geo, dst_abs)
             if stats["n_tets"] == 0 and stats["n_hexes"] == 0:
                 _message(
@@ -1528,11 +1561,12 @@ def load_sop_mesh(kwargs):
         return False
 
     parent.setParms({f"file_location{geo_number}": dst_abs})
-    create_geo_nodes({
+    if not create_geo_nodes({
         "node": parent,
         "script_multiparm_index": geo_number,
         "parm_name": f"file_location{geo_number}",
-    })
+    }):
+        return False
     if is_obstacle:
         _status(
             f"Geometry {geo_number}: loaded obstacle surface from SOP "
@@ -1740,6 +1774,7 @@ def create_geo_nodes(kwargs):
         if hou.isUIAvailable() else None
     if sv and bbox:
         sv.curViewport().frameBoundingBox(bbox)
+    return True
 
 
 # =============================================================================
@@ -2406,13 +2441,10 @@ def check_display_version(node):
 def clear_geo_tree(parent, geo_number):
     """Remove the display chain (keeps the import chain: geo, subdomains,
     attrib, transform, elements, vex retags and branch)."""
-    keep = {"geo", "subdomains", "attrib", "transform", "elements", "vex",
-            "branch"}
     for item in parent.children():
         name = item.name()
-        if name in _PROTECTED_NODES:
-            continue
-        if _geo_index_of(name) == int(geo_number) and name.split("_")[0] not in keep:
+        if (_geo_index_of(name) == int(geo_number)
+                and name.split("_")[0] in _GEOMETRY_DISPLAY_PREFIXES):
             item.destroy()
     merge_node = parent.node("all")
     if merge_node is not None:
@@ -2746,6 +2778,19 @@ def geo_duplicate(kwargs):
     snapshot = snapshot_instance(parent, (src,))
     retags = _retag_chain(parent, src)
     dst = parent.evalParm("num_geos") + 1
+    mesh_parm = parent.parm(f"file_location{src}")
+    mesh = mesh_parm.unexpandedString()
+    is_obstacle = parent.evalParm(f"is_obstacle{src}")
+    if parent.parm(f"mesh_source{src}").evalAsString() == "sop":
+        try:
+            mesh = _sop_staging_path(parent, dst, is_obstacle)
+            source = mesh_parm.eval()
+            if not source:
+                raise hou.NodeError("Reload the Source SOP before duplicating it.")
+            shutil.copy2(source, mesh)
+        except (OSError, hou.Error) as exc:
+            _message(f"Could not duplicate SOP geometry {src}: {exc}")
+            return
     parent.setParms({"num_geos": dst, "geo_int": dst})
     if hou.isUIAvailable():
         pane_tab = hou.ui.curDesktop().paneTabOfType(hou.paneTabType.Parm, 0)
@@ -2754,9 +2799,8 @@ def geo_duplicate(kwargs):
 
     # The mesh first: building its chain sets this geometry's subdomains
     # from the file; everything else is then copied over that.
-    parent.parm(f"file_location{dst}").set(
-        parent.parm(f"file_location{src}").unexpandedString())
-    parent.setParms({f"is_obstacle{dst}": parent.evalParm(f"is_obstacle{src}"),
+    parent.parm(f"file_location{dst}").set(mesh)
+    parent.setParms({f"is_obstacle{dst}": is_obstacle,
                      f"is_enabled{dst}": parent.evalParm(f"is_enabled{src}")})
     parent.parm(f"file_location{dst}").pressButton()
     if parent.node(f"geo_{dst}") is None:
@@ -2764,7 +2808,7 @@ def geo_duplicate(kwargs):
     restore_instance(parent, (dst,), snapshot,
                      skip=("file_location#", "is_obstacle#", "is_enabled#"))
     if parent.evalParm(f"is_obstacle{dst}"):
-        return
+        return dst
     if retags:
         upstream = parent.node(f"elements_{dst}")
         for number, pattern in retags:
@@ -3508,7 +3552,10 @@ def _sideset_conditions(parent, geo, vol, sideset, lazy_timeline=None):
 _COMPARISON_SAMPLES = (
     {"x": 0.31, "y": -0.72, "z": 1.13, "t": 0.37},
     {"x": -1.27, "y": 0.21, "z": 0.05, "t": 1.93},
-    {"x": 2.0, "y": 1.5, "z": -0.4, "t": 0.0})
+    {"x": 2.0, "y": 1.5, "z": -0.4, "t": 0.0},
+    {"x": math.sqrt(2), "y": -math.pi, "z": math.e, "t": math.sqrt(3)},
+    {"x": -math.e, "y": math.sqrt(5), "z": -math.sqrt(2), "t": math.pi / 10},
+    {"x": math.pi / 7, "y": math.e / 9, "z": math.sqrt(7), "t": math.e})
 _EXPRESSION_FUNCTIONS = {
     "sin": math.sin, "cos": math.cos, "tan": math.tan, "exp": math.exp,
     "log": math.log, "sqrt": math.sqrt, "abs": abs, "pi": math.pi}
@@ -3862,12 +3909,11 @@ def resolve_sidesets(parent, geo, num_vols):
             else:
                 members = np.asarray(expand_group_str(text),
                                      dtype=np.int64)
-                outside = members[(members < 0)
-                                  | (members >= len(point_keys))]
+                outside = members[~np.isin(members, vol_points)]
                 if len(outside):
                     raise hou.NodeError(
                         f"Sideset {j} of geo {geo}/vol {vol}: point(s) "
-                        f"{list(outside[:10])} are not on this surface; "
+                        f"{list(outside[:10])} are not on this subdomain's surface; "
                         f"pick the points again")
             members = np.unique(members)
             if not len(members):
@@ -4164,11 +4210,10 @@ def export_volumes(parent, geo, input_dir):
     geo_data = branch.geometry()
     entity = np.frombuffer(
         geo_data.primIntAttribValuesAsString("Entity"), dtype=np.int32)
-    if geo_data.findPrimAttrib("is_volume") is not None:
-        keep = np.frombuffer(
-            geo_data.primIntAttribValuesAsString("is_volume"),
-            dtype=np.int32).astype(bool)
+    keep = _volume_mask(geo_data)
+    if keep is not None:
         entity = entity[keep]
+    entity = entity[solver_element_order(geo_data)]
     fname = f"volumes{geo}.txt"
     np.savetxt(os.path.join(input_dir, fname),
                1000 * int(geo) + entity.astype(np.int64), fmt="%d")
@@ -4349,12 +4394,49 @@ def read_cell_vectors_legacy_vtk(path, field):
 
 
 def _volume_mask(geo_data):
-    """Boolean mask of the primary (volume) elements, in polyfem order."""
+    """Boolean mask of the primary (volume) elements in Houdini prim order."""
     if geo_data.findPrimAttrib("is_volume") is None:
         return None
     return np.frombuffer(
         geo_data.primIntAttribValuesAsString("is_volume"),
         dtype=np.int32).astype(bool)
+
+
+def solver_element_order(geo_data, is_direct_sop=False):
+    """Indices that gather Houdini volume rows into PolyFEM element order.
+
+    The original Direct SOP already has the order written by the MSH writer.
+    After the staged file is read back for display, its MSH provenance
+    restores that order just like any other MSH file, including after a Sort.
+    """
+    if is_direct_sop:
+        count = sum(geo_data.countPrimType(kind) for kind in
+                    (hou.primType.Tetrahedron, hou.primType.Hexahedron))
+        return np.arange(count, dtype=np.int64)
+    mask = _volume_mask(geo_data)
+    count = int(mask.sum()) if mask is not None else \
+        geo_data.intrinsicValue("primitivecount")
+    identity = np.arange(count, dtype=np.int64)
+    attribute = geo_data.findPrimAttrib("msh_element_order")
+    if attribute is None:
+        if any(geo_data.countPrimType(kind) == 0 for kind in
+               (hou.primType.Tetrahedron, hou.primType.Hexahedron)):
+            return identity
+    elif attribute.dataType() == hou.attribData.Int and attribute.size() == 1:
+        order = np.frombuffer(
+            geo_data.primIntAttribValuesAsString("msh_element_order"),
+            dtype=np.int32)
+        if mask is not None:
+            order = order[mask]
+        if np.array_equal(order, identity):
+            return identity
+        permutation = np.argsort(order, kind="stable")
+        if np.array_equal(order[permutation], identity):
+            return permutation
+    raise hou.NodeError(
+        "Invalid msh_element_order: expected one unique solver element index "
+        f"from 0 to {count - 1} per volume primitive. Reload the original MSH "
+        "and preserve msh_element_order on downstream SOPs.")
 
 
 def volume_element_count(parent, geo):
@@ -4543,7 +4625,7 @@ def _match_by_centroid(source_geo, target_centroids, label):
 
 def _read_element_attribute(parent, geo, node_path, attrib_name, components,
                             label):
-    """Per-element values from a SOP's prim attribute, in polyfem order.
+    """Per-element values from a SOP's prim attribute, in branch prim order.
 
     PolyFEM's ``geometry[].transformation`` moves the mesh but does not
     transform ``materials[].fiber_direction``.  Match an external Fiber SOP
@@ -4587,12 +4669,16 @@ def _read_element_attribute(parent, geo, node_path, attrib_name, components,
             dtype=np.float32).astype(np.float64)
     values = values.reshape(-1, components) if components > 1 else values
 
-    if source_geo is source_mesh:
-        return values[source_mask] if source_mask is not None else values
     if source_geo is geo_data:
         return values[mask] if mask is not None else values
 
-    raw_targets = _prim_centroids(source_mesh, source_mask)
+    raw_order = solver_element_order(source_mesh)[
+        np.argsort(solver_element_order(geo_data))]
+    if source_geo is source_mesh:
+        raw_values = values[source_mask] if source_mask is not None else values
+        return raw_values[raw_order]
+
+    raw_targets = _prim_centroids(source_mesh, source_mask)[raw_order]
     try:
         order = _match_by_centroid(source_geo, raw_targets, label)
     except hou.Error as raw_error:
@@ -4608,7 +4694,7 @@ def _read_element_attribute(parent, geo, node_path, attrib_name, components,
 
 
 def _element_centroids(parent, geo):
-    """Volume-element centroids of a geometry, in polyfem element order."""
+    """Volume-element centroids in Houdini prim order."""
     geo_data = parent.node(f"branch_{geo}").geometry()
     return _prim_centroids(geo_data, _volume_mask(geo_data))
 
@@ -4770,6 +4856,9 @@ def _read_element_file(path, count, components, field, label, parent=None,
         raise hou.NodeError(
             f"{label}: file has {len(values)} rows but this geometry has "
             f"{count} elements")
+    if parent is not None and geo is not None:
+        branch_geo = parent.node(f"branch_{geo}").geometry()
+        values = values[np.argsort(solver_element_order(branch_geo))]
     return values
 
 
@@ -4932,8 +5021,6 @@ def per_element_data(parent, geo):
                 kappa = resolve_scalar(parent, geo, vol, fam, "kappa", count)
                 if kappa is not None:
                     fields[scalar_attrib("kappa", vol, fam)] = kappa
-    if fields:
-        _check_single_element_family(parent, geo)
     return fields, count
 
 
@@ -4977,37 +5064,6 @@ def display_material_data(parent, geo):
                         f"be within [0, 1/3], got {kappa}")
                 fields[scalar_attrib("kappa", vol, fam)] = np.full(count, kappa)
     return fields, count
-
-
-def _check_single_element_family(parent, geo):
-    """Per-element data needs Houdini and polyfem to agree on element order.
-
-    MSH_Reader emits all tets and then all hexes, while polyfem's reader keeps
-    the file's entity-block order; on a mixed mesh the two orders differ and
-    per-element data would silently bind to the wrong elements.
-    """
-    geo_data = parent.node(f"branch_{geo}").geometry()
-    mask = _volume_mask(geo_data)
-    tets = geo_data.countPrimType(hou.primType.Tetrahedron)
-    hexes = geo_data.countPrimType(hou.primType.Hexahedron)
-    volumes = int(mask.sum()) if mask is not None \
-        else geo_data.intrinsicValue("primitivecount")
-    if tets + hexes == volumes:
-        # The MSH Reader's volume elements are tets and hexes only; counting
-        # primitive types replaces a Python pass over every element.
-        sizes = {size for size, n in ((4, tets), (8, hexes)) if n}
-    else:
-        sizes = set()
-        for prim in geo_data.prims():
-            if mask is None or mask[prim.number()]:
-                sizes.add(len(prim.vertices()))
-    if len(sizes) > 1:
-        raise hou.NodeError(
-            f"Geometry {geo} mixes element types ({sorted(sizes)} vertices), "
-            f"and per-element material data cannot be bound safely on a mixed "
-            f"mesh: Houdini groups elements by type while PolyFEM keeps the "
-            f"file order. Use a single element type, or set the material "
-            f"parameters to constants/expressions.")
 
 
 # One line per drawn reference fiber, centred on the transformed element.
@@ -5429,13 +5485,14 @@ def export_per_element_materials(parent, input_dir, output_dir=None,
                 f"({resolved} vs {count}); re-cook the node and try again")
         branch_geo = parent.node(f"branch_{geo}").geometry()
         volume_mask = _volume_mask(branch_geo)
+        order = solver_element_order(branch_geo)
         entities = np.frombuffer(
             branch_geo.primIntAttribValuesAsString("Entity"),
             dtype=np.int32)
         if volume_mask is not None:
             entities = entities[volume_mask]
-        centroids = _element_centroids(parent, geo)
-        all_centroids[offset:offset + count] = centroids
+        entities = entities[order]
+        all_centroids[offset:offset + count] = _element_centroids(parent, geo)[order]
         all_body_ids[offset:offset + count] = \
             1000 * int(geo) + entities.astype(np.int64)
 
@@ -5444,6 +5501,7 @@ def export_per_element_materials(parent, input_dir, output_dir=None,
                 for side in mirror_sides(parent, geo, vol, fam):
                     values = fields.get(fiber_attrib(vol, fam, side))
                     if values is not None:
+                        values = values[order]
                         column = fiber_fields.setdefault(
                             fiber_field(geo, vol, fam, side),
                             np.tile([1.0, 0.0, 0.0], (total, 1)))
@@ -5482,7 +5540,7 @@ def export_per_element_materials(parent, input_dir, output_dir=None,
                 if kappa is not None:
                     padded = np.full(
                         total, _slot_parm(parent, geo, vol, fam, "kappa"))
-                    padded[offset:offset + count] = kappa
+                    padded[offset:offset + count] = kappa[order]
                     np.savetxt(
                         os.path.join(
                             input_dir,
@@ -6000,6 +6058,54 @@ def _check_growth_tensor(entries, where):
     return errors
 
 
+_IDENTITY_MATERIAL_AXES = [1, 0, 0, 0, 1, 0, 0, 0, 1]
+
+
+def _material_axes_are_identity(raw):
+    try:
+        axes = ast.literal_eval(raw)
+        return np.asarray(axes, dtype=float).reshape(-1).tolist() == _IDENTITY_MATERIAL_AXES
+    except (SyntaxError, TypeError, ValueError):
+        return False
+
+
+def _saint_venant_axes_message(parent, geo, vol):
+    if _material_axes_are_identity(parent.evalParm(f"material_coord{geo}_{vol}")):
+        return None
+    return (f"{_slot_label(geo, vol, None)}: SaintVenant uses global "
+            "coordinates and ignores fiber_direction (Material Axes) in "
+            "PolyFEM. Reset Material Axes to identity [1,0,0,0,1,0,0,0,1]. "
+            "To use rotated stiffness, supply a pre-rotated 21-entry "
+            "elasticity_tensor with identity axes, or switch to "
+            "HookeLinearElasticity.")
+
+
+def _saint_venant_axes_findings(parent):
+    for geo in range(1, parent.evalParm("num_geos") + 1):
+        if parent.evalParm(f"is_obstacle{geo}"):
+            continue
+        for vol in range(1, parent.evalParm(f"num_volumes{geo}") + 1):
+            token = material_token(parent, geo, vol)
+            if token == "MaterialSum":
+                token = parent.parm(f"matrix_model{geo}_{vol}").evalAsString()
+            if token == "SaintVenant":
+                note = _saint_venant_axes_message(parent, geo, vol)
+                if note:
+                    yield note
+
+
+def warn_saint_venant_axes(parent):
+    notes = list(_saint_venant_axes_findings(parent))
+    if notes:
+        _status(f"{parent.path()}: " + " ".join(notes))
+
+
+def _raise_saint_venant_axes(parent):
+    notes = list(_saint_venant_axes_findings(parent))
+    if notes:
+        raise hou.NodeError("\n".join(notes))
+
+
 def _isotropic_model(parent, geo, vol, token, allow_damping=True):
     """Body of an isotropic model: no id/rho, so it also serves as a
     MaterialSum child (children carry neither)."""
@@ -6057,12 +6163,16 @@ def _isotropic_model(parent, geo, vol, token, allow_damping=True):
             model["normalized"] = True
         return model
     if token in ("HookeLinearElasticity", "SaintVenant"):
+        if token == "SaintVenant":
+            note = _saint_venant_axes_message(parent, geo, vol)
+            if note:
+                raise hou.NodeError(note)
         model = {"type": token,
-                 "elasticity_tensor": _read_elast_tensor(parent, geo, vol),
-                 "fiber_direction": parse_vector(
-                     parent.evalParm(f"material_coord{geo}_{vol}"),
-                     "fiber_direction")}
-        if allow_damping and token == "SaintVenant":
+                 "elasticity_tensor": _read_elast_tensor(parent, geo, vol)}
+        if token == "HookeLinearElasticity":
+            model["fiber_direction"] = parse_vector(
+                parent.evalParm(f"material_coord{geo}_{vol}"), "fiber_direction")
+        elif allow_damping:
             _damping(parent, geo, vol, model)
         return model
     if token == "IncompressibleOgden":
@@ -6195,6 +6305,12 @@ def composite_models(parent, geo, vol):
             raise hou.NodeError(
                 f"{_slot_label(geo, vol, None)}: extra models must be a JSON "
                 f"list of model objects")
+        for index, model in enumerate(parsed, 1):
+            if not isinstance(model, dict) or not isinstance(
+                    model.get("type"), str) or not model["type"].strip():
+                raise hou.NodeError(
+                    f"{_slot_label(geo, vol, None)}: Extra Models entry "
+                    f'{index} must be an object with a non-empty "type".')
         models.extend(parsed)
     return models
 
@@ -6428,6 +6544,22 @@ def build_remesh(parent):
     if parent.evalParm("remeshing_enabled"):
         raise hou.NodeError(LEGACY_REMESH_ERROR)
     return None
+
+
+def _guard_forward_json(data):
+    if not data:
+        return
+    if "states" in data:
+        raise hou.NodeError("Extra JSON states dispatches PolyFEM to optimization; "
+                            "this HDA writes forward simulations.")
+    space = data.get("space")
+    if isinstance(space, dict) and "remesh" in space:
+        raise hou.NodeError("Extra JSON space.remesh: " + LEGACY_REMESH_ERROR)
+    input_block = data.get("input")
+    checkpoint = input_block.get("checkpoint") if isinstance(input_block, dict) else None
+    if isinstance(checkpoint, dict) and checkpoint.get("path"):
+        raise hou.NodeError("Use Resume Checkpoint on the Main tab instead of "
+                            "setting input.checkpoint.path in Extra JSON.")
 
 
 def build_space(parent, data, orders):
@@ -7079,15 +7211,19 @@ def build_params(parent, cache=None):
         if not os.path.isfile(checkpoint):
             raise hou.NodeError(f"Resume Checkpoint not found: {checkpoint}")
         params_path = os.path.join(input_dir, "params.json")
+        data = {"input": {"checkpoint": {
+            "path": checkpoint, "reorder": bool(parent.evalParm("resume_reorder"))}}}
         with open(params_path, "w") as handle:
-            json.dump({"input": {"checkpoint": {"path": checkpoint,
-                                                "reorder": False}}}, handle, indent=4)
+            json.dump(data, handle, indent=4)
         report = parent.parm("export_report")
         if report is not None:
             report.set(CHECKPOINT_RESUME_NOTE)
         return params_path
 
-    build_remesh(parent)  # Refuse before exporting geometry or changing files.
+    build_remesh(parent)
+    _raise_saint_venant_axes(parent)
+    extra_params = _parse_extra_params_json(parent)
+    _guard_forward_json(extra_params)
     if cache is None:
         cache = {}
     data = {}
@@ -7101,15 +7237,25 @@ def build_params(parent, cache=None):
     build_solver(parent, data)
     build_output(parent, data)
     build_provenance(parent, data)
-    extra_params = _parse_extra_params_json(parent)
+    sideset_override = False
     if extra_params:
+        pre_override = _digest([data["geometry"], data.get("boundary_conditions")])
         _deep_merge_json(data, extra_params)
+        sideset_override = pre_override != _digest(
+            [data.get("geometry"), data.get("boundary_conditions")])
+    _guard_forward_json(data)
 
     params_path = os.path.join(input_dir, "params.json")
     with open(params_path, "w") as f:
         json.dump(data, f, indent=4)
-    write_sideset_record(input_dir, data, plans)
-    write_scene_record(parent, input_dir, data, plans, motions, cache=cache)
+    if sideset_override:
+        for filename in (SIDESET_RECORD_FILE, SCENE_RECORD_FILE):
+            path = os.path.join(input_dir, filename)
+            if os.path.isfile(path):
+                os.remove(path)
+    else:
+        write_sideset_record(input_dir, data, plans)
+        write_scene_record(parent, input_dir, data, plans, motions, cache=cache)
     _set_export_report(parent, plans)
     return params_path
 
@@ -7455,6 +7601,7 @@ def _material_ui_reproduces(parent, geo, vol, material, params_dir):
     if built != material:
         return False
     fields, count = per_element_data(parent, geo)
+    order = solver_element_order(parent.node(f"branch_{geo}").geometry())
     table, total = global_element_table(parent)
     offset = next((start for index, start, _ in table
                    if int(index) == int(geo)), None)
@@ -7469,7 +7616,7 @@ def _material_ui_reproduces(parent, geo, vol, material, params_dir):
                 os.path.join(params_dir, FIBER_FILE),
                 fiber_field(geo, vol, fam, side))
             if len(stored) != total or not np.allclose(
-                    values, stored[offset:offset + count], rtol=0,
+                    values[order], stored[offset:offset + count], rtol=0,
                     atol=1e-8):
                 return False
         kappa = fields.get(scalar_attrib("kappa", vol, fam))
@@ -7478,7 +7625,7 @@ def _material_ui_reproduces(parent, geo, vol, material, params_dir):
                 params_dir, per_element_scalar_file(geo, vol, fam, "kappa")),
                 ndmin=1)
             if len(stored) != total or not np.allclose(
-                    kappa, stored[offset:offset + count], rtol=1e-8,
+                    kappa[order], stored[offset:offset + count], rtol=1e-8,
                     atol=0):
                 return False
     return True
@@ -7522,7 +7669,7 @@ def _restore_material_ui(parent, scene, materials, params_dir, warnings):
                 "material.")
 
 
-def load_scene_record(input_dir):
+def load_scene_record(input_dir, data=None, notes=None):
     path = os.path.join(input_dir, SCENE_RECORD_FILE)
     try:
         with open(path) as handle:
@@ -7531,6 +7678,14 @@ def load_scene_record(input_dir):
         return None
     if not isinstance(record, dict) \
             or record.get("schema") != SCENE_RECORD_SCHEMA:
+        return None
+    if data is None:
+        data = _read_json(os.path.join(input_dir, "params.json"))
+    if not isinstance(data, dict) or record.get("params_sha256") != _digest(data):
+        if notes is not None:
+            notes.append(f"{SCENE_RECORD_FILE} does not match params.json. "
+                         "Obstacle motion and other scene settings were "
+                         "restored from the JSON where possible.")
         return None
     return record
 
@@ -8170,6 +8325,12 @@ def check_setup(parent, purpose="check", cache=None):
                 "(SRT) with zero Pivot Rotate, or bake the transform into the "
                 "mesh file.")
         num_vols = parent.evalParm(f"num_volumes{geo}")
+        branch = parent.node(f"branch_{geo}")
+        if branch is not None:
+            try:
+                solver_element_order(branch.geometry())
+            except hou.Error as exc:
+                errors.append(f"Geometry {geo}: {_error_text(exc)}")
         fibers = False
         for vol in range(1, num_vols + 1):
             _material_findings(parent, geo, vol, quasistatic, errors)
@@ -8362,7 +8523,7 @@ def check_setup(parent, purpose="check", cache=None):
         errors.append("The number of time steps must be at least 1 "
                       "(Time tab).")
     try:
-        _parse_extra_params_json(parent)
+        _guard_forward_json(_parse_extra_params_json(parent))
     except hou.Error as exc:
         errors.append(_error_text(exc))
 
@@ -8623,6 +8784,8 @@ def check_setup_button(kwargs):
     parent = kwargs["node"]
     report = check_setup(parent, "check")
     _set_check_report(parent, report)
+    if report["errors"] and not _resume_checkpoint(parent):
+        _raise_saint_venant_axes(parent)
     if report["errors"] or report["warnings"]:
         _message(setup_report_text(report))
     else:
@@ -8640,6 +8803,8 @@ def gate_setup(parent, purpose, cache=None):
     report = check_setup(parent, purpose, cache=cache)
     _set_check_report(parent, report)
     if report["errors"]:
+        if not _resume_checkpoint(parent):
+            _raise_saint_venant_axes(parent)
         _message("PolyFEM cannot run this setup yet (Check Setup on the Main "
                  "tab lists it too):\n\n" + "\n".join(
                      "- " + item for item in report["errors"]),
@@ -8735,57 +8900,98 @@ def _write_json(path, value):
     os.replace(temporary, path)
 
 
-def _process_alive(pid, expect=None):
-    """Whether process `pid` exists (and, when `expect` is given, whether its
-    command line contains that text -- a recycled pid is not our run)."""
-    if not pid:
+def _process_alive(pid, expect=None, *, cwd=None, binary=None, created=None,
+                   earliest=None, latest=None, launcher=None):
+    """Verify a run process against its input path and recorded start."""
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False
     try:
         import psutil
-        try:
-            process = psutil.Process(int(pid))
-            if process.status() == psutil.STATUS_ZOMBIE:
-                return False
-            if expect:
-                try:
-                    command = " ".join(process.cmdline())
-                except (psutil.AccessDenied, psutil.ZombieProcess):
-                    return True
-                return expect in command
-            return True
-        except (psutil.NoSuchProcess, ValueError):
-            return False
-        except psutil.AccessDenied:
-            return True
     except ImportError:
-        pass
-    if platform.system() == "Windows":
-        # os.kill(pid, 0) terminates a process on Windows; ask tasklist.
-        try:
-            listing = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {int(pid)}", "/NH"],
-                capture_output=True, text=True, timeout=5).stdout
-        except (OSError, subprocess.SubprocessError):
+        # Without process metadata, a recorded PID alone is unsafe to use.
+        return False
+    try:
+        process = psutil.Process(pid)
+        if process.status() == psutil.STATUS_ZOMBIE:
             return False
-        return str(int(pid)) in listing
+        actual_cwd = process.cwd() if cwd is not None else None
+        if cwd is not None and _normalized_path(actual_cwd) != _normalized_path(cwd):
+            return False
+        if binary and _normalized_path(process.exe()) != _normalized_path(binary):
+            return False
+        start = process.create_time()
+        if ((created is not None and abs(start - created) > 0.01)
+                or (earliest is not None and start < earliest)
+                or (latest is not None and start > latest)):
+            return False
+        command = process.cmdline()
+        if launcher is not None:
+            return any(_normalized_path(os.path.join(actual_cwd, arg))
+                       == _normalized_path(launcher) for arg in command[:2])
+        if cwd is not None:
+            params = next((arg for option, arg in zip(command, command[1:])
+                           if option in ("-j", "--json")), None)
+            return params is not None and _normalized_path(
+                os.path.join(actual_cwd, params)) == _normalized_path(expect)
+        return expect is None or expect in command
+    except (psutil.Error, OSError, ValueError, TypeError):
+        return False
+
+
+def _normalized_path(path):
+    return os.path.normcase(os.path.realpath(path))
+
+
+def _process_created(pid):
     try:
-        os.kill(int(pid), 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except (OSError, ValueError):
-        return False
+        import psutil
+    except ImportError:
+        return None
     try:
-        state, _, command = subprocess.run(
-            ["ps", "-p", str(int(pid)), "-o", "stat=", "-o", "command="],
-            capture_output=True, text=True, timeout=5
-        ).stdout.strip().partition(" ")
-    except (OSError, subprocess.SubprocessError):
-        return True
-    if state.startswith("Z"):       # ended, not yet reaped
+        return psutil.Process(pid).create_time()
+    except psutil.Error:
+        return None
+
+
+def _run_pid_matches(run, pid, *, launcher=False):
+    if not pid:
         return False
-    return expect in command if expect else True
+    output = run["output"]
+    input_dir = os.path.join(os.path.dirname(output), "input")
+    started = run.get("started")
+    if started is not None and not isinstance(started, (int, float)):
+        return False
+    earliest = started - 2 if started is not None else None
+    if launcher:
+        try:
+            recorded_at = os.path.getmtime(os.path.join(output, _LAUNCHER_PID_FILE))
+        except OSError:
+            return False
+        script = os.path.join(output, "run_polyfem.command"
+                              if platform.system() == "Darwin" else "run_polyfem.sh")
+        return _process_alive(pid, cwd=input_dir, launcher=script,
+                              earliest=earliest, latest=recorded_at + 1)
+
+    manifest = _manifest_of_run(run) if started is not None else _manifest(output)
+    process = manifest.get("process")
+    executable = process.get("executable") if isinstance(process, dict) else None
+    manifest_binary = executable.get("path") if isinstance(executable, dict) else None
+    binary = run.get("binary") or manifest_binary
+    if not isinstance(binary, str) or not binary:
+        return False
+    latest = None
+    stamp = manifest.get("started_at")
+    if isinstance(stamp, str):
+        from datetime import datetime
+
+        try:
+            latest = datetime.fromisoformat(stamp).timestamp() + 1
+        except ValueError:
+            pass
+    return _process_alive(pid, os.path.join(input_dir, "params.json"),
+                          cwd=input_dir, binary=binary,
+                          created=run.get("process_created"),
+                          earliest=earliest, latest=latest)
 
 
 def _manifest(output):
@@ -8894,10 +9100,10 @@ def _finished(run):
             return (None, code - 128)
         return (code, None)
     pid = _solver_pid(run)
-    if pid and _process_alive(pid, "params.json"):
+    if pid and _run_pid_matches(run, pid):
         return None
     launcher = run.get("launcher_pid") or _read_launcher_pid(run["output"])
-    if launcher and _process_alive(launcher):
+    if launcher and _run_pid_matches(run, launcher, launcher=True):
         return None
     completion = _manifest_of_run(run).get("completion", {})
     if isinstance(completion, dict) and completion.get("status") not in (
@@ -8958,7 +9164,7 @@ def run_status_text(run, now=None):
 
 def _set_run_status(node, text):
     parm = node.parm("run_status") if node is not None else None
-    if parm is not None and parm.eval() != text:
+    if parm is not None and parm.unexpandedString() != text:
         with hou.undos.disabler():
             parm.set(text)
 
@@ -9038,13 +9244,14 @@ def _register_run(parent, kind, output, log, popen=None, launcher_pid=None,
            "session_id": parent.sessionId(), "kind": kind, "popen": popen,
            "pid": popen.pid if popen is not None else None,
            "launcher_pid": launcher_pid, "started": time.time(), "log": log,
-           "binary": binary, "result": None}
+           "binary": binary, "result": None,
+           "process_created": _process_created(popen.pid) if popen else None}
     _runs()[output] = run
     _write_json(os.path.join(output, _RUN_RECORD), {
         "schema": "polyfem-houdini-run", "version": 1, "kind": kind,
         "node": parent.path(), "started": run["started"],
         "pid": run["pid"], "log": log, "binary": binary,
-        "houdini_pid": os.getpid()})
+        "process_created": run["process_created"], "houdini_pid": os.getpid()})
     _set_run_status(parent, run_status_text(run))
     _start_poller()
     return run
@@ -9070,20 +9277,22 @@ def active_run(parent):
         if _finished(run) is None:
             return run
         poll_runs()
+    record = _read_json(os.path.join(output, _RUN_RECORD)) or {}
+    external = {"output": output, "kind": "external",
+                "started": record.get("started"), "binary": record.get("binary"),
+                "process_created": record.get("process_created")}
     manifest = _manifest(output)
     completion = manifest.get("completion", {})
     process = manifest.get("process", {})
     pid = process.get("pid") if isinstance(process, dict) else None
     if isinstance(completion, dict) and completion.get("status") == "running" \
-            and _process_alive(pid, "params.json"):
-        return {"output": output, "pid": pid, "kind": "external"}
-    record = _read_json(os.path.join(output, _RUN_RECORD)) or {}
+            and _run_pid_matches(external, pid):
+        return dict(external, pid=pid)
     launcher = _read_launcher_pid(output)
     if record.get("kind") == "terminal" and launcher \
             and not os.path.isfile(os.path.join(output, _EXIT_STATUS_FILE)) \
-            and _process_alive(launcher):
-        return {"output": output, "pid": None, "launcher_pid": launcher,
-                "kind": "external"}
+            and _run_pid_matches(external, launcher, launcher=True):
+        return dict(external, pid=None, launcher_pid=launcher)
     return None
 
 
@@ -9272,7 +9481,8 @@ def reattach_run(parent):
            "pid": record.get("pid"),
            "launcher_pid": _read_launcher_pid(output),
            "started": float(record.get("started", time.time())), "log": log,
-           "binary": record.get("binary"), "result": None}
+           "binary": record.get("binary"), "result": None,
+           "process_created": record.get("process_created")}
     _runs()[output] = run
     poll_runs()
     if run.get("result") is None:
@@ -9297,27 +9507,32 @@ def stop_run(kwargs):
             return False
     import signal
     tracked = _runs().get(run["output"])
-    if tracked is not None:
-        tracked["stop_requested"] = True
     popen = run.get("popen")
-    pid = _solver_pid(run) if run.get("kind") != "external" else run.get("pid")
+    pid = _solver_pid(run)
     try:
-        if popen is not None and platform.system() != "Windows":
-            os.killpg(popen.pid, signal.SIGTERM)
-        elif popen is not None:
-            popen.terminate()
-        elif pid and platform.system() == "Windows":
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                           capture_output=True, timeout=10)
-        elif pid:
-            os.kill(int(pid), signal.SIGTERM)
-        elif run.get("launcher_pid") or _read_launcher_pid(run["output"]):
-            launcher = run.get("launcher_pid") or \
-                _read_launcher_pid(run["output"])
-            os.killpg(os.getpgid(launcher), signal.SIGTERM)
+        if popen is not None and popen.poll() is None:
+            if platform.system() == "Windows":
+                popen.terminate()
+            else:
+                os.killpg(popen.pid, signal.SIGTERM)
+        elif popen is None and _run_pid_matches(run, pid):
+            if platform.system() == "Windows":
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                               capture_output=True, timeout=10, check=True)
+            else:
+                os.kill(pid, signal.SIGTERM)
+        else:
+            launcher = run.get("launcher_pid") or _read_launcher_pid(run["output"])
+            if popen is not None or not _run_pid_matches(run, launcher, launcher=True) \
+                    or os.getpgid(launcher) != launcher:
+                _status("PolyFEM Stop could not verify the run process.")
+                return False
+            os.killpg(launcher, signal.SIGTERM)
     except (OSError, subprocess.SubprocessError) as exc:
         _message(f"Could not stop the run: {exc}")
         return False
+    if tracked is not None:
+        tracked["stop_requested"] = True
     if tracked is None:
         _set_run_status(parent, "Stopped by you; the steps already written "
                                 "stay on disk.")
@@ -9435,7 +9650,8 @@ def open_results(kwargs):
 
 
 def _looks_legacy(data):
-    contact = data.get("solver", {}).get("contact", {})
+    solver = data.get("solver")
+    contact = solver.get("contact", {}) if isinstance(solver, dict) else {}
     if isinstance(contact, dict) and "adaptive_barrier_stiffness_multiplier" in contact:
         return True
     materials = data.get("materials")
@@ -9603,20 +9819,48 @@ def _restore_conditions(parent, data, volume_remap=None, scene=None,
         _set_expr_vector(parent, f"ic_vec{geo}_{vol}_{l}",
                          f"condition_vector_{geo}_{vol}_{l}", value)
 
-    bc = data.get("boundary_conditions", {})
-    if "rhs" in bc and parent.parm("RHS") is not None:
-        _set_expr_vector(parent, "rhs_vec", "RHS", bc["rhs"])
+    _restore_obstacle_conditions(parent, data, scene, notes)
+
+
+def _restore_body_load(parent, data, notes):
+    bc = data.get("boundary_conditions")
+    if not isinstance(bc, dict) or "rhs" not in bc:
+        return
+    rhs = bc["rhs"]
+    if isinstance(rhs, list) and any(isinstance(item, dict) for item in rhs):
+        notes.append("Per-body boundary_conditions.rhs is not representable "
+                     "by the global Body Load boxes; retained in the source JSON.")
+    else:
+        _set_expr_vector(parent, "rhs_vec", "RHS", rhs)
+
+
+def _restore_obstacle_conditions(parent, data, scene, notes, geometry=()):
     notes = notes if notes is not None else []
+    bc = data.get("boundary_conditions")
+    if not isinstance(bc, dict):
+        bc = {}
     recorded = (scene or {}).get("obstacles", {})
     for geo_text, obstacle in recorded.items():
         if obstacle.get("motion", "static") == "static":
             continue
         for name, keys in obstacle.get("transform", {}).items():
             _restore_keyframes(parent.parm(name), keys)
+    # Legacy projects assigned decimal IDs (for example geometry 2's
+    # obstacle was 100021). Its surface selection records the exact ID.
+    obstacle_ids = {
+        item["surface_selection"]: geo
+        for geo, item in enumerate(geometry, 1)
+        if item.get("is_obstacle") and isinstance(item.get("surface_selection"), int)
+    }
     line = None
     for entry in bc.get("obstacle_displacements", []):
-        geo = (int(entry.get("id", 0)) - 100000) // 1000
-        if parent.parm(f"obstacle_disp{geo}") is None:
+        if not isinstance(entry, dict):
+            continue
+        sid = int(entry.get("id", 0))
+        geo = obstacle_ids.get(sid, (sid - 100000) // 1000)
+        parm = parent.parm(f"is_obstacle{geo}")
+        if parm is None or not parm.eval():
+            notes.append(f"Obstacle displacement id {sid} could not be mapped.")
             continue
         if entry.get("interpolation") is None:
             _set_expr_vector(parent, f"obstacle_disp_vec{geo}",
@@ -9871,6 +10115,11 @@ def _restore_recorded_sidesets(parent, geo, geo_record, faces_by_id,
                 curve_record=condition)
 
 
+def _nodal_neumann_file_note(path):
+    return (f"File-backed nodal_neumann_boundary entry {path!r} cannot be "
+            "reconstructed as point picks; retained in the source JSON.")
+
+
 def _restore_sidesets_from_ids(parent, geo, conditions, faces_by_id,
                                points_by_id, natives, notes, remap=None,
                                line=None):
@@ -9888,6 +10137,10 @@ def _restore_sidesets_from_ids(parent, geo, conditions, faces_by_id,
         values = conditions.get(key, [])
         for entry in values if isinstance(values, list) else []:
             if not isinstance(entry, dict):
+                if key == "nodal_neumann_boundary" and isinstance(entry, str):
+                    note = _nodal_neumann_file_note(entry)
+                    if note not in notes:
+                        notes.append(note)
                 continue
             try:
                 sid = int(entry.get("id", 0))
@@ -9988,32 +10241,35 @@ def _restore_sidesets_from_ids(parent, geo, conditions, faces_by_id,
         if count_parm is not None:
             count_parm.set(len(entries))
         for k, (_, kind, entry) in enumerate(entries, 1):
-            value = _format_vector(entry.get("value"))
-            functions = None
-            if entry.get("interpolation") is not None:
-                where = f"geo {geo} subdomain {vol} sideset {j} condition {k}"
-                try:
-                    functions, note = _interpolation_functions(
-                        entry["interpolation"],
-                        3 if kind in _VECTOR_BC_KINDS else 1,
-                        line)
-                    if note:
-                        notes.append(f"{where}: {note}")
-                    if line is None:
-                        notes.append(f"{where}: its time function was not "
-                                     "restored (the Time tab defines no run)")
-                except (hou.Error, KeyError, TypeError, ValueError) as exc:
-                    notes.append(f"{where}: its time function was not "
-                                 f"restored ({exc})")
-            _set_condition_parms(
-                parent, f"{geo}_{vol}_{j}_{k}", kind,
-                vector=value if kind in _VECTOR_BC_KINDS else None,
-                value=value if kind not in _VECTOR_BC_KINDS else None,
-                dimension=entry.get("dimension", [True, True, True])
-                if kind == 0 else None, functions=functions, line=line)
+            _restore_imported_condition(
+                parent, f"{geo}_{vol}_{j}_{k}", kind, entry, line, notes)
 
 
-def _restore_legacy_scene(parent, data, geometry, input_dir, material_slots):
+def _restore_imported_condition(parent, suffix, kind, entry, line, notes):
+    vector = kind in _VECTOR_BC_KINDS
+    value = entry.get("value")
+    functions = None
+    if entry.get("interpolation") is not None:
+        where = f"Boundary condition {entry.get('id', suffix)}"
+        try:
+            functions, note = _interpolation_functions(
+                entry["interpolation"], 3 if vector else 1, line)
+            if note:
+                notes.append(f"{where}: {note}")
+            if line is None:
+                notes.append(f"{where}: its time function was not restored "
+                             "(the Time tab defines no run)")
+        except (hou.Error, KeyError, TypeError, ValueError) as exc:
+            notes.append(f"{where}: its time function was not restored ({exc})")
+    _set_condition_parms(
+        parent, suffix, kind, vector=value if vector else None,
+        value=value if not vector else None,
+        dimension=entry.get("dimension", [True, True, True])
+        if kind == 0 else None, functions=functions, line=line)
+
+
+def _restore_legacy_scene(parent, data, geometry, input_dir, material_slots,
+                          scene=None):
     """Best-effort BC/selection import for 1.x and generic older PolyFEM ids.
 
     HDA 1.2 encoded geo/volume/sideset/BC as decimal digits. Generic PolyFEM
@@ -10169,11 +10425,17 @@ def _restore_legacy_scene(parent, data, geometry, input_dir, material_slots):
     bc = data.get("boundary_conditions", {})
     if not isinstance(bc, dict):
         return skipped
-    if "rhs" in bc:
-        _set_expr_vector(parent, "rhs_vec", "RHS", bc["rhs"])
+    try:
+        line = timeline(parent)
+    except hou.Error:
+        line = None
     next_bc = {}
     for type_index, key in enumerate(_BC_LIST_KEYS):
         for entry in bc.get(key, []):
+            if not isinstance(entry, dict):
+                if key == "nodal_neumann_boundary" and isinstance(entry, str):
+                    skipped.append(_nodal_neumann_file_note(entry))
+                continue
             sid = int(entry.get("id", 0))
             direct = legacy_target(sid)
             selected_targets = [direct[:3]] if direct is not None \
@@ -10193,43 +10455,56 @@ def _restore_legacy_scene(parent, data, geometry, input_dir, material_slots):
                     f"Boundary_Condition__{geo}_{vol}_{sideset}")
                 if count is not None and count.eval() < index:
                     count.set(index)
-                suffix = f"{geo}_{vol}_{sideset}_{index}"
-                parms = {f"boundary_type{suffix}": type_index}
-                if type_index in _VECTOR_BC_KINDS:
-                    if type_index == 0:
-                        for axis, flag in zip(
-                                "xyz", entry.get(
-                                    "dimension", [True, True, True])):
-                            parms[f"{axis}_dimension{suffix}"] = int(bool(flag))
-                    parent.setParms(parms)
-                    _set_expr_vector(parent, f"bc_vec{suffix}",
-                                     f"vector_{suffix}", entry.get("value"))
-                else:
-                    parms[f"value_{suffix}"] = _format_expr_box(
-                        entry.get("value"))
-                    parent.setParms(parms)
-    for entry in bc.get("obstacle_displacements", []):
-        value = int(entry.get("id", 0))
-        geo = (value - 100000) // 1000
-        if parent.parm(f"obstacle_disp{geo}") is not None:
-            _set_expr_vector(parent, f"obstacle_disp_vec{geo}",
-                             f"obstacle_disp{geo}", entry.get("value"))
+                _restore_imported_condition(
+                    parent, f"{geo}_{vol}_{sideset}_{index}",
+                    type_index, entry, line, skipped)
+    _restore_obstacle_conditions(parent, data, scene, skipped, geometry)
     return skipped
 
 
-def _import_isotropic(parent, geo, vol, model):
+def _young_poisson(model):
+    young, nu = model.get("young", model.get("E")), model.get("nu")
+    if young is not None and nu is not None:
+        return young, nu
+    lam, mu = model.get("lambda"), model.get("mu")
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+               for v in (lam, mu)) or lam + mu == 0:
+        return None
+    return mu * (3 * lam + 2 * mu) / (lam + mu), lam / (2 * (lam + mu))
+
+
+def _import_isotropic(parent, geo, vol, model, warnings=None):
+    warn = warnings.append if warnings is not None else _message
+    token = model.get("type")
+    if token in ("SaintVenant", "HookeLinearElasticity", "InversionBarrier"):
+        elastic = _young_poisson(model)
+        if token in ("SaintVenant", "HookeLinearElasticity") \
+                and "elasticity_tensor" not in model:
+            if elastic and all(
+                    isinstance(v, (int, float)) and not isinstance(v, bool)
+                    and math.isfinite(v) for v in elastic) and elastic[1] != -1:
+                E, nu = elastic
+                shear = E / (2 * (1 + nu))
+                model = dict(model, E=E, nu=nu,
+                             elasticity_tensor=[E]*3 + [nu]*3 + [shear]*3)
+            elif any(k in model for k in ("E", "young", "lambda", "mu", "nu")):
+                warn(f"{_slot_label(geo, vol, None)}: {token} scalar stiffness "
+                     "could not be converted to a numeric Elasticity Tensor.")
+                model = {k: v for k, v in model.items() if k not in ("E", "nu")}
+        elif token == "InversionBarrier" and elastic is not None:
+            model = dict(model, E=elastic[0], nu=elastic[1])
+
     parms = {}
     for key, base in (("E", "E"), ("nu", "nu"), ("c1", "c1"), ("c2", "c2"),
                       ("c3", "c3"), ("d1", "d1"), ("k", "bulk"),
                       ("phi", "phi"), ("psi", "psi"),
                       ("JBarrierThreshold", "inv_barrier_thresh"),
                       ("weight", "amips_weight"),
-                      ("use_rest_pose", "amips_use_rest_pose"),
                       ("power", "amips_power"),
                       ("normalized", "amips_normalized")):
         if key in model and parent.parm(f"{base}{geo}_{vol}") is not None:
             parms[f"{base}{geo}_{vol}"] = (
-                int(bool(model[key])) if key in ("use_rest_pose", "normalized")
+                int(bool(model[key])) if key == "normalized"
                 else model[key])
     if model.get("type") == "GrowthNeoHookean" \
             or any(k in model for k in ("g11", "g22", "g33")):
@@ -10255,9 +10530,16 @@ def _import_isotropic(parent, geo, vol, model):
         if "weight" not in model \
                 and parent.parm(f"amips_weight{geo}_{vol}") is not None:
             parms[f"amips_weight{geo}_{vol}"] = 1.0
-        if "use_rest_pose" not in model \
-                and parent.parm(f"amips_use_rest_pose{geo}_{vol}") is not None:
-            parms[f"amips_use_rest_pose{geo}_{vol}"] = 0
+        rest_pose = model.get("use_rest_pose", False)
+        if isinstance(rest_pose, str):
+            rest_pose = {"true": True, "false": False, "1": True, "0": False
+                         }.get(rest_pose.strip().lower())
+        if rest_pose not in (True, False):
+            warn(f"{_slot_label(geo, vol, None)}: AMIPS use_rest_pose "
+                 f"{model['use_rest_pose']!r} cannot be represented by the "
+                 "Use Rest Pose boolean toggle; imported with the toggle off.")
+            rest_pose = False
+        parms[f"amips_use_rest_pose{geo}_{vol}"] = int(rest_pose)
         if "power" not in model \
                 and parent.parm(f"amips_power{geo}_{vol}") is not None:
             parms[f"amips_power{geo}_{vol}"] = 1.0
@@ -10283,11 +10565,16 @@ def _import_isotropic(parent, geo, vol, model):
                     _set_ortho_parms(parent, geo, vol, vals)
                 else:
                     parms[f"elast_mode{geo}_{vol}"] = 1
-    if "fiber_direction" in model and isinstance(model["fiber_direction"], list) \
-            and parent.parm(f"material_coord{geo}_{vol}") is not None:
-        parms[f"material_coord{geo}_{vol}"] = json.dumps(model["fiber_direction"])
+    if token in ("SaintVenant", "HookeLinearElasticity") \
+            and isinstance(model.get("fiber_direction"), list):
+        axes = model["fiber_direction"]
+        parms[f"material_coord{geo}_{vol}"] = json.dumps(axes, separators=(",", ":"))
     if parms:
         parent.setParms(parms)
+    if token == "SaintVenant":
+        note = _saint_venant_axes_message(parent, geo, vol)
+        if note:
+            warn(note)
 
 
 def _import_scalar(parent, geo, vol, fam, name, value, params_dir,
@@ -10388,7 +10675,7 @@ def _import_composite(parent, geo, vol, models, params_dir, warnings=None):
     matrix = "None"
     families, extra, penalty, inv_barrier = [], [], None, None
     for model in models:
-        token = model.get("type")
+        token = model.get("type") if isinstance(model, dict) else None
         if token in FIBER_MODELS:
             families.append(model)
         elif token == "VolumePenalty" and penalty is None:
@@ -10399,7 +10686,7 @@ def _import_composite(parent, geo, vol, models, params_dir, warnings=None):
         elif token in MATRIX_MODEL_TOKENS and token != "None" \
                 and matrix == "None" and not families:
             matrix = token
-            _import_isotropic(parent, geo, vol, model)
+            _import_isotropic(parent, geo, vol, model, warnings)
         else:
             extra.append(model)
 
@@ -10411,10 +10698,14 @@ def _import_composite(parent, geo, vol, models, params_dir, warnings=None):
     if parent.parm(f"add_inv_barrier{geo}_{vol}") is not None:
         comp_parms[f"add_inv_barrier{geo}_{vol}"] = 1 if inv_barrier else 0
         if inv_barrier:
-            if "E" in inv_barrier:
-                comp_parms[f"comp_inv_E{geo}_{vol}"] = inv_barrier["E"]
-            if "nu" in inv_barrier:
-                comp_parms[f"comp_inv_nu{geo}_{vol}"] = inv_barrier["nu"]
+            elastic = _young_poisson(inv_barrier)
+            if elastic is not None:
+                comp_parms[f"comp_inv_E{geo}_{vol}"], \
+                    comp_parms[f"comp_inv_nu{geo}_{vol}"] = elastic
+            else:
+                for key in ("E", "nu"):
+                    if key in inv_barrier:
+                        comp_parms[f"comp_inv_{key}{geo}_{vol}"] = inv_barrier[key]
             comp_parms[f"comp_inv_thresh{geo}_{vol}"] = \
                 inv_barrier.get("JBarrierThreshold", 0.5)
     parent.setParms(comp_parms)
@@ -10507,6 +10798,7 @@ def _restore_volume_assignments(parent, geo, geometry_data, params_dir,
         return {}
 
     ordered_ids = list(dict.fromkeys(int(value) for value in ids))
+    ids = ids[np.argsort(solver_element_order(geo_data))]
     decoded = [_decoded_volume(value, geo, legacy) for value in ordered_ids]
     if all(value is not None for value in decoded) \
             and len(set(decoded)) == len(decoded):
@@ -11271,13 +11563,15 @@ def _restore_output(parent, data, warnings=None):
         for key, parm in (
                 ("solution", "solution_file"),
                 ("stress_mat", "stress_mat_file"),
-                ("diagnostic_state", "state_file"),
                 ("mises", "mises_file"),
                 ("nodes", "nodes")):
             parms[parm] = int(key in output_data)
         # Legacy state key: the per-step restart state was implied by
         # restart_json, not the diagnostic State toggle.
-        if "diagnostic_state" not in output_data and "state" in output_data:
+        if "diagnostic_state" in output_data:
+            parms["state_file"] = int(bool(
+                str(output_data["diagnostic_state"] or "").strip()))
+        elif "state" in output_data:
             parms["state_file"] = int(
                 output_data["state"] != LEGACY_RESTART_STATE_FILE)
         if parent.parm("rest_mesh_file") is not None:
@@ -11459,15 +11753,40 @@ def read_params(kwargs):
         working_dir = (os.path.dirname(norm_input)
                        if os.path.basename(norm_input) == "input"
                        else norm_input)
-        parent.setParms({"resume_checkpoint": os.path.abspath(checkpoint),
-                         "working_dir": working_dir + "/"})
-        if parent.userData(_OVERWRITE_APPROVED) is not None:
-            parent.destroyUserData(_OVERWRITE_APPROVED)
-        report = parent.parm("export_report")
-        if report is not None:
-            report.set(CHECKPOINT_RESUME_NOTE)
+        with hou.undos.group("Import PolyFEM JSON"):
+            parent.setParms({"resume_checkpoint": os.path.abspath(checkpoint),
+                             "resume_reorder": int(checkpoint_block.get("reorder") is True),
+                             "working_dir": working_dir + "/"})
+            if parent.userData(_OVERWRITE_APPROVED) is not None:
+                parent.destroyUserData(_OVERWRITE_APPROVED)
+            report = parent.parm("export_report")
+            if report is not None:
+                report.set(CHECKPOINT_RESUME_NOTE)
         _message(CHECKPOINT_RESUME_NOTE)
         return
+    root_path = data.get("root_path")
+    resource_dir = (os.path.abspath(os.path.join(input_dir, os.path.expandvars(root_path)))
+                    if isinstance(root_path, str) and root_path.strip()
+                    else input_dir)
+    raw_geometry = data.get("geometry")
+    if not isinstance(raw_geometry, list) or not raw_geometry:
+        _message("The geometry section must be a non-empty list of mesh entries.")
+        return
+    warnings = []
+    scene = load_scene_record(input_dir, data, warnings)
+    raw_geometry = [
+        _sequence_as_obstacle(item, index, scene, resource_dir, warnings)
+        for index, item in enumerate(raw_geometry, 1)]
+    geometry = [item for item in raw_geometry
+                if isinstance(item, dict) and "mesh" in item]
+    ignored = len(raw_geometry) - len(geometry)
+    if ignored:
+        warnings.append(f"Skipped {ignored} procedural/non-mesh geometry entries.")
+    if not any(_usable_import_mesh(item, resource_dir) for item in geometry):
+        _message("The geometry section contains no usable mesh files. Check "
+                 "the mesh paths, file format and geometry type.")
+        return
+
     if hou.isUIAvailable() and _has_loaded_geometry(parent):
         choice = hou.ui.displayMessage(
             "Importing a previous run replaces the current geometries, "
@@ -11477,18 +11796,37 @@ def read_params(kwargs):
             severity=hou.severityType.Warning, title="Import params.json")
         if choice != 0:
             return
-    if parent.parm("resume_checkpoint") is not None:
-        parent.parm("resume_checkpoint").set("")
-    root_path = data.get("root_path")
-    if isinstance(root_path, str) and root_path.strip():
-        expanded_root = os.path.expandvars(root_path)
-        resource_dir = expanded_root if os.path.isabs(expanded_root) \
-            else os.path.join(input_dir, expanded_root)
-        resource_dir = os.path.abspath(resource_dir)
-    else:
-        resource_dir = input_dir
+    with hou.undos.group("Import PolyFEM JSON"):
+        _import_scene(kwargs, parent, data, geometry, scene, params_path,
+                      input_dir, resource_dir, warnings)
 
-    warnings = []
+
+def _usable_import_mesh(item, resource_dir):
+    mesh = item.get("mesh")
+    if not isinstance(mesh, str) or not mesh.strip():
+        return False
+    path = os.path.join(resource_dir, mesh)
+    if not os.path.isfile(path):
+        return False
+    extension = os.path.splitext(path)[1].lower()
+    try:
+        if extension == ".msh":
+            reader = hou.nodeType(hou.sopNodeTypeCategory(), "MSH_Reader::3.0")
+            cells = reader.hdaModule().read_msh(path)["cells"]
+            return bool(cells) if item.get("is_obstacle") else any(
+                family in cells and len(cells[family]["corners"])
+                for family in ("tet", "hex"))
+        if extension in (".obj", ".stl", ".ply"):
+            geometry = hou.Geometry()
+            geometry.loadFromFile(path)
+            return bool(geometry.intrinsicValue("primitivecount"))
+    except (OSError, ValueError, RuntimeError, hou.Error):
+        return False
+    return False
+
+
+def _import_scene(kwargs, parent, data, geometry, scene, params_path,
+                  input_dir, resource_dir, warnings):
     legacy = _looks_legacy(data)
     if legacy:
         warnings.append(
@@ -11497,36 +11835,16 @@ def read_params(kwargs):
 
     clear_all_geos(kwargs, _confirmed=True)
     _revert_global_parms(parent)
+    if parent.parm("resume_checkpoint") is not None:
+        parent.setParms({"resume_checkpoint": "", "resume_reorder": 0})
     norm_input = os.path.normpath(input_dir)
     working_dir = (os.path.dirname(norm_input)
                    if os.path.basename(norm_input) == "input"
                    else norm_input)
     parent.setParms({"working_dir": working_dir + "/"})
-    # Writing or running into an imported run's folder must be confirmed
-    # again, whatever was approved for this node before.
     if parent.userData(_OVERWRITE_APPROVED) is not None:
         parent.destroyUserData(_OVERWRITE_APPROVED)
 
-    raw_geometry = data.get("geometry", [])
-    if not isinstance(raw_geometry, list):
-        _message("The geometry section is not a list.")
-        return
-    scene = load_scene_record(input_dir)
-    raw_geometry = [
-        _sequence_as_obstacle(item, index, scene, resource_dir, warnings)
-        for index, item in enumerate(raw_geometry, 1)]
-    geometry = [
-        item for item in raw_geometry
-        if isinstance(item, dict) and "mesh" in item]
-    ignored_geometry = len(raw_geometry) - len(geometry)
-    if ignored_geometry:
-        warnings.append(
-            f"{ignored_geometry} procedural/non-mesh geometry entr"
-            f"{'y was' if ignored_geometry == 1 else 'ies were'} not "
-            "representable by this HDA and were skipped.")
-    if not geometry:
-        _message("No geometry in JSON file")
-        return
     parent.setParms({"num_geos": len(geometry), "geo_int": len(geometry)})
 
     valid_geometries = []
@@ -11660,7 +11978,7 @@ def read_params(kwargs):
             _import_fiber_model(
                 parent, geo, vol, None, m, params_dir, warnings)
         else:
-            _import_isotropic(parent, geo, vol, m)
+            _import_isotropic(parent, geo, vol, m, warnings)
     _restore_material_ui(parent, scene, materials, params_dir, warnings)
 
     _restore_time(parent, data)
@@ -11673,6 +11991,7 @@ def read_params(kwargs):
 
     # Current collision-free ids round-trip directly. Older HDA decimal ids and
     # generic PolyFEM selection ids are rebuilt through a compatibility mapper.
+    _restore_body_load(parent, data, warnings)
     if not legacy:
         try:
             _restore_conditions(parent, data, volume_remap, scene, warnings)
@@ -11687,7 +12006,7 @@ def read_params(kwargs):
     else:
         try:
             warnings.extend(_restore_legacy_scene(
-                parent, data, geometry, resource_dir, material_slots))
+                parent, data, geometry, resource_dir, material_slots, scene))
         except Exception as exc:
             warnings.append(
                 f"Older selections/conditions were only partially restored: "
