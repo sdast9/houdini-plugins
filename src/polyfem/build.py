@@ -172,6 +172,7 @@ def build(out_dir):
             "polyfem", "sections", "ViewerStateModule.py"),
         "OnCreated": hda_build.read_source("polyfem", "OnCreated.py"),
         "OnLoaded": hda_build.read_source("polyfem", "OnLoaded.py"),
+        "OnUpdated": hda_build.read_source("polyfem", "OnUpdated.py"),
         "DefaultState": STATE_NAME,
         "ViewerStateInstall":
             "__import__('viewerstate.utils', fromlist=[None])"
@@ -183,10 +184,7 @@ def build(out_dir):
         "Tools.shelf": hda_build.read_source(
             "polyfem", "sections", "Tools.shelf"),
     }
-    for name, text in sections.items():
-        definition.addSection(name, text)
-
-    for section in ("PythonModule", "OnCreated", "OnLoaded",
+    for section in ("PythonModule", "OnCreated", "OnLoaded", "OnUpdated",
                     "ViewerStateModule", "ViewerStateInstall",
                     "ViewerStateUninstall"):
         definition.setExtraFileOption(f"{section}/IsPython", True)
@@ -194,6 +192,8 @@ def build(out_dir):
     for section in ("ViewerStateModule", "ViewerStateInstall",
                     "ViewerStateUninstall"):
         definition.setExtraFileOption(f"{section}/IsViewerState", True)
+    for name, text in sections.items():
+        definition.addSection(name, text)
 
     definition.save(definition.libraryFilePath())
     return hda_build.commit_asset(asset)

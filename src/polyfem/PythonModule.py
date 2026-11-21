@@ -270,10 +270,36 @@ def parse_vector(text, name):
         return val
     except (ValueError, SyntaxError):
         pass
-    # allow ["0", "-0.1*t", "0"] or [0, -0.1*t, 0] lists with expressions
+    # allow ["0", "-0.1*t", "0"] or [0, -0.1*t, 0] lists with expressions,
+    # splitting only on top-level commas (not inside quotes or function calls
+    # such as if(t-0.5, -0.02, -0.04*t) or min(t, 1)).
     if text.startswith("[") and text.endswith("]"):
         inner = text[1:-1]
-        parts = [p.strip() for p in inner.split(",") if p.strip()]
+        parts, buf, depth, quote = [], [], 0, None
+        for ch in inner:
+            if quote is not None:
+                buf.append(ch)
+                if ch == quote:
+                    quote = None
+            elif ch in ("'", '"'):
+                quote = ch
+                buf.append(ch)
+            elif ch in "([{":
+                depth += 1
+                buf.append(ch)
+            elif ch in ")]}":
+                depth = max(0, depth - 1)
+                buf.append(ch)
+            elif ch == "," and depth == 0:
+                token = "".join(buf).strip()
+                if token:
+                    parts.append(token)
+                buf = []
+            else:
+                buf.append(ch)
+        tail = "".join(buf).strip()
+        if tail:
+            parts.append(tail)
         return [_parse_expr_component(p, name) for p in parts]
     return _parse_expr_component(text, name)
 
@@ -9410,9 +9436,12 @@ def open_results(kwargs):
 
 def _looks_legacy(data):
     contact = data.get("solver", {}).get("contact", {})
-    if "adaptive_barrier_stiffness_multiplier" in contact:
+    if isinstance(contact, dict) and "adaptive_barrier_stiffness_multiplier" in contact:
         return True
-    for material in data.get("materials", []):
+    materials = data.get("materials")
+    if isinstance(materials, dict):
+        return True
+    for material in materials if isinstance(materials, list) else []:
         if not isinstance(material, dict):
             continue
         try:
@@ -9420,6 +9449,19 @@ def _looks_legacy(data):
                 return True
         except (TypeError, ValueError):
             continue
+    bc = data.get("boundary_conditions", {})
+    if isinstance(bc, dict):
+        for key in _BC_LIST_KEYS:
+            entries = bc.get(key, [])
+            for entry in entries if isinstance(entries, list) else []:
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    sid = int(entry.get("id", 0))
+                except (TypeError, ValueError):
+                    continue
+                if sid != 0 and abs(sid) < 10000000:
+                    return True
     return False
 
 
@@ -11377,12 +11419,16 @@ def read_params(kwargs):
         _message("Please provide the path to a previous input dir")
         return
     selected_dir = os.path.abspath(os.path.expandvars(selected_value))
-    # Accept either the simulation root or its input directory.
-    if os.path.isfile(os.path.join(selected_dir, "input", "params.json")):
+    # Accept a JSON file directly, the simulation root, or its input directory.
+    if os.path.isfile(selected_dir):
+        params_path = selected_dir
+        input_dir = os.path.dirname(selected_dir)
+    elif os.path.isfile(os.path.join(selected_dir, "input", "params.json")):
         input_dir = os.path.join(selected_dir, "input")
+        params_path = os.path.join(input_dir, "params.json")
     else:
         input_dir = selected_dir
-    params_path = os.path.join(input_dir, "params.json")
+        params_path = os.path.join(input_dir, "params.json")
     try:
         with open(params_path) as f:
             data = json.load(f)
@@ -11561,7 +11607,9 @@ def read_params(kwargs):
                          type_menu["MooneyRivlin3ParamSymbolic"])
     params_dir = resource_dir
     materials = data.get("materials", [])
-    if not isinstance(materials, list):
+    if isinstance(materials, dict):
+        materials = [materials]
+    elif not isinstance(materials, list):
         materials = []
         warnings.append("The materials section was not a list; defaults remain.")
     all_slots = sorted(set(material_slots.values()))

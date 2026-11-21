@@ -260,6 +260,32 @@ def test_polyfem_batch_2a(root):
     assert reattached is not None
     mod._runs().pop(norm_out, None)
 
+    # 13. parse_vector respects paren-nested commas (if/min/max expressions)
+    parsed_commas = mod.parse_vector(
+        "[0, if(t-0.5, -0.02, -0.04*t), min(t, 1)]", "bc_test")
+    assert parsed_commas == [0, "if(t-0.5, -0.02, -0.04*t)", "min(t, 1)"], \
+        parsed_commas
+
+    # 14. OnUpdated migrates legacy expr vectors; OnLoaded defers display rebuild
+    sections = node.type().definition().sections()
+    assert "OnUpdated" in sections
+    assert "migrate_legacy_expr_vectors" in sections["OnUpdated"].contents()
+    assert "executeDeferred" in sections["OnLoaded"].contents()
+
+    # 15. External PolyFEM JSON with small BC ids & dict materials imports BCs into bc_vec
+    ext_json = os.path.join(
+        os.path.dirname(BASE), "polyfem", "scenes", "semi-implicit",
+        "quasistatic-semi.json")
+    if os.path.isfile(ext_json):
+        ext_node = hou.node("/obj").createNode(
+            "stevenabramowitch::dev::PolyFEM::2.0", "pf_ext_import")
+        ext_node.parm("old_input_dir").set(ext_json)
+        ext_node.hdaModule().read_params({"node": ext_node})
+        assert ext_node.evalParm("sideset_selection1_1") >= 1
+        assert ext_node.parmTuple("bc_vec1_1_1_1").eval() == ("0", "0", "-0.25*t"), \
+            ext_node.parmTuple("bc_vec1_1_1_1").eval()
+        ext_node.destroy()
+
     node.destroy()
     print("PASS: Batch 2A (PolyFEM 2.0) fixes verified")
 
