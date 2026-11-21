@@ -18,6 +18,11 @@ hou.pwd().parent().hdaModule().cook(hou.pwd())
 
 
 def build(out_dir):
+    with hda_build.build_transaction():
+        return _build(out_dir)
+
+
+def _build(out_dir):
     hda_path = os.path.join(out_dir, "sop_MSH_Reader.3.0.hdanc")
     asset = hda_build.new_asset("Sop", TYPE_NAME, LABEL, hda_path)
 

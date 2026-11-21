@@ -27,9 +27,8 @@ write_moved_nodes(path, positions, out_path) copies a mesh file with only its
 node coordinates replaced (Read PVD's deformed mesh export).
 """
 
-import io
 import os
-import struct
+import re
 
 import numpy as np
 
@@ -53,34 +52,99 @@ class MshParseError(RuntimeError):
     pass
 
 
+_MESH_SECTIONS = {
+    "MeshFormat", "PhysicalNames", "Entities", "PartitionedEntities",
+    "Nodes", "Elements",
+}
+_SECTION_START = re.compile(rb"^\$([A-Za-z][A-Za-z0-9_]*)[ \t]*\r?\n", re.M)
+_INT64_MAX = np.iinfo(np.int64).max
+_INT32_MAX = np.iinfo(np.int32).max
+
+
 def _find_sections(data):
     """Map section name -> (start, end) byte offsets of the section body."""
     sections = {}
     pos = 0
-    while True:
-        start = data.find(b"$", pos)
-        if start < 0:
-            break
-        eol = data.find(b"\n", start)
-        if eol < 0:
-            break
-        name = data[start + 1:eol].strip().decode("ascii", "replace")
-        if name.startswith("End"):
-            pos = eol + 1
-            continue
-        end_marker = b"$End" + name.encode("ascii")
-        end = data.find(end_marker, eol)
-        if end < 0:
+    while match := _SECTION_START.search(data, pos):
+        name = match[1].decode("ascii")
+        body_start = match.end()
+        end_marker = re.compile(rb"^\$End" + match[1] + rb"[ \t]*\r?(?:\n|\Z)", re.M)
+        end = end_marker.search(data, body_start)
+        if not end:
             raise MshParseError(f"Unterminated section ${name}")
-        sections[name] = (eol + 1, end)
-        pos = end + len(end_marker)
+        if name in _MESH_SECTIONS and name in sections:
+            raise MshParseError(f"Duplicate ${name} section")
+        sections[name] = (body_start, end.start())
+        pos = end.end()
     return sections
 
 
 def _tokens(data, span):
-    """Whole-section ASCII tokenization to a float64 array (C-speed split)."""
-    text = data[span[0]:span[1]].decode("ascii")
-    return np.array(text.split(), dtype=np.float64)
+    return data[slice(*span)].split()
+
+
+def _take_tokens(tok, p, count, section):
+    if count < 0:
+        raise MshParseError(f"Negative count in ${section}")
+    if p + count > len(tok):
+        raise MshParseError(f"Truncated ASCII ${section} section")
+    return tok[p:p + count]
+
+
+def _int64_tags(values, section):
+    """Convert ASCII integer tokens or binary unsigned tags without wrapping."""
+    if isinstance(values, np.ndarray) and values.dtype.kind == "u":
+        if values.size and int(values.max()) > _INT64_MAX:
+            raise MshParseError(f"Integer tag in ${section} is outside signed Int64 range")
+    try:
+        return np.asarray(values, dtype=np.int64)
+    except (ValueError, OverflowError) as exc:
+        raise MshParseError(f"Invalid or out-of-range integer tag in ${section}: {exc}") from exc
+
+
+def _binary_format(fmt_body, data_size, version):
+    if data_size not in ((4, 8) if version >= 4.0 else (8,)):
+        raise MshParseError(f"Unsupported binary MSH {version:g} data size {data_size}")
+    nl = fmt_body.find(b"\n")
+    probe = fmt_body[nl + 1:nl + 5]
+    if nl >= 0 and probe == b"\x01\x00\x00\x00":
+        endian = "<"
+    elif nl >= 0 and probe == b"\x00\x00\x00\x01":
+        endian = ">"
+    else:
+        raise MshParseError("Invalid endianness probe in binary $MeshFormat")
+    return endian, endian + f"u{data_size}"
+
+
+def _read_buffer(buf, dtype, count, offset, section):
+    dtype = np.dtype(dtype)
+    if count < 0 or offset < 0 or offset + count * dtype.itemsize > len(buf):
+        raise MshParseError(f"Binary ${section} section is malformed or cut short")
+    return np.frombuffer(buf, dtype, count, offset)
+
+
+class _BinarySection:
+    """Sequential, bounds-checked reads of MSH 4.1 binary fields."""
+
+    def __init__(self, buf, name, binary_format):
+        self.buf = buf
+        self.name = name
+        endian, self.size_dtype = binary_format
+        self.int_dtype = endian + "i4"
+        self.float_dtype = endian + "f8"
+        self.pos = 0
+
+    def read(self, dtype, count, skip=False):
+        if not skip:
+            values = _read_buffer(self.buf, dtype, count, self.pos, self.name)
+        self.pos += count * np.dtype(dtype).itemsize
+        if self.pos > len(self.buf):
+            raise MshParseError(f"Truncated binary ${self.name} section")
+        if not skip:
+            return values
+
+    def sizes(self, count):
+        return tuple(int(v) for v in self.read(self.size_dtype, count))
 
 
 def _parse_physical_names(data, sections):
@@ -115,7 +179,7 @@ def _parse_entities_ascii(tok):
     $Entities."""
     ent_phys = {}
     p = 0
-    counts = tok[p:p + 4].astype(np.int64)
+    counts = [int(v) for v in tok[p:p + 4]]
     p += 4
     # points: tag x y z numPhys [phys...]
     for _ in range(counts[0]):
@@ -138,28 +202,19 @@ def _parse_entities_ascii(tok):
     return ent_phys
 
 
-def _parse_entities_binary(buf):
+def _parse_entities_binary(buf, binary_format):
     ent_phys = {}
-    p = 0
-    counts = np.frombuffer(buf, dtype="<u8", count=4, offset=p)
-    p += 32
-    for _ in range(int(counts[0])):  # points
-        tag = int(np.frombuffer(buf, "<i4", 1, p)[0])
-        n_phys = int(np.frombuffer(buf, "<u8", 1, p + 4 + 24)[0])
-        if n_phys > 0:
-            ent_phys[(0, tag)] = _physical_list(
-                np.frombuffer(buf, "<i4", n_phys, p + 4 + 24 + 8))
-        p += 4 + 24 + 8 + 4 * n_phys
-    for dim, count in ((1, counts[1]), (2, counts[2]), (3, counts[3])):
-        for _ in range(int(count)):
-            tag = int(np.frombuffer(buf, "<i4", 1, p)[0])
-            n_phys = int(np.frombuffer(buf, "<u8", 1, p + 4 + 48)[0])
-            if n_phys > 0:
-                ent_phys[(dim, tag)] = _physical_list(
-                    np.frombuffer(buf, "<i4", n_phys, p + 4 + 48 + 8))
-            p += 4 + 48 + 8 + 4 * n_phys
-            n_brep = int(np.frombuffer(buf, "<u8", 1, p)[0])
-            p += 8 + 4 * n_brep
+    src = _BinarySection(buf, "Entities", binary_format)
+    for dim, count in enumerate(src.sizes(4)):
+        for _ in range(count):
+            tag = int(src.read(src.int_dtype, 1)[0])
+            src.read(src.float_dtype, 3 if dim == 0 else 6, skip=True)
+            n_phys, = src.sizes(1)
+            if n_phys:
+                ent_phys[(dim, tag)] = _physical_list(src.read(src.int_dtype, n_phys))
+            if dim > 0:
+                n_brep, = src.sizes(1)
+                src.read(src.int_dtype, n_brep, skip=True)
     return ent_phys
 
 
@@ -169,7 +224,7 @@ def _parse_partitioned_ascii(tok, ent_phys):
     none, those of the model entity it was cut from)."""
     p = 1                                   # numPartitions
     n_ghosts = int(tok[p]); p += 1 + 2 * n_ghosts
-    counts = tok[p:p + 4].astype(np.int64); p += 4
+    counts = [int(v) for v in tok[p:p + 4]]; p += 4
     for dim in range(4):
         for _ in range(counts[dim]):
             tag, parent_dim, parent_tag = (int(v) for v in tok[p:p + 3])
@@ -179,33 +234,36 @@ def _parse_partitioned_ascii(tok, ent_phys):
             phys = _physical_list(tok[p + 1:p + 1 + n_phys]); p += 1 + n_phys
             if dim > 0:
                 p += 1 + int(tok[p])        # bounding entities
-            ent_phys[(dim, tag)] = phys or ent_phys.get(
-                (parent_dim, parent_tag), [])
+            if not phys and parent_dim == dim:
+                phys = ent_phys.get((parent_dim, parent_tag), [])
+            ent_phys[(dim, tag)] = phys
 
 
-def _parse_partitioned_binary(buf, ent_phys):
-    p = 8                                   # numPartitions
-    n_ghosts = int(np.frombuffer(buf, "<u8", 1, p)[0]); p += 8 + 8 * n_ghosts
-    counts = np.frombuffer(buf, "<u8", 4, p); p += 32
-    for dim in range(4):
-        for _ in range(int(counts[dim])):
-            tag, parent_dim, parent_tag = (
-                int(v) for v in np.frombuffer(buf, "<i4", 3, p))
-            n_parts = int(np.frombuffer(buf, "<u8", 1, p + 12)[0])
-            p += 20 + 4 * n_parts
-            p += 24 if dim == 0 else 48
-            n_phys = int(np.frombuffer(buf, "<u8", 1, p)[0])
-            phys = _physical_list(np.frombuffer(buf, "<i4", n_phys, p + 8))
-            p += 8 + 4 * n_phys
+def _parse_partitioned_binary(buf, ent_phys, binary_format):
+    src = _BinarySection(buf, "PartitionedEntities", binary_format)
+    _num_partitions, n_ghosts = src.sizes(2)
+    src.read(src.int_dtype, 2 * n_ghosts, skip=True)
+    for dim, count in enumerate(src.sizes(4)):
+        for _ in range(count):
+            tag, parent_dim, parent_tag = (int(v) for v in src.read(src.int_dtype, 3))
+            n_parts, = src.sizes(1)
+            src.read(src.int_dtype, n_parts, skip=True)
+            src.read(src.float_dtype, 3 if dim == 0 else 6, skip=True)
+            n_phys, = src.sizes(1)
+            phys = _physical_list(src.read(src.int_dtype, n_phys))
             if dim > 0:
-                p += 8 + 4 * int(np.frombuffer(buf, "<u8", 1, p)[0])
-            ent_phys[(dim, tag)] = phys or ent_phys.get(
-                (parent_dim, parent_tag), [])
+                n_brep, = src.sizes(1)
+                src.read(src.int_dtype, n_brep, skip=True)
+            if not phys and parent_dim == dim:
+                phys = ent_phys.get((parent_dim, parent_tag), [])
+            ent_phys[(dim, tag)] = phys
 
 
 def _tag_index_map(node_tags):
     """Return a function mapping arrays of gmsh node tags -> point indices."""
     n = len(node_tags)
+    if n and int(node_tags.min()) < 1:
+        raise MshParseError(f"Invalid node tag {int(node_tags.min())} in $Nodes; tags must be >= 1")
 
     def unknown(tags, bad):
         tag = int(np.asarray(tags)[bad][0])
@@ -225,6 +283,10 @@ def _tag_index_map(node_tags):
         return contiguous
     order = np.argsort(node_tags)
     sorted_tags = node_tags[order]
+    repeated = sorted_tags[1:] == sorted_tags[:-1]
+    if repeated.any():
+        tag = int(sorted_tags[1:][repeated][0])
+        raise MshParseError(f"Duplicate node tag {tag} in $Nodes")
 
     def lookup(tags):
         if not n:
@@ -246,26 +308,18 @@ FAMILY_DIMENSION = {
 }
 
 
-def _accumulate_cells(cells, family, num_nodes, corners, entity,
-                      elementary=None):
-    """elementary: the v2.2 elementary entity tag of each element (None in
-    v4.1, which writes every element once)."""
-    slot = cells.setdefault(
-        family, {"corners": [], "entity": [], "elementary": [],
-                 "num_nodes": num_nodes})
-    slot["corners"].append(corners)
-    slot["entity"].append(entity)
-    slot["elementary"].append(
-        np.zeros(len(entity), dtype=np.int64) if elementary is None
-        else np.asarray(elementary, dtype=np.int64))
-    slot["num_nodes"] = max(slot["num_nodes"], num_nodes)
-    # Blocks in file order (key None), so every element's position among
-    # the elements of its dimension can be recovered: PolyFEM reads a mesh's
-    # elements in that order, whatever their family.
-    cells.setdefault(None, []).append((family, len(entity)))
+def _accumulate_cells(cells, etype, node_tags, entity, elementary=None):
+    """Store full connectivity by element type, with dimension-relative order."""
+    family, _, _ = GMSH_ELEM_TYPES[etype]
+    dim = FAMILY_DIMENSION[family]
+    counts = cells.setdefault(None, {})
+    start = counts.get(dim, 0)
+    counts[dim] = start + len(entity)
+    slot = cells.setdefault(etype, [])
+    slot.append((node_tags, entity, elementary, start))
 
 
-def _v22_copies(corner_tags, entity, elementary):
+def _v22_copies(node_tags, entity, elementary):
     """Mask of the extra copies MSH 2.2 writes of an element in more than one
     physical group (Gmsh writes it once per group, with the same nodes and
     elementary entity). The copy in the lowest group is kept, the group
@@ -276,15 +330,21 @@ def _v22_copies(corner_tags, entity, elementary):
         return drop, set()
     # (elementary entity, physical group) pairs as one 1D key; an entity
     # listed with more than one group is what makes Gmsh write copies
-    group = entity.astype(np.int64) - int(entity.min())
+    group_min = int(entity.min())
+    group = entity.astype(np.int64) - group_min
     width = int(group.max()) + 1
-    pairs = np.unique(elementary * width + group)
+    # Keep the fast packed key even for ASCII meshes with wide entity IDs.
+    entity_ids = elementary
+    max_packed_entity = (_INT64_MAX - (width - 1)) // width
+    if int(elementary.min()) < -max_packed_entity or int(elementary.max()) > max_packed_entity:
+        _, entity_ids = np.unique(elementary, return_inverse=True)
+    pairs = np.unique(entity_ids * width + group)
     ids, counts = np.unique(pairs // width, return_counts=True)
     multi = ids[counts > 1]
     if not len(multi):
         return drop, set()
-    candidates = np.flatnonzero(np.isin(elementary, multi))
-    rows = np.sort(corner_tags[candidates], axis=1)
+    candidates = np.flatnonzero(np.isin(entity_ids, multi))
+    rows = np.sort(node_tags[candidates], axis=1)
     # a 64-bit hash of (entity, sorted nodes) brings copies together; equal
     # neighbours are then compared in full, so a hash collision can only
     # leave a copy in, never drop a distinct element
@@ -305,55 +365,63 @@ def _v22_copies(corner_tags, entity, elementary):
     repeat[1:] = same
     drop[candidates[order[repeat]]] = True
     groups = set()
-    pair_entity, pair_group = pairs // width, pairs % width + int(entity.min())
-    for tag in multi:
-        groups.add(tuple(int(t) for t in pair_group[pair_entity == tag]))
+    pair_entity, pair_group = pairs // width, pairs % width + group_min
+    # Sorted pairs are already grouped by entity. Avoid scanning the entire
+    # array for each entity that has more than one physical group.
+    starts = np.searchsorted(pair_entity, multi)
+    for start, count in zip(starts, counts[counts > 1]):
+        groups.add(tuple(int(t) for t in pair_group[start:start + count]))
     return drop, groups
 
 
 def _finalize_cells(cells, lookup, notes):
-    out = {}
-    seen = {}
-    orders = {}
-    for family, count in cells.get(None, ()):
-        dim = FAMILY_DIMENSION[family]
-        start = seen.get(dim, 0)
-        orders.setdefault(family, []).append(
-            np.arange(start, start + count, dtype=np.int64))
-        seen[dim] = start + count
-    kept_orders = {}
-    for family, slot in cells.items():
-        if family is None:
+    parts = {}
+    for etype, blocks in cells.items():
+        if etype is None:
             continue
-        corners_tags = np.vstack(slot["corners"]).astype(np.int64)
-        entity = np.concatenate(slot["entity"]).astype(np.int32)
-        order = np.concatenate(orders[family])
-        drop, groups = _v22_copies(
-            corners_tags, entity, np.concatenate(slot["elementary"]))
-        if drop.any():
-            dim = FAMILY_DIMENSION[family]
-            notes["duplicates"][dim] = notes["duplicates"].get(dim, 0) \
-                + int(drop.sum())
-            notes["shared_groups"].update((dim, g) for g in groups)
-            keep = ~drop
-            corners_tags, entity, order = (
-                corners_tags[keep], entity[keep], order[keep])
-        corners = lookup(corners_tags.ravel()).reshape(corners_tags.shape)
-        out[family] = {
-            "corners": corners,
-            "entity": entity,
-            "num_nodes": slot["num_nodes"],
-            # position among the file's elements of the same dimension
-            "order": order,
-        }
-        kept_orders.setdefault(FAMILY_DIMENSION[family], []).append(order)
-    # with copies left out, renumber positions densely per dimension
-    if notes["duplicates"]:
-        for dim, parts in kept_orders.items():
-            ranks = np.sort(np.concatenate(parts))
-            for family, cell in out.items():
-                if FAMILY_DIMENSION[family] == dim:
-                    cell["order"] = np.searchsorted(ranks, cell["order"])
+        family, n_nodes, n_corners = GMSH_ELEM_TYPES[etype]
+        dim = FAMILY_DIMENSION[family]
+        tags, entities, elementary, starts = zip(*blocks)
+        node_tags = np.concatenate(tags).astype(np.int64, copy=False)
+        entity = np.concatenate(entities)
+        order = np.concatenate([np.arange(start, start + len(block), dtype=np.int64)
+                                for start, block in zip(starts, tags)])
+        # Validate every reference, even on elements that will be deduplicated
+        # and on midside nodes that Houdini does not use for linear primitives.
+        indices = lookup(node_tags.ravel()).reshape(node_tags.shape)
+        corners = indices if n_nodes == n_corners else indices[:, :n_corners].copy()
+        if any(e is not None for e in elementary):
+            drop, groups = _v22_copies(node_tags, entity, np.concatenate([
+                np.zeros(len(block), dtype=np.int64) if e is None else e
+                for block, e in zip(tags, elementary)]))
+            if drop.any():
+                notes["duplicates"][dim] = notes["duplicates"].get(dim, 0) + int(drop.sum())
+                notes["shared_groups"].update((dim, g) for g in groups)
+                keep = ~drop
+                corners, entity, order = corners[keep], entity[keep], order[keep]
+        parts.setdefault(family, []).append((corners, entity, order, n_nodes))
+
+    out = {}
+    for family, blocks in parts.items():
+        corners, entities, orders, widths = zip(*blocks)
+        if len(blocks) == 1:
+            corners, entity, order = corners[0], entities[0], orders[0]
+        else:
+            # Multiple element types may map to the same linear family.
+            order = np.concatenate(orders)
+            permutation = np.argsort(order, kind="stable")
+            corners = np.concatenate(corners)[permutation]
+            entity = np.concatenate(entities)[permutation]
+            order = order[permutation]
+        out[family] = {"corners": corners, "entity": entity,
+                       "num_nodes": max(widths), "order": order}
+    # With copies left out, renumber positions densely per dimension.
+    for dim in notes["duplicates"]:
+        dimension_cells = [cell for family, cell in out.items()
+                           if FAMILY_DIMENSION[family] == dim]
+        ranks = np.sort(np.concatenate([cell["order"] for cell in dimension_cells]))
+        for cell in dimension_cells:
+            cell["order"] = np.searchsorted(ranks, cell["order"])
     return out
 
 
@@ -367,238 +435,277 @@ def _block_physical(ent_phys, dim, etag, notes):
     phys = ent_phys.get((dim, etag), ())
     if len(phys) > 1:
         notes["shared_groups"].add((dim, tuple(phys)))
-    return phys[0] if phys else 0
+    tag = phys[0] if phys else 0
+    if tag > _INT32_MAX:
+        raise MshParseError(f"Physical tag {tag} is outside signed Int32 range")
+    return tag
+
+
+def _v41_node_header(dim, parametric):
+    if not 0 <= dim <= 3 or parametric not in (0, 1):
+        raise MshParseError(f"Invalid $Nodes block dimension/parametric flag: {dim}/{parametric}")
+    return 3 + (dim if parametric else 0)
+
+
+def _check_node_block_count(total, row, count):
+    if count < 0 or row + count > total:
+        raise MshParseError(f"Invalid $Nodes block count {count} for {total} declared nodes")
+
+
+def _check_total(section, declared, parsed):
+    if parsed != declared:
+        raise MshParseError(
+            f"${section} blocks hold {parsed}, but the header declared {declared} "
+            "(the section is malformed or cut short)")
+
+
+def _v41_ascii_node_blocks(tok):
+    header = _take_tokens(tok, 0, 4, "Nodes")
+    num_blocks, total = map(int, header[:2])
+    if total > 0:
+        _int64_tags(header[2:], "Nodes")
+    if num_blocks < 0 or total < 0:
+        raise MshParseError("Negative count in $Nodes header")
+    p = 4
+    row = 0
+    for _ in range(num_blocks):
+        header = _take_tokens(tok, p, 4, "Nodes")
+        dim, _, parametric, count = map(int, header)
+        _check_node_block_count(total, row, count)
+        stride = _v41_node_header(dim, parametric)
+        p += 4
+        tags = _take_tokens(tok, p, count, "Nodes")
+        p += count
+        coords = _take_tokens(tok, p, stride * count, "Nodes")
+        p += stride * count
+        yield header, tags, coords, count, stride
+        row += count
+    _check_total("Nodes", total, row)
+    if p != len(tok):
+        raise MshParseError("Unexpected trailing tokens in $Nodes")
+
+
+def _v41_binary_node_blocks(src, num_blocks, total):
+    row = 0
+    for _ in range(num_blocks):
+        dim, _, parametric = (int(v) for v in src.read(src.int_dtype, 3))
+        count, = src.sizes(1)
+        _check_node_block_count(total, row, count)
+        stride = _v41_node_header(dim, parametric)
+        tags = src.read(src.size_dtype, count)
+        coords = src.read(src.float_dtype, stride * count).reshape(count, stride)
+        yield tags, coords
+        row += count
+    _check_total("Nodes", total, row)
 
 
 def _read_v41_ascii(data, sections, ent_phys, notes):
-    tok_nodes = _tokens(data, sections["Nodes"])
-    p = 0
-    num_blocks = int(tok_nodes[p]); num_nodes = int(tok_nodes[p + 1]); p += 4
-    node_tags = np.empty(num_nodes, dtype=np.int64)
-    points = np.empty((num_nodes, 3), dtype=np.float64)
-    filled = 0
-    for _ in range(num_blocks):
-        dim = int(tok_nodes[p]); parametric = int(tok_nodes[p + 2])
-        n_in_block = int(tok_nodes[p + 3]); p += 4
-        if filled + n_in_block > num_nodes:
-            raise MshParseError(f"$Nodes declares {num_nodes} nodes, but its "
-                                "blocks hold more")
-        node_tags[filled:filled + n_in_block] = tok_nodes[p:p + n_in_block].astype(np.int64)
-        p += n_in_block
-        # parametric blocks follow x y z with dim parametric coordinates
-        stride = 3 + (dim if parametric else 0)
-        coords = tok_nodes[p:p + stride * n_in_block].reshape(
-            n_in_block, stride)[:, :3]
-        points[filled:filled + n_in_block] = coords
-        p += stride * n_in_block
-        filled += n_in_block
-    if filled != num_nodes:
-        raise MshParseError(f"$Nodes declares {num_nodes} nodes, but its "
-                            f"blocks hold {filled}")
+    tok = _tokens(data, sections["Nodes"])
+    node_blocks = _v41_ascii_node_blocks(tok)
+    node_tags, points = [], []
+    for _header, tags, coords, count, stride in node_blocks:
+        node_tags.append(_int64_tags(tags, "Nodes"))
+        points.append(np.asarray(coords, dtype=np.float64).reshape(count, stride)[:, :3])
 
-    tok_elems = _tokens(data, sections["Elements"])
-    p = 0
-    num_blocks = int(tok_elems[p]); p += 4
+    tok = _tokens(data, sections["Elements"])
+    header = _take_tokens(tok, 0, 4, "Elements")
+    num_blocks, total = map(int, header[:2])
+    if total > 0:
+        _int64_tags(header[2:], "Elements")
+    if num_blocks < 0 or total < 0:
+        raise MshParseError("Negative count in $Elements header")
+    p = 4
     cells = {}
+    parsed = 0
     for _ in range(num_blocks):
-        dim = int(tok_elems[p]); etag = int(tok_elems[p + 1])
-        etype = int(tok_elems[p + 2]); n_in_block = int(tok_elems[p + 3]); p += 4
-        if etype not in GMSH_ELEM_TYPES:
-            raise MshParseError(f"Unsupported gmsh element type {etype}")
-        family, n_nodes, n_corners = GMSH_ELEM_TYPES[etype]
-        block = tok_elems[p:p + n_in_block * (1 + n_nodes)].reshape(
-            n_in_block, 1 + n_nodes).astype(np.int64)
-        p += n_in_block * (1 + n_nodes)
-        phys = _block_physical(ent_phys, dim, etag, notes)
-        _accumulate_cells(
-            cells, family, n_nodes, block[:, 1:1 + n_corners],
-            np.full(n_in_block, phys, dtype=np.int32))
-    return node_tags, points, cells
+        dim, etag, etype, count = map(int, _take_tokens(tok, p, 4, "Elements"))
+        p += 4
+        if not count:
+            continue
+        stride = _element_stride(etype)
+        fields = _take_tokens(tok, p, count * stride, "Elements")
+        block = _int64_tags(fields, "Elements").reshape(count, stride)
+        p += count * stride
+        _accumulate_cells(cells, etype, block[:, 1:],
+                          np.full(count, _block_physical(ent_phys, dim, etag, notes),
+                                  dtype=np.int32))
+        parsed += count
+    _check_total("Elements", total, parsed)
+    if p != len(tok):
+        raise MshParseError("Unexpected trailing tokens in $Elements")
+    return _join_nodes(node_tags, points, cells)
 
 
-def _read_v41_binary(data, sections, ent_phys, notes):
-    buf = data[slice(*sections["Nodes"])]
-    p = 0
-    hdr = np.frombuffer(buf, "<u8", 4, p); p += 32
-    num_blocks, num_nodes = int(hdr[0]), int(hdr[1])
-    node_tags = np.empty(num_nodes, dtype=np.int64)
-    points = np.empty((num_nodes, 3), dtype=np.float64)
-    filled = 0
-    for _ in range(num_blocks):
-        dim, _tag, parametric = (int(v) for v in np.frombuffer(buf, "<i4", 3, p))
-        n_in_block = int(np.frombuffer(buf, "<u8", 1, p + 12)[0]); p += 20
-        if filled + n_in_block > num_nodes:
-            raise MshParseError(f"$Nodes declares {num_nodes} nodes, but its "
-                                "blocks hold more")
-        node_tags[filled:filled + n_in_block] = np.frombuffer(buf, "<u8", n_in_block, p)
-        p += 8 * n_in_block
-        stride = 3 + (dim if parametric else 0)
-        points[filled:filled + n_in_block] = np.frombuffer(
-            buf, "<f8", stride * n_in_block, p).reshape(
-                n_in_block, stride)[:, :3]
-        p += 8 * stride * n_in_block
-        filled += n_in_block
-    if filled != num_nodes:
-        raise MshParseError(f"$Nodes declares {num_nodes} nodes, but its "
-                            f"blocks hold {filled}")
+def _read_v41_binary(data, sections, ent_phys, notes, binary_format):
+    src = _BinarySection(memoryview(data)[slice(*sections["Nodes"])], "Nodes", binary_format)
+    num_blocks, total, min_tag, max_tag = src.sizes(4)
+    if total and max(min_tag, max_tag) > _INT64_MAX:
+        raise MshParseError("Integer tag in $Nodes header is outside signed Int64 range")
+    node_tags, points = [], []
+    for tags, coords in _v41_binary_node_blocks(src, num_blocks, total):
+        node_tags.append(_int64_tags(tags, "Nodes"))
+        points.append(coords[:, :3])
 
-    buf = data[slice(*sections["Elements"])]
-    p = 0
-    hdr = np.frombuffer(buf, "<u8", 4, p); p += 32
-    num_blocks = int(hdr[0])
+    src = _BinarySection(memoryview(data)[slice(*sections["Elements"])], "Elements", binary_format)
+    num_blocks, total, min_tag, max_tag = src.sizes(4)
+    if total and max(min_tag, max_tag) > _INT64_MAX:
+        raise MshParseError("Integer tag in $Elements header is outside signed Int64 range")
     cells = {}
+    parsed = 0
     for _ in range(num_blocks):
-        dim = int(np.frombuffer(buf, "<i4", 1, p)[0])
-        etag = int(np.frombuffer(buf, "<i4", 1, p + 4)[0])
-        etype = int(np.frombuffer(buf, "<i4", 1, p + 8)[0])
-        n_in_block = int(np.frombuffer(buf, "<u8", 1, p + 12)[0])
-        p += 20
-        if etype not in GMSH_ELEM_TYPES:
-            raise MshParseError(f"Unsupported gmsh element type {etype}")
-        family, n_nodes, n_corners = GMSH_ELEM_TYPES[etype]
-        block = np.frombuffer(buf, "<u8", n_in_block * (1 + n_nodes), p).reshape(
-            n_in_block, 1 + n_nodes).astype(np.int64)
-        p += 8 * n_in_block * (1 + n_nodes)
-        phys = _block_physical(ent_phys, dim, etag, notes)
-        _accumulate_cells(
-            cells, family, n_nodes, block[:, 1:1 + n_corners],
-            np.full(n_in_block, phys, dtype=np.int32))
-    return node_tags, points, cells
+        dim, etag, etype = (int(v) for v in src.read(src.int_dtype, 3))
+        count, = src.sizes(1)
+        if not count:
+            continue
+        stride = _element_stride(etype)
+        fields = src.read(src.size_dtype, count * stride)
+        block = _int64_tags(fields, "Elements").reshape(count, stride)
+        _accumulate_cells(cells, etype, block[:, 1:],
+                          np.full(count, _block_physical(ent_phys, dim, etag, notes),
+                                  dtype=np.int32))
+        parsed += count
+    _check_total("Elements", total, parsed)
+    if bytes(src.buf[src.pos:]) not in (b"", b"\n", b"\r\n"):
+        raise MshParseError("Unexpected trailing data in binary $Elements")
+    return _join_nodes(node_tags, points, cells)
 
 
-# ----------------------------------------------------------------------------
-# v2.2 (ASCII)
-# ----------------------------------------------------------------------------
+def _element_stride(etype):
+    if etype not in GMSH_ELEM_TYPES:
+        raise MshParseError(f"Unsupported gmsh element type {etype}")
+    return 1 + GMSH_ELEM_TYPES[etype][1]
+
+
+def _join_nodes(tags, points, cells):
+    if not tags:
+        return np.empty(0, dtype=np.int64), np.empty((0, 3), dtype=np.float64), cells
+    return np.concatenate(tags), np.concatenate(points), cells
+
+
+def _v22_ascii_nodes(tok):
+    count = int(_take_tokens(tok, 0, 1, "Nodes")[0])
+    fields = _take_tokens(tok, 1, 4 * count, "Nodes")
+    if 1 + len(fields) != len(tok):
+        raise MshParseError("Unexpected trailing tokens in $Nodes")
+    return count, fields
+
+
+def _matching_run(view, columns, expected):
+    """Only inspect the matching prefix, with bounded work past a mismatch."""
+    end = 1
+    # A scalar check avoids a NumPy allocation for each alternating record.
+    if len(view) > 1 and all(view[1, col] == value for col, value in zip(columns, expected)):
+        end = 2
+        while end < len(view):
+            chunk = view[end:2 * end]
+            matches = np.ones(len(chunk), dtype=bool)
+            for col, value in zip(columns, expected):
+                matches &= chunk[:, col] == value
+            if not matches.all():
+                return end + int(matches.argmin())
+            end += len(chunk)
+    return end
+
+
+def _v22_elements(cells, block, etype, ntags, start_tags):
+    if ntags:
+        signed = block[:, start_tags]
+        if (int(signed.min()) < -_INT32_MAX or int(signed.max()) > _INT32_MAX):
+            raise MshParseError("Physical tag in $Elements is outside signed Int32 range")
+        entity = np.abs(signed).astype(np.int32)
+    else:
+        entity = np.zeros(len(block), dtype=np.int32)
+    elementary = block[:, start_tags + 1] if ntags >= 2 else None
+    _accumulate_cells(cells, etype, block[:, start_tags + ntags:], entity, elementary)
+
 
 def _read_v22_ascii(data, sections):
-    tok = _tokens(data, sections["Nodes"])
-    num_nodes = int(tok[0])
-    block = tok[1:1 + 4 * num_nodes].reshape(num_nodes, 4)
-    node_tags = block[:, 0].astype(np.int64)
-    points = block[:, 1:4].copy()
+    num_nodes, fields = _v22_ascii_nodes(_tokens(data, sections["Nodes"]))
+    node_tags = _int64_tags(fields[::4], "Nodes")
+    points = np.empty((num_nodes, 3), dtype=np.float64)
+    for col in range(3):
+        points[:, col] = fields[col + 1::4]
 
-    tok = _tokens(data, sections["Elements"]).astype(np.int64)
+    tok = _int64_tags(_tokens(data, sections["Elements"]), "Elements")
     num_elems = int(tok[0])
     cells = {}
     p = 1
-    # Group consecutive runs of identical (type, ntags) so the hot path is
-    # vectorized; gmsh writes elements grouped by type, so runs are long.
+    parsed = 0
     while p < len(tok):
         if p + 3 > len(tok):
             raise MshParseError("Truncated ASCII $Elements section")
-        etype = int(tok[p + 1])
-        ntags = int(tok[p + 2])
+        etype, ntags = int(tok[p + 1]), int(tok[p + 2])
         if ntags < 0:
             raise MshParseError(f"Negative element tag count {ntags}")
-        if etype not in GMSH_ELEM_TYPES:
-            raise MshParseError(f"Unsupported gmsh element type {etype}")
-        family, n_nodes, n_corners = GMSH_ELEM_TYPES[etype]
-        stride = 3 + ntags + n_nodes
-        # extend the run while the type/ntags columns keep matching
+        stride = 2 + ntags + _element_stride(etype)
         max_run = (len(tok) - p) // stride
         if max_run == 0:
             raise MshParseError("Truncated ASCII $Elements section")
         view = tok[p:p + max_run * stride].reshape(max_run, stride)
-        same = (view[:, 1] == etype) & (view[:, 2] == ntags)
-        run = int(np.argmin(same)) if not same.all() else max_run
-        if run == 0:
-            run = 1
-        block = view[:run]
-        phys = np.abs(block[:, 3]).astype(np.int32) if ntags >= 1 \
-            else np.zeros(run, dtype=np.int32)
-        elementary = block[:, 4] if ntags >= 2 else None
-        corners = block[:, 3 + ntags:3 + ntags + n_corners]
-        _accumulate_cells(cells, family, n_nodes, corners, phys, elementary)
+        run = _matching_run(view, (1, 2), (etype, ntags))
+        _v22_elements(cells, view[:run], etype, ntags, start_tags=3)
         p += run * stride
-    total = sum(sum(len(e) for e in c["entity"])
-                for family, c in cells.items() if family is not None)
-    if total != num_elems:
-        raise MshParseError(
-            f"Parsed {total} elements, header declared {num_elems}")
+        parsed += run
+    _check_total("Elements", num_elems, parsed)
     return node_tags, points, cells
 
 
-def _read_v22_binary(data, sections):
-    """Binary MSH v2.2 (fTetWild / PyMesh MshSaver default output).
-
-    Same bulk-frombuffer strategy as the v4.1 binary reader: one structured
-    read for all nodes, one int32 read per element block (one block per
-    element type in practice), so it parses at the same speed.
-    """
-    # Endianness probe: the binary int 1 written after the ASCII
-    # "2.2 1 data-size" line inside $MeshFormat.
-    fmt_body = data[slice(*sections["MeshFormat"])]
-    nl = fmt_body.find(b"\n")
-    probe = fmt_body[nl + 1:nl + 5]
-    if len(probe) == 4 and np.frombuffer(probe, "<i4")[0] == 1:
-        endian = "<"
-    elif len(probe) == 4 and np.frombuffer(probe, ">i4")[0] == 1:
-        endian = ">"
-    else:
-        raise MshParseError("Bad endianness probe in binary MSH v2.2 header")
-
-    buf = data[slice(*sections["Nodes"])]
+def _v22_binary_nodes(buf, endian):
     nl = buf.find(b"\n")
-    num_nodes = int(buf[:nl])
-    # packed record: int32 node tag + 3x float64 coordinates (28 bytes)
-    record = np.dtype({"names": ["tag", "xyz"],
-                       "formats": [endian + "i4", (endian + "f8", (3,))],
-                       "offsets": [0, 4], "itemsize": 28})
-    nodes = np.frombuffer(buf, record, num_nodes, nl + 1)
+    if nl < 0:
+        raise MshParseError("Truncated binary $Nodes header")
+    count = int(buf[:nl])
+    record = np.dtype([("tag", endian + "i4"), ("xyz", endian + "f8", (3,))])
+    return _read_buffer(buf, record, count, nl + 1, "Nodes"), nl + 1
+
+
+def _read_v22_binary(data, sections, binary_format):
+    """Binary MSH v2.2 (fTetWild / PyMesh MshSaver default output)."""
+    endian, _ = binary_format
+    nodes, _ = _v22_binary_nodes(data[slice(*sections["Nodes"])], endian)
     node_tags = nodes["tag"].astype(np.int64)
     points = nodes["xyz"].astype(np.float64)
 
     buf = data[slice(*sections["Elements"])]
     nl = buf.find(b"\n")
+    if nl < 0:
+        raise MshParseError("Truncated binary $Elements header")
     num_elems = int(buf[:nl])
-    ints = np.frombuffer(buf, endian + "i4", (len(buf) - nl - 1) // 4, nl + 1)
+    ints = _read_buffer(buf, endian + "i4", (len(buf) - nl - 1) // 4, nl + 1, "Elements")
     p = 0
     cells = {}
     parsed = 0
     while parsed < num_elems:
         if p + 3 > len(ints):
             raise MshParseError("Truncated binary $Elements section")
-        etype = int(ints[p]); n_follow = int(ints[p + 1]); ntags = int(ints[p + 2])
+        etype, n_follow, ntags = map(int, ints[p:p + 3])
         if n_follow <= 0:
             raise MshParseError(f"Invalid binary element block count {n_follow}")
         if ntags < 0:
             raise MshParseError(f"Negative element tag count {ntags}")
-        if etype not in GMSH_ELEM_TYPES:
-            raise MshParseError(f"Unsupported gmsh element type {etype}")
-        family, n_nodes, n_corners = GMSH_ELEM_TYPES[etype]
+        stride = ntags + _element_stride(etype)
         if n_follow == 1:
-            # gmsh writes one header PER ELEMENT: coalesce the consecutive
-            # run of identical (type, ntags) single-element blocks and
-            # process it as one reshape, like the ASCII v2.2 reader.
-            stride = 4 + ntags + n_nodes  # header + elm-number + tags + nodes
+            # Gmsh may write one header per element.
+            stride += 3
             max_run = min((len(ints) - p) // stride, num_elems - parsed)
             if max_run == 0:
                 raise MshParseError("Truncated binary $Elements section")
             view = ints[p:p + max_run * stride].reshape(max_run, stride)
-            same = ((view[:, 0] == etype) & (view[:, 1] == 1)
-                    & (view[:, 2] == ntags))
-            run = max_run if same.all() else max(int(np.argmin(same)), 1)
+            run = _matching_run(view, (0, 1, 2), (etype, 1, ntags))
             block = view[:run, 3:]
             p += run * stride
             parsed += run
         else:
-            # block-grouped writer (PyMesh/fTetWild): one bulk read
-            stride = 1 + ntags + n_nodes  # elm-number, tags..., node tags...
             end = p + 3 + n_follow * stride
             if end > len(ints) or parsed + n_follow > num_elems:
-                raise MshParseError("Truncated binary $Elements section")
+                raise MshParseError("Invalid binary $Elements block size")
             block = ints[p + 3:end].reshape(n_follow, stride)
             p = end
             parsed += n_follow
-        # first tag is the physical group, matching the ASCII v2.2 path
-        phys = np.abs(block[:, 1]).astype(np.int32) if ntags >= 1 \
-            else np.zeros(len(block), dtype=np.int32)
-        elementary = block[:, 2] if ntags >= 2 else None
-        corners = block[:, 1 + ntags:1 + ntags + n_corners].astype(np.int64)
-        _accumulate_cells(cells, family, n_nodes, corners, phys, elementary)
-    if parsed != num_elems:
-        raise MshParseError(
-            f"Parsed {parsed} elements, header declared {num_elems}")
+        _v22_elements(cells, block, etype, ntags, start_tags=1)
+    _check_total("Elements", num_elems, parsed)
+    if buf[nl + 1 + 4 * p:] not in (b"", b"\n", b"\r\n"):
+        raise MshParseError("Unexpected trailing data in binary $Elements")
     return node_tags, points, cells
 
 
@@ -614,8 +721,7 @@ def read_msh(path):
         return _read_msh_data(data)
     except MshParseError:
         raise
-    except (ValueError, IndexError, TypeError, OverflowError,
-            struct.error) as exc:
+    except (ValueError, IndexError, TypeError, OverflowError) as exc:
         raise MshParseError(
             f"the file is malformed or cut short ({exc})") from exc
 
@@ -624,9 +730,13 @@ def _read_msh_data(data):
     sections = _find_sections(data)
     if "MeshFormat" not in sections:
         raise MshParseError("Not a Gmsh MSH file (missing $MeshFormat)")
-    fmt = data[slice(*sections["MeshFormat"])].split()
+    fmt_body = data[slice(*sections["MeshFormat"])]
+    fmt = fmt_body.split(b"\n", 1)[0].split()
     version = float(fmt[0])
-    is_binary = int(fmt[1]) == 1
+    encoding, data_size = int(fmt[1]), int(fmt[2])
+    if encoding not in (0, 1):
+        raise MshParseError(f"Invalid MSH file encoding {encoding}")
+    is_binary = encoding == 1
     if 4.0 <= version < 4.1 or version >= 5.0 or 2.3 <= version < 4.0 \
             or version < 2.0:
         raise MshParseError(
@@ -637,6 +747,7 @@ def _read_msh_data(data):
     if "Nodes" not in sections or "Elements" not in sections:
         raise MshParseError("MSH file has no $Nodes/$Elements sections")
 
+    binary_format = _binary_format(fmt_body, data_size, version) if is_binary else None
     physical_names = _parse_physical_names(data, sections)
     notes = {"duplicates": {}, "shared_groups": set()}
 
@@ -644,25 +755,26 @@ def _read_msh_data(data):
         ent_phys = {}
         if "Entities" in sections:
             if is_binary:
-                ent_phys = _parse_entities_binary(data[slice(*sections["Entities"])])
+                ent_phys = _parse_entities_binary(
+                    memoryview(data)[slice(*sections["Entities"])], binary_format)
             else:
                 ent_phys = _parse_entities_ascii(_tokens(data, sections["Entities"]))
         if "PartitionedEntities" in sections:
             if is_binary:
                 _parse_partitioned_binary(
-                    data[slice(*sections["PartitionedEntities"])], ent_phys)
+                    memoryview(data)[slice(*sections["PartitionedEntities"])], ent_phys, binary_format)
             else:
                 _parse_partitioned_ascii(
                     _tokens(data, sections["PartitionedEntities"]), ent_phys)
         if is_binary:
             node_tags, points, cells = _read_v41_binary(
-                data, sections, ent_phys, notes)
+                data, sections, ent_phys, notes, binary_format)
         else:
             node_tags, points, cells = _read_v41_ascii(
                 data, sections, ent_phys, notes)
     else:
         if is_binary:
-            node_tags, points, cells = _read_v22_binary(data, sections)
+            node_tags, points, cells = _read_v22_binary(data, sections, binary_format)
         else:
             node_tags, points, cells = _read_v22_ascii(data, sections)
 
@@ -692,118 +804,58 @@ def _coordinate_text(xyz):
     return " ".join(repr(float(value)) for value in xyz).encode("ascii")
 
 
+def _check_positions_count(total, positions):
+    if total != len(positions):
+        raise MshParseError(f"$Nodes lists {total} nodes, {len(positions)} positions given")
+
+
 def _moved_nodes_v22_ascii(body, positions):
     tok = body.split()
-    count = int(tok[0])
-    if count != len(positions) or len(tok) < 1 + 4 * count:
-        raise MshParseError(
-            f"$Nodes lists {count} nodes, {len(positions)} positions given")
+    count, fields = _v22_ascii_nodes(tok)
+    _check_positions_count(count, positions)
     lines = [tok[0]]
-    for row in range(count):
-        lines.append(tok[1 + 4 * row] + b" " + _coordinate_text(positions[row]))
+    for tag, xyz in zip(fields[::4], positions):
+        lines.append(tag + b" " + _coordinate_text(xyz))
     return b"\n".join(lines) + b"\n"
 
 
 def _moved_nodes_v41_ascii(body, positions):
     tok = body.split()
-    blocks, total = int(tok[0]), int(tok[1])
-    if total != len(positions):
-        raise MshParseError(
-            f"$Nodes lists {total} nodes, {len(positions)} positions given")
-    lines = [b" ".join(tok[:4])]
-    p, row = 4, 0
-    for _ in range(blocks):
-        dim = int(tok[p])
-        parametric = int(tok[p + 2])
-        count = int(tok[p + 3])
-        if parametric and not (0 <= dim <= 3):
-            raise MshParseError(f"invalid parametric entity dimension {dim}")
-        lines.append(b" ".join(tok[p:p + 4]))
-        p += 4
-        lines.extend(tok[p:p + count])                      # node tags
-        p += count
-        extra = dim if parametric else 0
-        stride = 3 + extra
-        if extra == 0:
-            lines.extend(_coordinate_text(xyz)
-                         for xyz in positions[row:row + count])
-        else:
-            for k in range(count):
-                tail = b" ".join(tok[p + k * stride + 3:p + (k + 1) * stride])
-                lines.append(_coordinate_text(positions[row + k]) + b" " + tail)
-        p += stride * count
+    hdr = _take_tokens(tok, 0, 4, "Nodes")
+    _check_positions_count(int(hdr[1]), positions)
+    lines = [b" ".join(hdr)]
+    row = 0
+    for header, tags, coords, count, stride in _v41_ascii_node_blocks(tok):
+        lines.append(b" ".join(header))
+        lines.extend(tags)
+        for k, xyz in enumerate(positions[row:row + count]):
+            tail = coords[k * stride + 3:(k + 1) * stride]
+            lines.append(b" ".join([_coordinate_text(xyz), *tail]))
         row += count
-    if row != total:
-        raise MshParseError("$Nodes blocks do not add up to the node count")
     return b"\n".join(lines) + b"\n"
 
 
-def _moved_nodes_v22_binary(data, span, fmt_span, positions):
-    fmt_body = data[fmt_span[0]:fmt_span[1]]
-    nl = fmt_body.find(b"\n")
-    probe = fmt_body[nl + 1:nl + 5]
-    if len(probe) != 4:
-        raise MshParseError("Truncated binary $MeshFormat endianness probe")
-    if np.frombuffer(probe, "<i4")[0] == 1:
-        endian = "<"
-    elif np.frombuffer(probe, ">i4")[0] == 1:
-        endian = ">"
-    else:
-        raise MshParseError("Unrecognized binary $MeshFormat endianness probe")
-    nl = data.find(b"\n", span[0], span[1])
-    if nl < 0:
-        raise MshParseError("Truncated binary $Nodes header")
-    count = int(data[span[0]:nl])
-    if count != len(positions):
-        raise MshParseError(
-            f"$Nodes lists {count} nodes, {len(positions)} positions given")
-    base = nl + 1
-    if base + 28 * count > span[1]:
-        raise MshParseError("Truncated binary $Nodes section")
+def _moved_nodes_v22_binary(data, span, positions, binary_format):
+    endian, _ = binary_format
+    nodes, offset = _v22_binary_nodes(data[slice(*span)], endian)
+    _check_positions_count(len(nodes), positions)
     out = bytearray(data)
-    coordinates = np.ascontiguousarray(positions, dtype=endian + "f8")
-    for row in range(count):
-        offset = base + 28 * row + 4          # int32 tag, then 3 float64
-        out[offset:offset + 24] = coordinates[row].tobytes()
-    return bytes(out)
+    out_nodes = _read_buffer(out, nodes.dtype, len(nodes), span[0] + offset, "Nodes")
+    out_nodes["xyz"] = positions
+    return out
 
 
-def _moved_nodes_v41_binary(data, span, positions):
-    p = span[0]
-    if p + 32 > span[1]:
-        raise MshParseError("Truncated binary $Nodes header")
-    blocks, total = (int(v) for v in np.frombuffer(data, "<u8", 2, p))
-    if total != len(positions):
-        raise MshParseError(
-            f"$Nodes lists {total} nodes, {len(positions)} positions given")
-    p += 32
+def _moved_nodes_v41_binary(data, span, positions, binary_format):
     out = bytearray(data)
-    coordinates = np.ascontiguousarray(positions, dtype="<f8")
+    src = _BinarySection(memoryview(out)[slice(*span)], "Nodes", binary_format)
+    blocks, total, _, _ = src.sizes(4)
+    _check_positions_count(total, positions)
     row = 0
-    for _ in range(blocks):
-        if p + 20 > span[1]:
-            raise MshParseError("Truncated binary $Nodes block header")
-        dim = int(np.frombuffer(data, "<i4", 1, p)[0])
-        parametric = int(np.frombuffer(data, "<i4", 1, p + 8)[0])
-        count = int(np.frombuffer(data, "<u8", 1, p + 12)[0])
-        if parametric and not (0 <= dim <= 3):
-            raise MshParseError(f"invalid parametric entity dimension {dim}")
-        p += 20 + 8 * count
-        extra = dim if parametric else 0
-        stride_bytes = 8 * (3 + extra)
-        if p + stride_bytes * count > span[1]:
-            raise MshParseError("Truncated binary $Nodes block data")
-        if extra == 0:
-            out[p:p + 24 * count] = coordinates[row:row + count].tobytes()
-        else:
-            for k in range(count):
-                off = p + k * stride_bytes
-                out[off:off + 24] = coordinates[row + k].tobytes()
-        p += stride_bytes * count
+    for _, coords in _v41_binary_node_blocks(src, blocks, total):
+        count = len(coords)
+        coords[:, :3] = positions[row:row + count]
         row += count
-    if row != total:
-        raise MshParseError("$Nodes blocks do not add up to the node count")
-    return bytes(out)
+    return out
 
 
 def write_moved_nodes(path, positions, out_path):
@@ -817,27 +869,29 @@ def write_moved_nodes(path, positions, out_path):
     sections = _find_sections(data)
     if "MeshFormat" not in sections or "Nodes" not in sections:
         raise MshParseError("Not a Gmsh MSH file with nodes")
-    fmt = data[slice(*sections["MeshFormat"])].split()
+    fmt_body = data[slice(*sections["MeshFormat"])]
+    fmt = fmt_body.split(b"\n", 1)[0].split()
     version, binary = float(fmt[0]), int(fmt[1]) == 1
     if not (2.0 <= version < 3.0 or abs(version - 4.1) < 1e-6):
         raise MshParseError(
             f"Unsupported MSH version {version:g}: only 2.2 and 4.1 are "
             "supported.")
-    positions = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+    positions = np.asarray(positions, dtype=np.float64)
+    if positions.ndim != 2 or positions.shape[1] != 3:
+        raise MshParseError("node positions must have shape (N, 3)")
     if not np.isfinite(positions).all():
         raise MshParseError("node positions must be finite numbers")
     span = sections["Nodes"]
     if binary:
-        result = (_moved_nodes_v41_binary(data, span, positions)
-                  if version >= 4.0 else
-                  _moved_nodes_v22_binary(data, span,
-                                          sections["MeshFormat"], positions))
+        binary_format = _binary_format(fmt_body, int(fmt[2]), version)
+        move = _moved_nodes_v41_binary if version >= 4.0 else _moved_nodes_v22_binary
+        result = move(data, span, positions, binary_format)
     else:
         body = data[span[0]:span[1]]
         body = (_moved_nodes_v41_ascii(body, positions) if version >= 4.0
                 else _moved_nodes_v22_ascii(body, positions))
         result = data[:span[0]] + body + data[span[1]:]
-    temporary = out_path + ".tmp"
+    temporary = os.fspath(out_path) + ".tmp"
     try:
         with open(temporary, "wb") as handle:
             handle.write(result)

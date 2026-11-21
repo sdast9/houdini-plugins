@@ -79,10 +79,14 @@ for (int i = 0; i < n_hex; i++) {
 
 int n_tri = len(tri) / 3;
 for (int i = 0; i < n_tri; i++) {
-    int prim = addprim(0, "poly", tri[i*3+0], tri[i*3+1], tri[i*3+2]);
+    int prim;
+    if (mesh_dim == 2)
+        prim = addprim(0, "poly", tri[i*3+0], tri[i*3+2], tri[i*3+1]);
+    else
+        prim = addprim(0, "poly", tri[i*3+0], tri[i*3+1], tri[i*3+2]);
+    setprimattrib(0, "msh_physical_tag", prim, tri_phys[i], "set");
     if (mesh_dim == 2) {
         setprimattrib(0, "Entity", prim, tri_ent[i], "set");
-        setprimattrib(0, "msh_physical_tag", prim, tri_phys[i], "set");
         setprimattrib(0, "is_volume", prim, 1, "set");
         if (has_tri_ord)
             setprimattrib(0, "msh_element_order", prim, tri_ord[i], "set");
@@ -96,11 +100,16 @@ for (int i = 0; i < n_tri; i++) {
 
 int n_quad = len(quad) / 4;
 for (int i = 0; i < n_quad; i++) {
-    int prim = addprim(0, "poly",
-        quad[i*4+0], quad[i*4+1], quad[i*4+2], quad[i*4+3]);
+    int prim;
+    if (mesh_dim == 2)
+        prim = addprim(0, "poly",
+            quad[i*4+0], quad[i*4+3], quad[i*4+2], quad[i*4+1]);
+    else
+        prim = addprim(0, "poly",
+            quad[i*4+0], quad[i*4+1], quad[i*4+2], quad[i*4+3]);
+    setprimattrib(0, "msh_physical_tag", prim, quad_phys[i], "set");
     if (mesh_dim == 2) {
         setprimattrib(0, "Entity", prim, quad_ent[i], "set");
-        setprimattrib(0, "msh_physical_tag", prim, quad_phys[i], "set");
         setprimattrib(0, "is_volume", prim, 1, "set");
         if (has_quad_ord)
             setprimattrib(0, "msh_element_order", prim, quad_ord[i], "set");
@@ -115,10 +124,9 @@ for (int i = 0; i < n_quad; i++) {
 int n_line = len(line) / 2;
 for (int i = 0; i < n_line; i++) {
     int prim = addprim(0, "polyline", line[i*2+0], line[i*2+1]);
+    setprimattrib(0, "msh_physical_tag", prim, line_phys[i], "set");
     if (mesh_dim == 1) {
         setprimattrib(0, "Entity", prim, line_ent[i], "set");
-        if (len(line_phys))
-            setprimattrib(0, "msh_physical_tag", prim, line_phys[i], "set");
         setprimattrib(0, "is_volume", prim, 1, "set");
         if (has_line_ord)
             setprimattrib(0, "msh_element_order", prim, line_ord[i], "set");

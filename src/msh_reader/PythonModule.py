@@ -54,6 +54,97 @@ def _sanitize_group_name(prefix, tag, name):
     return f"{prefix}_{cleaned}"
 
 
+def _group_names(prefix, dim, tags, names):
+    by_base = {}
+    for tag in sorted(tags):
+        base = _sanitize_group_name(prefix, tag, names.get((dim, tag), ""))
+        by_base.setdefault(base, []).append(tag)
+    taken = set(by_base)
+    resolved = {}
+    notes = []
+    for base, members in by_base.items():
+        if len(members) == 1:
+            resolved[members[0]] = base
+            continue
+        for tag in members:
+            unique = f"{base}_{tag}"
+            while unique in taken:
+                unique += "_"
+            taken.add(unique)
+            resolved[tag] = unique
+        mapping = ", ".join(f"tag {tag} → {resolved[tag]}" for tag in members)
+        notes.append(f"Disambiguated {dim}D physical group name {base}: {mapping}")
+    return resolved, notes
+
+
+def _dot(a, b):
+    return np.einsum("...i,...i->...", a, b)
+
+
+def _tet_volume6(xyz):
+    edges = xyz[:, 1:] - xyz[:, :1]
+    return _dot(np.cross(edges[:, 0], edges[:, 1]), edges[:, 2])
+
+
+def _surface_normals(family, xyz):
+    if family == "tri":
+        return np.cross(xyz[:, 1:2] - xyz[:, :1], xyz[:, 2:3] - xyz[:, :1])
+    # Bilinear quad Jacobian normals at its four corners in Gmsh order.
+    edges = np.roll(xyz, -1, axis=1) - xyz
+    return np.cross(np.roll(edges, 1, axis=1), edges)
+
+
+def _hex_jacobians(xyz):
+    # Trilinear hex Jacobian at each corner, plus the center. The corner
+    # derivatives are parallel-edge differences in the Gmsh reference hex.
+    dx = xyz[:, (1, 1, 2, 2, 5, 5, 6, 6)] - xyz[:, (0, 0, 3, 3, 4, 4, 7, 7)]
+    dy = xyz[:, (3, 2, 2, 3, 7, 6, 6, 7)] - xyz[:, (0, 1, 1, 0, 4, 5, 5, 4)]
+    dz = xyz[:, (4, 5, 6, 7, 4, 5, 6, 7)] - xyz[:, (0, 1, 2, 3, 0, 1, 2, 3)]
+    corners = _dot(np.cross(dx, dy), dz)
+    center = _dot(np.cross(dx.mean(axis=1), dy.mean(axis=1)), dz.mean(axis=1))
+    return np.column_stack((corners, center))
+
+
+def _rounded_damage(family, original, rounded, tet_volume):
+    if family == "tet":
+        valid = tet_volume > 0.0
+        signed = _tet_volume6(rounded)
+    elif family == "hex":
+        valid = (_hex_jacobians(original) > 0.0).all(axis=1)
+        signed = _hex_jacobians(rounded).min(axis=1)
+    elif family == "line":
+        edge = original[:, 1] - original[:, 0]
+        valid = _dot(edge, edge) > 0.0
+        signed = _dot(edge, rounded[:, 1] - rounded[:, 0])
+    else:
+        normals = _surface_normals(family, original)
+        reference = normals.sum(axis=1, keepdims=True)
+        valid = (_dot(normals, reference) > 0.0).all(axis=1)
+        signed = _dot(_surface_normals(family, rounded), reference).min(axis=1)
+    return np.count_nonzero(valid & (~np.isfinite(signed) | (signed <= 0.0)))
+
+
+def _primary_quality(points, cells, primary):
+    inverted_tets = roundoff_damage = 0
+    # Only coordinates are rounded. Evaluate geometry in float64 in both
+    # passes so the second pass isolates the effect of storing Houdini P.
+    with np.errstate(over="ignore", invalid="ignore", under="ignore"):
+        rounded_points = points.astype(np.float32)
+        for family in primary:
+            corners = cells[family]["corners"]
+            for start in range(0, len(corners), 65536):
+                indices = corners[start:start + 65536]
+                original = points[indices]
+                tet_volume = None
+                if family == "tet":
+                    tet_volume = _tet_volume6(original)
+                    inverted_tets += np.count_nonzero(tet_volume <= 0.0)
+                rounded = rounded_points[indices].astype(np.float64)
+                if not np.array_equal(original, rounded):
+                    roundoff_damage += _rounded_damage(family, original, rounded, tet_volume)
+    return inverted_tets, roundoff_damage
+
+
 def mesh_summary_text(node):
     """Read-only Mesh Summary string for the MSH Reader parameter pane."""
     path = node.evalParm("File").strip()
@@ -97,16 +188,13 @@ def cook(node):
     if n_points == 0:
         raise hou.NodeError("MSH file contains no nodes")
 
-    # --- bulk point creation + msh_pt_id ---------------------------------
-    geo.createPoints(np.ascontiguousarray(points, dtype=np.float64))
-    geo.addAttrib(hou.attribType.Point, "msh_pt_id", -1, create_local_variable=False)
-    tags = np.asarray(mesh["node_tags"], dtype=np.int64)
-    if len(tags) and int(tags.min()) >= -2147483648 and int(tags.max()) <= 2147483647:
-        geo.setPointIntAttribValuesFromString(
-            "msh_pt_id", np.ascontiguousarray(tags, dtype=np.int32).tobytes(),
-            int_type=hou.numericData.Int32)
-    else:
-        geo.setPointIntAttribValues("msh_pt_id", tags.tolist())
+    # msh_pt_id is consumed as Int32 by VEX and the PolyFEM HDA.
+    tags = mesh["node_tags"]
+    max_tag = int(tags.max())
+    if max_tag > _INT32_MAX:
+        raise hou.NodeError(
+            f"MSH node tag {max_tag} exceeds Houdini msh_pt_id's signed Int32 "
+            f"limit ({_INT32_MAX}); renumber the nodes in Gmsh.")
 
     cells = mesh["cells"]
     if not cells:
@@ -125,6 +213,16 @@ def cook(node):
     primary_entities = [cells[f]["entity"] for f in primary]
     shift = 1 if min(int(e.min()) for e in primary_entities) <= 0 else 0
 
+    if shift and any(int(e.max()) == _INT32_MAX for e in primary_entities):
+        raise hou.NodeError(
+            f"Cannot shift Entity tags by +1: physical tag {_INT32_MAX} "
+            "would overflow Houdini's signed Int32 Entity attribute.")
+
+    geo.createPoints(np.ascontiguousarray(points, dtype=np.float64))
+    geo.addAttrib(hou.attribType.Point, "msh_pt_id", -1, create_local_variable=False)
+    geo.setPointIntAttribValuesFromString(
+        "msh_pt_id", tags.astype(np.int32).tobytes(), int_type=hou.numericData.Int32)
+
     geo.addAttrib(
         hou.attribType.Global, "mesh_dim", -1, create_local_variable=False)
     geo.setGlobalAttribValue("mesh_dim", mesh_dim)
@@ -142,22 +240,39 @@ def cook(node):
     import_surfaces = bool(asset.evalParm("import_surfaces"))
     all_names = mesh.get("physical_names", {})
 
+    boundary_families = {3: ("tri", "quad"), 2: ("line",)}.get(mesh_dim, ())
+    boundaries = {}
+    if import_surfaces:
+        for family in boundary_families:
+            if family in cells:
+                cell = cells[family]
+                keep = cell["entity"] != 0
+                if keep.any():
+                    boundaries[family] = (cell["corners"][keep], cell["entity"][keep])
+
+    group_notes = []
+    if create_groups:
+        prim_groups, notes = _group_names(
+            "phys", mesh_dim, {int(t) for e in primary_entities for t in np.unique(e)},
+            all_names)
+        group_notes.extend(notes)
+        surf_groups, notes = _group_names(
+            "surf", mesh_dim - 1,
+            {int(t) for _, e in boundaries.values() for t in np.unique(e)}, all_names)
+        group_notes.extend(notes)
+
     used_points = np.zeros(n_points, dtype=bool)
     for family in primary:
-        corners = cells[family]["corners"]
+        cell = cells[family]
+        corners, entity = cell["corners"], cell["entity"]
         used_points[corners] = True
         put(f"{family}_conn", corners, 1)
-        put(f"{family}_entity", cells[family]["entity"] + shift, 1)
-        put(f"{family}_physical", cells[family]["entity"], 1)
-        if "order" in cells[family]:
-            put(f"{family}_order", cells[family]["order"], 1)
+        put(f"{family}_entity", entity + shift, 1)
+        put(f"{family}_physical", entity, 1)
+        if "order" in cell:
+            put(f"{family}_order", cell["order"], 1)
         if create_groups:
-            ent = cells[family]["entity"]
-            lut = {
-                int(t): _sanitize_group_name(
-                    "phys", t, all_names.get((mesh_dim, int(t)), ""))
-                for t in np.unique(ent)}
-            put_strings(f"{family}_group", [lut[int(t)] for t in ent.tolist()])
+            put_strings(f"{family}_group", [prim_groups[t] for t in entity.tolist()])
 
     names = {str(tag): name for (dim, tag), name in
              all_names.items() if dim == mesh_dim}
@@ -173,43 +288,14 @@ def cook(node):
     geo.setGlobalAttribValue("msh_surface_physical_names", json.dumps(surf_names))
 
     imported_surface_counts = {}
-    if mesh_dim == 3 and import_surfaces:
-        for family, conn_name, ent_name in (
-                ("tri", "tri_conn", "tri_entity"),
-                ("quad", "quad_conn", "quad_entity")):
-            if family in cells:
-                # only import surfaces that belong to a physical group
-                keep = cells[family]["entity"] != 0
-                if keep.any():
-                    s_corners = cells[family]["corners"][keep]
-                    s_ent = cells[family]["entity"][keep]
-                    used_points[s_corners] = True
-                    put(conn_name, s_corners, 1)
-                    put(ent_name, s_ent, 1)
-                    imported_surface_counts[family] = int(keep.sum())
-                    if create_groups:
-                        lut = {
-                            int(t): _sanitize_group_name(
-                                "surf", t, all_names.get((2, int(t)), ""))
-                            for t in np.unique(s_ent)}
-                        put_strings(f"{family}_group",
-                                    [lut[int(t)] for t in s_ent.tolist()])
-    elif mesh_dim == 2 and import_surfaces and "line" in cells:
-        keep = cells["line"]["entity"] != 0
-        if keep.any():
-            s_corners = cells["line"]["corners"][keep]
-            s_ent = cells["line"]["entity"][keep]
-            used_points[s_corners] = True
-            put("line_conn", s_corners, 1)
-            put("line_entity", s_ent, 1)
-            imported_surface_counts["line"] = int(keep.sum())
-            if create_groups:
-                lut = {
-                    int(t): _sanitize_group_name(
-                        "surf", t, all_names.get((1, int(t)), ""))
-                    for t in np.unique(s_ent)}
-                put_strings("line_group",
-                            [lut[int(t)] for t in s_ent.tolist()])
+    for family, (corners, entity) in boundaries.items():
+        used_points[corners] = True
+        put(f"{family}_conn", corners, 1)
+        put(f"{family}_entity", entity, 1)
+        put(f"{family}_physical", entity, 1)
+        imported_surface_counts[family] = len(entity)
+        if create_groups:
+            put_strings(f"{family}_group", [surf_groups[t] for t in entity.tolist()])
 
     n_loose = int((~used_points).sum())
     geo.addAttrib(hou.attribType.Global, "msh_loose_node_count", 0,
@@ -223,15 +309,12 @@ def cook(node):
             np.ascontiguousarray((~used_points).astype(np.int32)).tobytes(),
             int_type=hou.numericData.Int32)
 
-    n_inverted_tets = 0
-    if "tet" in primary:
-        tc = cells["tet"]["corners"]
-        v0 = points[tc[:, 0]]
-        vol6 = np.einsum(
-            "ij,ij->i",
-            np.cross(points[tc[:, 1]] - v0, points[tc[:, 2]] - v0),
-            points[tc[:, 3]] - v0)
-        n_inverted_tets = int((vol6 <= 0.0).sum())
+    n_inverted_tets, n_roundoff_damage = _primary_quality(points, cells, primary)
+    roundoff_warning = (
+        f"{n_roundoff_damage:,} element(s) valid in the float64 MSH collapse or "
+        "invert in Houdini's float32 P. The Direct SOP path sends these rounded "
+        "coordinates to the solver. Recenter the mesh near the origin before import."
+    ) if n_roundoff_damage else ""
 
     supported = set(primary)
     if mesh_dim == 3:
@@ -304,6 +387,10 @@ def cook(node):
         flags.append(f"WARNING: {duplicates:,} duplicate MSH 2.2 elements")
     if flags:
         summary_lines.append(" | ".join(flags))
+    summary_lines.extend(group_notes)
+    if roundoff_warning:
+        summary_lines.append("WARNING: " + roundoff_warning)
+        warnings.append(roundoff_warning)
     geo.addAttrib(hou.attribType.Global, "msh_summary", "",
                   create_local_variable=False)
     geo.setGlobalAttribValue("msh_summary", "\n".join(summary_lines))

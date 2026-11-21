@@ -54,8 +54,10 @@ def main():
     assert len(geo.prims()) == 2
     assert [point.attribValue("msh_pt_id") for point in geo.points()] == [
         10, 20, 30, 40, 50, 60]
+    # 2D primary tri/quad winding reversed for Houdini +Z normals (2026-11-21)
     assert [point_tags(prim) for prim in geo.prims()] == [
-        (10, 20, 40), (20, 50, 60, 30)]
+        (10, 40, 20), (20, 30, 60, 50)]
+    assert all(prim.normal()[2] > 0.99 for prim in geo.prims())
     assert [prim.attribValue("Entity") for prim in geo.prims()] == [7, 9]
     assert [prim.attribValue("ElementNum") for prim in geo.prims()] == [0, 1]
     assert [prim.attribValue("is_volume") for prim in geo.prims()] == [1, 1]

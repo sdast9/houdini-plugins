@@ -10,6 +10,7 @@ sessions pick them up after a Refresh Asset Libraries / restart.
 import os
 import shutil
 import sys
+import tempfile
 
 import hou
 
@@ -24,16 +25,50 @@ sys.path.insert(0, HERE)
 from msh_reader import build as msh_build  # noqa: E402
 from polyfem import build as polyfem_build  # noqa: E402
 from readpvd import build as readpvd_build  # noqa: E402
+import hda_build  # noqa: E402 (shared by the builders)
 
 OTLS_DIR = os.path.join(hou.homeHoudiniDirectory(), "otls")
-if os.path.isdir(hou.homeHoudiniDirectory()):
-    os.makedirs(OTLS_DIR, exist_ok=True)
 
-for builder in (msh_build, polyfem_build, readpvd_build):
-    built = builder.build(OUT)
-    print("built:", built)
-    if os.path.isdir(OTLS_DIR):
-        shutil.copy(built, OTLS_DIR)
-        print("installed:", os.path.join(OTLS_DIR, os.path.basename(built)))
-    else:
-        print(f"WARNING: {OTLS_DIR} not found; HDA not installed")
+
+def _install_asset(built, otls_dir):
+    destination = os.path.join(otls_dir, os.path.basename(built))
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{os.path.basename(built)}.", suffix=".tmp", dir=otls_dir)
+    os.close(fd)
+    try:
+        shutil.copy2(built, temporary)
+        os.replace(temporary, destination)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+    return destination
+
+
+def main():
+    built_assets = []
+    for builder in (msh_build, polyfem_build, readpvd_build):
+        with hda_build.build_transaction():
+            built = builder.build(OUT)
+        built_assets.append(built)
+        print("built:", built)
+
+    if OTLS_DIR == os.path.join(hou.homeHoudiniDirectory(), "otls") \
+            and os.path.isdir(hou.homeHoudiniDirectory()):
+        os.makedirs(OTLS_DIR, exist_ok=True)
+    if not os.path.isdir(OTLS_DIR):
+        message = f"{OTLS_DIR} not found; HDAs were built but not installed"
+        if os.environ.get("POLYFEM_REQUIRE_INSTALL") == "1":
+            print(f"ERROR: {message}", file=sys.stderr)
+            return 1
+        print(f"WARNING: {message}", file=sys.stderr)
+        return 0
+
+    for built in built_assets:
+        print("installed:", _install_asset(built, OTLS_DIR))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
