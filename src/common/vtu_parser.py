@@ -8,7 +8,8 @@ optional zlib compression, and vectorized linearization of higher-order
 
 import base64
 import binascii
-import mmap
+import hashlib
+import html
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -34,8 +35,8 @@ VTK_CELLS = {
 }
 
 # Higher-order Lagrange tet subdivision tables: each row indexes the element's
-# node array (corners, then edge, then face, then interior nodes, in VTK
-# Lagrange order) to build one P1 sub-tet with positive VTK orientation (same
+# node array in PolyFEM's OutGeometryData::build_high_order_vis_mesh ordering
+# to build one P1 sub-tet with positive VTK orientation (same
 # convention as a P1 tet [0, 1, 2, 3], so BUILD_PRIMS_VEX's [1, 2, 3, 0]
 # produces positive Houdini tetrahedra for P1 through P4 alike).
 TET10_SUBDIV = np.array([          # P2 (10 nodes) -> 8 sub-tets
@@ -73,8 +74,9 @@ TET35_SUBDIV = np.array([          # P4 (35 nodes) -> 64 sub-tets
 # Higher-order Lagrange/TriQuadratic hexahedron subdivision tables: each row
 # indexes the element's node array to build one positive-orientation P1
 # sub-hex in VTK hex corner order [0..7] (matching BUILD_PRIMS_VEX's
-# [0,1,3,2,4,5,7,6] Houdini hex order). Verified against PolyFEM's Q2/Q3 VTU
-# exports (cell type 72 = VTK_LAGRANGE_HEXAHEDRON).
+# [0,1,3,2,4,5,7,6] Houdini hex order). These match PolyFEM's
+# OutGeometryData::build_high_order_vis_mesh reference-node ordering: Q2
+# includes the output permutation, and Q3 uses the q_nodes_3d ordering.
 HEX27_SUBDIV = np.array([          # Q2 Lagrange (27 nodes) -> 8 sub-hexes
     [0, 8, 24, 11, 16, 22, 26, 20], [8, 1, 9, 24, 22, 17, 21, 26],
     [11, 24, 10, 3, 20, 26, 23, 18], [24, 9, 2, 10, 26, 21, 19, 23],
@@ -150,7 +152,15 @@ def _localname(tag):
 
 
 _ROOT_ATTRS_RE = re.compile(rb"<VTKFile\b([^>]*)>")
+_XML_ATTR_RE = re.compile(rb'''([\w:.-]+)\s*=\s*(["'])(.*?)\2''', re.DOTALL)
+_XML_TAG_RE = re.compile(rb'''(?:"[^"]*"|'[^']*'|[^"'>])*?>''')
+_ARRAY_METADATA_RE = re.compile(
+    rb"<!--.*?-->|<InformationKey\b[^>]*(?:/>|(?<!/)>.*?</InformationKey>)", re.DOTALL)
 _WHITESPACE = b" \t\r\n"
+
+
+def _xml_attrs(tag):
+    return {name: value for name, _, value in _XML_ATTR_RE.findall(tag)}
 
 
 def _raw_binary_header(data):
@@ -163,7 +173,7 @@ def _raw_binary_header(data):
     match = _ROOT_ATTRS_RE.search(data, 0, 4096)
     if match is None:
         return None
-    attrs = dict(_XML_ATTR_RE.findall(match.group(1)))
+    attrs = _xml_attrs(match.group(1))
     if attrs.get(b"compressor"):
         return None
     header = {b"UInt32": 4, b"UInt64": 8}.get(
@@ -209,8 +219,8 @@ def _strip_inline_payloads(data):
     payload's byte range so it can be decoded on demand from the original
     buffer. Base64/ascii payloads never contain '<', so the tag scan is safe.
     Uncompressed binary payloads are skipped by their encoded length instead
-    of scanned. `ranges[i]` is the byte span of the i-th <DataArray> in
-    document order, or None for a self-closing tag (appended format).
+    of scanned. `ranges[i]` is a byte span, or a list of spans when metadata
+    interrupts the text. Self-closing arrays have no inline payload.
     """
     close_tag = b"</DataArray>"
     raw_header = _raw_binary_header(data)
@@ -231,25 +241,41 @@ def _strip_inline_payloads(data):
         if start < 0:
             out += data[pos:]
             break
-        tag_end = data.find(b">", start)
-        if tag_end < 0:
+        tag = _XML_TAG_RE.match(data, start)
+        if tag is None:
             out += data[pos:]
             break
+        tag_end = tag.end() - 1
         if data[tag_end - 1:tag_end] == b"/":            # <DataArray .../>
             out += data[pos:tag_end + 1]
             ranges.append(None)
             pos = tag_end + 1
             continue
-        close = None
-        if raw_header is not None and b'format="binary"' in data[start:tag_end]:
-            close = _predicted_close(data, tag_end + 1, raw_header)
+        predicted = (_predicted_close(data, tag_end + 1, raw_header)
+                     if raw_header is not None and _xml_attrs(
+                         data[start:tag_end]).get(b"format") == b"binary"
+                     else None)
+        close = predicted
+        first_tag = -1
         if close is None:
-            close = data.find(close_tag, tag_end)
+            first_tag = data.find(b"<", tag_end + 1)
+            close = data.find(close_tag, first_tag) if first_tag >= 0 else -1
         if close < 0:
             out += data[pos:]
             break
         out += data[pos:tag_end + 1]                      # opening tag
-        ranges.append((tag_end + 1, close))               # payload span
+        payload_start = tag_end + 1
+        spans = []
+        if 0 <= first_tag < close:
+            for metadata in _ARRAY_METADATA_RE.finditer(data, first_tag, close):
+                spans.append((payload_start, metadata.start()))
+                payload_start = metadata.end()
+        tail = (payload_start, close)
+        if spans:
+            spans.append(tail)
+            ranges.append(spans)
+        else:
+            ranges.append(tail)
         out += close_tag                                  # closing tag
         pos = close + len(close_tag)
     return bytes(out), ranges
@@ -258,6 +284,7 @@ def _strip_inline_payloads(data):
 # All caches are keyed by (path, mtime, size) so external file changes
 # (e.g. a still-running simulation appending frames) invalidate naturally.
 _PVD_CACHE = {}
+_VTM_CACHE = OrderedDict()
 _FIELD_INFO_CACHE = {}
 _VTU_CACHE = OrderedDict()
 # Parsed frames are large; hold enough for the stages that re-read the same
@@ -276,6 +303,7 @@ def _file_key(path):
 
 def clear_caches():
     _PVD_CACHE.clear()
+    _VTM_CACHE.clear()
     _FIELD_INFO_CACHE.clear()
     _VTU_CACHE.clear()
 
@@ -292,14 +320,15 @@ class _Reader:
         if idx >= 0:
             tag_end = self.data.find(b">", idx)
             if tag_end >= 0:
-                app_attrs = dict(_XML_ATTR_RE.findall(
-                    self.data[idx:tag_end]))
+                app_attrs = _xml_attrs(self.data[idx:tag_end])
                 enc = app_attrs.get(b"encoding", b"raw").decode(
                     "ascii", "ignore").lower()
                 if enc:
                     self.appended_encoding = enc
             start = self.data.find(b"_", max(idx, tag_end))
             end = self.data.rfind(b"</AppendedData>")
+            if tag_end < 0 or start < 0 or end <= start:
+                raise VtuParseError("Incomplete AppendedData section")
             self.appended = self.data[start + 1:end]
             # ElementTree chokes on raw bytes inside AppendedData: replace
             # the payload with nothing for the XML parse.
@@ -354,41 +383,40 @@ class _Reader:
             h_chars = 4 * ((hsize + 2) // 3)
             head = binascii.a2b_base64(buf[:h_chars])
             nbytes = int(np.frombuffer(head, self.header_dtype, count=1)[0])
-            if buf[h_chars - 1:h_chars] == b"=":
+            # A combined header and one-byte payload can also end in '='.
+            # Only a header that decodes to exactly hsize is standalone.
+            if len(head) == hsize and hsize % 3:
                 p_chars = 4 * ((nbytes + 2) // 3)
-                return binascii.a2b_base64(buf[h_chars:h_chars + p_chars])[:nbytes]
-            total_chars = 4 * ((hsize + nbytes + 2) // 3)
-            return binascii.a2b_base64(buf[:total_chars])[hsize:hsize + nbytes]
+                raw = head + binascii.a2b_base64(buf[h_chars:h_chars + p_chars])
+            else:
+                total_chars = 4 * ((hsize + nbytes + 2) // 3)
+                raw = binascii.a2b_base64(buf[:total_chars])
+            return self._decode_block(raw)
         hdr3_chars = 4 * hsize  # 3 * hsize is always divisible by 3
         hdr3 = np.frombuffer(
             binascii.a2b_base64(buf[:hdr3_chars]), self.header_dtype, count=3)
         nblocks = int(hdr3[0])
         total_hbytes = (3 + nblocks) * hsize
         h_chars = 4 * ((total_hbytes + 2) // 3)
-        full_hdr = binascii.a2b_base64(buf[:h_chars])[:total_hbytes]
+        full_hdr = binascii.a2b_base64(buf[:h_chars])
         sizes = np.frombuffer(
             full_hdr, self.header_dtype, count=nblocks, offset=3 * hsize)
-        total_comp = int(np.sum(sizes))
-        if buf[h_chars - 1:h_chars] == b"=":
+        total_comp = sum(map(int, sizes))
+        if len(full_hdr) == total_hbytes and total_hbytes % 3:
             c_chars = 4 * ((total_comp + 2) // 3)
-            comp_bytes = binascii.a2b_base64(
-                buf[h_chars:h_chars + c_chars])[:total_comp]
+            raw = full_hdr + binascii.a2b_base64(buf[h_chars:h_chars + c_chars])
         else:
             total_chars = 4 * ((total_hbytes + total_comp + 2) // 3)
-            comp_bytes = binascii.a2b_base64(
-                buf[:total_chars])[total_hbytes:total_hbytes + total_comp]
-        out = []
-        offset = 0
-        for size in sizes:
-            out.append(zlib.decompress(comp_bytes[offset:offset + int(size)]))
-            offset += int(size)
-        return b"".join(out)
+            raw = binascii.a2b_base64(buf[:total_chars])
+        return self._decode_block(raw)
 
     def _decode_block(self, raw):
         """Decode (possibly multi-block zlib) payload -> bytes."""
         if not self.compressed:
             hsize = self.header_dtype.itemsize
             n = int(np.frombuffer(raw, self.header_dtype, count=1)[0])
+            if len(raw) < hsize + n:
+                raise VtuParseError("Truncated VTK binary payload")
             return raw[hsize:hsize + n]
         hdr = np.frombuffer(raw, self.header_dtype, count=3)
         nblocks = int(hdr[0])
@@ -397,24 +425,43 @@ class _Reader:
             offset=3 * self.header_dtype.itemsize)
         offset = (3 + nblocks) * self.header_dtype.itemsize
         out = []
-        for size in sizes:
-            out.append(zlib.decompress(raw[offset:offset + int(size)]))
-            offset += int(size)
+        for index, size in enumerate(sizes):
+            end = offset + int(size)
+            if end > len(raw):
+                raise VtuParseError("Truncated VTK compressed payload")
+            block = zlib.decompress(raw[offset:end])
+            expected = int(hdr[2] or hdr[1]) if index == nblocks - 1 else int(hdr[1])
+            if len(block) != expected:
+                raise VtuParseError("VTK compressed block has the wrong length")
+            out.append(block)
+            offset = end
         return b"".join(out)
 
     def read_data_array(self, elem):
+        try:
+            return self._read_data_array(elem)
+        except (KeyError, ValueError, OverflowError, zlib.error) as error:
+            raise VtuParseError(
+                f"Invalid VTK DataArray {elem.get('Name', '(unnamed)')}: {error}") from error
+
+    def _read_data_array(self, elem):
         native_dtype = np.dtype(_VTK_TO_NP[elem.get("type")])
         dtype = native_dtype.newbyteorder(self._endian)
         ncomp = int(elem.get("NumberOfComponents", "1"))
+        if ncomp < 1:
+            raise VtuParseError("VTK DataArray requires at least one component")
         fmt = elem.get("format", "ascii")
         if fmt == "appended":
             if self.appended is None:
                 raise VtuParseError("appended format without AppendedData")
             offset = int(elem.get("offset", "0"))
+            if offset < 0 or offset >= len(self.appended):
+                raise VtuParseError("VTK appended offset lies outside the payload")
+            payload = memoryview(self.appended)[offset:]
             if self.appended_encoding == "base64":
-                raw = self._decode_appended_base64(self.appended[offset:])
+                raw = self._decode_appended_base64(payload)
             elif self.appended_encoding == "raw":
-                raw = self._decode_block(self.appended[offset:])
+                raw = bytes(self._decode_block(payload))
             else:
                 raise VtuParseError(
                     f"Unsupported AppendedData encoding '{self.appended_encoding}'")
@@ -422,8 +469,12 @@ class _Reader:
                 native_dtype, copy=False)
         else:
             span = self._payload.get(id(elem))
-            payload = (self._payload_source[span[0]:span[1]]
-                       if span is not None else b"")
+            if isinstance(span, list):
+                payload = b"".join(self._payload_source[start:end] for start, end in span)
+            elif span is not None:
+                payload = self._payload_source[span[0]:span[1]]
+            else:
+                payload = b""
             if fmt == "ascii":
                 arr = np.array(payload.split(), dtype=native_dtype)
             elif fmt == "binary":
@@ -434,6 +485,9 @@ class _Reader:
                 raise VtuParseError(f"Unknown DataArray format {fmt}")
         if ncomp > 1:
             arr = arr.reshape(-1, ncomp)
+        tuples = elem.get("NumberOfTuples")
+        if tuples is not None and len(arr) != int(tuples):
+            raise VtuParseError(f"VTK DataArray {elem.get('Name', '')} has the wrong tuple count")
         return arr
 
 
@@ -464,6 +518,12 @@ def _mesh_from_arrays(points, connectivity, offsets, types, point_data,
             starts = np.concatenate(([0], offsets[:-1]))
             sizes = offsets - starts
 
+    if np.any(sizes < 0) or (
+            (int(offsets[-1]) if len(offsets) else 0) != len(connectivity)):
+        raise VtuParseError("VTK cell offsets do not match connectivity")
+    if len(connectivity) and (connectivity.min() < 0 or
+                              connectivity.max() >= len(points)):
+        raise VtuParseError("VTK cell connectivity references a missing point")
     cells = {}
     cell_sources = {}
     for ctype in np.unique(types):
@@ -474,6 +534,8 @@ def _mesh_from_arrays(points, connectivity, offsets, types, point_data,
         type_mask = types == ctype
         for n_nodes in np.unique(sizes[type_mask]):
             n_nodes = int(n_nodes)
+            if n_nodes < n_corners:
+                raise VtuParseError(f"VTK cell type {ctype} has too few connectivity ids")
             mask = type_mask & (sizes == n_nodes)
             source_indices = np.flatnonzero(mask)
             c_starts = starts[mask]
@@ -512,9 +574,12 @@ def _mesh_from_arrays(points, connectivity, offsets, types, point_data,
             for family, source_indices in cell_sources.items()
         }
 
-    topo = b"".join(
-        cells[f].tobytes() for f in sorted(cells)) + str(len(points)).encode()
-    topo_key = hash(topo)
+    topo = hashlib.blake2b(digest_size=16)
+    for array in (types, starts, sizes, connectivity):
+        topo.update(len(array).to_bytes(8, "little"))
+        topo.update(np.ascontiguousarray(array, dtype="<i8"))
+    topo.update(len(points).to_bytes(8, "little"))
+    topo_key = topo.hexdigest()
 
     # The file's own cells as well: every node of every cell (cells above
     # keep corners or sub-tets only), and the cell each row of cells[family]
@@ -528,44 +593,80 @@ def _mesh_from_arrays(points, connectivity, offsets, types, point_data,
 
 def read_vtu(path):
     """Parse an UnstructuredGrid .vtu into the readPVD mesh contract."""
-    reader = _Reader(path)
-    piece = reader.root.find(".//{*}Piece") or reader.root.find(".//Piece")
-    if piece is None:
+    try:
+        reader = _Reader(path)
+    except (ET.ParseError, KeyError) as error:
+        raise VtuParseError(f"Invalid VTU file {path}: {error}") from error
+    pieces = reader.root.findall(".//{*}Piece")
+    if not pieces:
         raise VtuParseError(f"No <Piece> in {path}")
 
-    def find(parent, tag):
-        e = parent.find(tag)
-        return e if e is not None else parent.find("{*}" + tag)
+    def fields(piece, section):
+        return {da.get("Name"): reader.read_data_array(da)
+                for da in piece.findall(f"{{*}}{section}/{{*}}DataArray")
+                if da.get("Name")}
 
-    points_elem = find(piece, "Points")
-    points = reader.read_data_array(
-        points_elem.find("DataArray")
-        if points_elem.find("DataArray") is not None
-        else points_elem.find("{*}DataArray"))
+    parts = []
+    for piece in pieces:
+        points_elem = piece.find("{*}Points/{*}DataArray")
+        if points_elem is None:
+            raise VtuParseError("VTU Piece is missing its Points DataArray")
+        points = reader.read_data_array(points_elem)
+        if points.size % 3 or points.ndim > 1 and points.shape[1] != 3:
+            raise VtuParseError("VTU Points must contain XYZ tuples")
+        points = points.reshape(-1, 3)
+        arrays = fields(piece, "Cells")
+        try:
+            conn, offsets, types = (arrays[name].ravel() for name in
+                                    ("connectivity", "offsets", "types"))
+        except KeyError as error:
+            raise VtuParseError(f"VTU Piece missing Cells array {error}") from error
+        for label, count in (("Points", len(points)), ("Cells", len(types))):
+            if int(piece.get(f"NumberOf{label}", count)) != count:
+                raise VtuParseError(f"VTU Piece has the wrong number of {label}")
+        if (len(offsets) != len(types)
+                or (int(offsets[-1]) if len(offsets) else 0) != len(conn)
+                or len(conn) and (conn.min() < 0 or conn.max() >= len(points))):
+            raise VtuParseError("VTU Piece has invalid cell offsets or connectivity")
+        point_data, cell_data = fields(piece, "PointData"), fields(piece, "CellData")
+        if any(len(array) != len(types) for array in cell_data.values()):
+            raise VtuParseError("VTU CellData length does not match its Piece")
+        parts.append((points, conn, offsets, types, point_data, cell_data))
+    if len(parts) == 1:
+        return _mesh_from_arrays(*parts[0])
 
-    cells_elem = find(piece, "Cells")
-    arrays = {da.get("Name"): reader.read_data_array(da)
-              for da in cells_elem}
-
-    point_data = {}
-    pd = find(piece, "PointData")
-    if pd is not None:
-        for da in pd:
-            name = da.get("Name")
-            if name:
-                point_data[name] = reader.read_data_array(da)
-
-    raw_cell_data = {}
-    cd = find(piece, "CellData")
-    if cd is not None:
-        for da in cd:
-            name = da.get("Name")
-            if name:
-                raw_cell_data[name] = reader.read_data_array(da)
-
+    points, conns, offsets, types, point_data, cell_data = zip(*parts)
+    point_base = np.cumsum([0] + [len(p) for p in points[:-1]], dtype=np.int64)
+    conn_base = np.cumsum([0] + [len(c) for c in conns[:-1]], dtype=np.int64)
     return _mesh_from_arrays(
-        points, arrays["connectivity"], arrays["offsets"], arrays["types"],
-        point_data, raw_cell_data)
+        np.concatenate(points),
+        np.concatenate([c.astype(np.int64, copy=False) + b for c, b in zip(conns, point_base)]),
+        np.concatenate([o.astype(np.int64, copy=False) + b for o, b in zip(offsets, conn_base)]),
+        np.concatenate(types), _merge_piece_fields(point_data, points),
+        _merge_piece_fields(cell_data, types))
+
+
+def _merge_piece_fields(fields, owners):
+    """Align field tuples with concatenated pieces, marking absent data NaN."""
+    merged = {}
+    for name in dict.fromkeys(name for part in fields for name in part):
+        sample = next(part[name] for part in fields if name in part)
+        shape = sample.shape[1:]
+        arrays = []
+        for part, owner in zip(fields, owners):
+            array = part.get(name)
+            if array is None:
+                array = np.full((len(owner),) + shape, np.nan)
+            elif array.shape[1:] != shape or len(array) > len(owner):
+                raise VtuParseError(f"Incompatible VTU Piece field {name!r}")
+            elif len(array) < len(owner):
+                # PolyFEM's averaged fields can omit obstacle points.
+                padding = np.zeros((len(owner) - len(array),) + shape,
+                                   dtype=array.dtype)
+                array = np.concatenate((array, padding))
+            arrays.append(array)
+        merged[name] = np.concatenate(arrays)
+    return merged
 
 
 def _hdf_datasets(group):
@@ -604,13 +705,46 @@ def read_hdf(path):
                           if "PointData" in root else {})
             cell_data = (_hdf_datasets(root["CellData"])
                          if "CellData" in root else {})
-            return _mesh_from_arrays(
-                root["Points"][...], root["Connectivity"][...],
-                root["Offsets"][...], root["Types"][...], point_data,
-                cell_data, offsets_include_zero=True)
+            points, connectivity, offsets, types = (root[name][...] for name in required)
+            counts = ("NumberOfPoints", "NumberOfCells", "NumberOfConnectivityIds")
+            if all(name in root for name in counts):
+                n_points, n_cells, n_conn = (np.asarray(root[name], dtype=np.int64).ravel()
+                                              for name in counts)
+                if (len(n_points) != len(n_cells) or len(n_cells) != len(n_conn)
+                        or any(np.any(n < 0) for n in (n_points, n_cells, n_conn))
+                        or (n_points.sum(), n_cells.sum(), n_conn.sum(),
+                            n_cells.sum() + len(n_cells)) !=
+                           (len(points), len(types), len(connectivity), len(offsets))):
+                    raise VtuParseError("Inconsistent VTK-HDF partition counts")
+                if len(n_cells) != 1:
+                    connectivity, offsets = _merge_hdf_partitions(
+                        connectivity, offsets, n_points, n_cells, n_conn)
+            return _mesh_from_arrays(points, connectivity, offsets, types,
+                                     point_data, cell_data, offsets_include_zero=True)
     except OSError as error:
         raise VtuParseError(f"Could not read VTK-HDF file {path}: {error}") \
             from error
+
+
+def _merge_hdf_partitions(connectivity, offsets, n_points, n_cells, n_conn):
+    """Rebase partition-local offsets and point indices to the merged mesh."""
+    connectivity = np.asarray(connectivity, dtype=np.int64).copy()
+    merged_offsets = np.empty(int(n_cells.sum()) + 1, dtype=np.int64)
+    merged_offsets[0] = 0
+    point_base = cell_base = conn_base = offset_base = 0
+    for points, cells, ids in zip(n_points, n_cells, n_conn):
+        part = offsets[offset_base:offset_base + cells + 1]
+        conn = connectivity[conn_base:conn_base + ids]
+        if (part[0] != 0 or part[-1] != ids or np.any(np.diff(part.astype(np.int64)) < 0)
+                or len(conn) and (conn.min() < 0 or conn.max() >= points)):
+            raise VtuParseError("Invalid VTK-HDF partition offsets or connectivity")
+        merged_offsets[cell_base + 1:cell_base + cells + 1] = part[1:] + conn_base
+        conn += point_base
+        point_base += points
+        cell_base += cells
+        conn_base += ids
+        offset_base += cells + 1
+    return connectivity, merged_offsets
 
 
 def _mesh_nbytes(mesh):
@@ -651,7 +785,7 @@ def read_vtu_cached(path):
 
 
 def _is_hdf(path):
-    return os.path.splitext(path)[1].lower() in (".hdf", ".h5", ".hdf5")
+    return os.path.splitext(path)[1].lower() in (".hdf", ".h5", ".hdf5", ".vtkhdf")
 
 
 def read_mesh_cached(path):
@@ -664,10 +798,6 @@ def read_mesh_cached(path):
     else:
         _VTU_CACHE.move_to_end(key)
     return mesh
-
-
-_DATA_ARRAY_RE = re.compile(rb"<DataArray\b[^>]*>")
-_XML_ATTR_RE = re.compile(rb'(\w+)="([^"]*)"')
 
 
 def _field_info_from_mesh(mesh):
@@ -685,81 +815,104 @@ def _field_info_from_mesh(mesh):
     return info
 
 
-def _scan_vtu_field_info(data):
-    """Single-pass scan of PointData/CellData <DataArray> headers in a VTU.
+_VTU_SCAN_CHUNK = 64 * 1024
 
-    Works on either a bytes buffer or a read-only mmap: never copies the file,
-    stops before <AppendedData, and jumps over uncompressed inline-binary
-    payloads via their encoded length instead of scanning gigabytes of base64.
-    """
-    info = {"point_data": {}, "cell_data": {}}
-    raw_header = _raw_binary_header(data)
-    section = None
-    pos = 0
-    length = len(data)
-    while pos < length:
-        lt = data.find(b"<", pos)
+
+def _vtu_tags(handle):
+    """Walk XML headers with bounded reads, skipping large binary arrays."""
+    raw_header = _raw_binary_header(handle.read(4096))
+    handle.seek(0)
+    buffer = b""
+    while True:
+        lt = buffer.find(b"<")
         if lt < 0:
-            break
-        if data[lt:lt + 4] == b"<!--":
-            end_comment = data.find(b"-->", lt + 4)
-            if end_comment < 0:
-                break
-            pos = end_comment + 3
+            buffer = handle.read(_VTU_SCAN_CHUNK)
+            if not buffer:
+                return
             continue
-        if data[lt:lt + 13] == b"<AppendedData":
-            break
-        gt = data.find(b">", lt + 1)
-        if gt < 0:
-            break
-        head = data[lt + 1:gt]
-        self_closing = head.endswith(b"/")
-        if head.startswith(b"PointData") and (
-                len(head) == 9 or head[9:10] in b" \t\r\n/"):
-            section = None if self_closing else "point_data"
-            pos = gt + 1
+        buffer = buffer[lt:]
+        if len(buffer) < 4:
+            buffer += handle.read(4 - len(buffer))
+        if buffer.startswith(b"<!--"):
+            end = buffer.find(b"-->")
+            while end < 0:
+                chunk = handle.read(_VTU_SCAN_CHUNK)
+                if not chunk:
+                    return
+                buffer = buffer[-2:] + chunk
+                end = buffer.find(b"-->")
+            buffer = buffer[end + 3:]
             continue
-        if head.startswith(b"CellData") and (
-                len(head) == 8 or head[8:9] in b" \t\r\n/"):
-            section = None if self_closing else "cell_data"
-            pos = gt + 1
+        match = _XML_TAG_RE.match(buffer)
+        if match is None:
+            buffer += handle.read(_VTU_SCAN_CHUNK)
+            match = _XML_TAG_RE.match(buffer)
+            if match is None:
+                return
+        head = buffer[1:match.end() - 1]
+        buffer = buffer[match.end():]
+        yield head
+        if (raw_header is None or not head.startswith(b"DataArray")
+                or head.endswith(b"/") or _xml_attrs(head).get(b"format") != b"binary"):
             continue
-        if head.startswith(b"/PointData") or head.startswith(b"/CellData"):
+        # Probe the length at the start, then verify the predicted closing tag
+        # before seeking past the payload. Wrapped or partial arrays fall back
+        # to chunked scanning.
+        start = handle.tell() - len(buffer)
+        handle.seek(start)
+        prefix = handle.read(256)
+        leading = len(prefix) - len(prefix.lstrip(_WHITESPACE))
+        header_size, byteorder = raw_header
+        try:
+            raw = binascii.a2b_base64(prefix[leading:leading + 4 * ((header_size + 2) // 3)])
+        except binascii.Error:
+            raw = b""
+        buffer = b""
+        if len(raw) >= header_size:
+            length = header_size + int.from_bytes(raw[:header_size], byteorder)
+            end = start + leading + 4 * ((length + 2) // 3)
+            if end < 2**63:
+                handle.seek(end)
+                buffer = handle.read(256)
+                if buffer.lstrip(_WHITESPACE).startswith(b"</DataArray>"):
+                    continue
+        handle.seek(start)
+        buffer = b""
+
+
+def _scan_vtu_field_info(handle):
+    info = {"point_data": {}, "cell_data": {}}
+    section = None
+    in_array = False
+    for head in _vtu_tags(handle):
+        parts = head.rstrip(b"/").split(None, 1)
+        tag = parts[0].rsplit(b":", 1)[-1] if parts else b""
+        if tag == b"AppendedData":
+            break
+        if tag == b"/DataArray":
+            in_array = False
+        elif in_array:
+            continue
+        elif tag in (b"PointData", b"CellData") and not head.endswith(b"/"):
+            section = "point_data" if tag == b"PointData" else "cell_data"
+        elif tag in (b"/PointData", b"/CellData"):
             section = None
-            pos = gt + 1
-            continue
-        if head.startswith(b"DataArray") and (
-                len(head) == 9 or head[9:10] in b" \t\r\n/"):
+        elif tag == b"DataArray":
+            in_array = not head.endswith(b"/")
             if section is not None:
-                attrs = dict(_XML_ATTR_RE.findall(head))
+                attrs = _xml_attrs(head)
                 name = attrs.get(b"Name")
                 if name:
-                    info[section][name.decode()] = int(
+                    info[section][html.unescape(name.decode())] = int(
                         attrs.get(b"NumberOfComponents", b"1"))
-            if self_closing:
-                pos = gt + 1
-                continue
-            close = None
-            if raw_header is not None and b'format="binary"' in head:
-                close = _predicted_close(data, gt + 1, raw_header)
-            if close is None:
-                close = data.find(b"</DataArray>", gt + 1)
-            if close < 0:
-                break
-            pos = close + 12
-            continue
-        pos = gt + 1
     return info
 
 
 def read_vtu_field_info(path):
     """Field names -> component counts without decoding any array data.
 
-    Returns {"point_data": {name: components}, "cell_data": {...}}. If the
-    frame is already fully parsed (in the LRU) the info is taken from it for
-    free; otherwise maps the file read-only and walks XML tags directly,
-    stopping at <AppendedData and jumping over uncompressed inline-binary
-    payloads by length so multi-GB files touch only header pages.
+    Reuse the parsed mesh when warm. Otherwise read bounded XML header chunks
+    without mapping the file, even when a solver may truncate it concurrently.
     """
     key = _file_key(path)
     cached = _FIELD_INFO_CACHE.get(key)
@@ -771,15 +924,7 @@ def read_vtu_field_info(path):
         _FIELD_INFO_CACHE[key] = info
         return info
     with open(path, "rb") as f:
-        size = os.fstat(f.fileno()).st_size
-        if size == 0:
-            info = {"point_data": {}, "cell_data": {}}
-        else:
-            try:
-                with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-                    info = _scan_vtu_field_info(mm)
-            except (ValueError, OSError):
-                info = _scan_vtu_field_info(f.read())
+        info = _scan_vtu_field_info(f)
     if len(_FIELD_INFO_CACHE) > 4096:
         _FIELD_INFO_CACHE.clear()
     _FIELD_INFO_CACHE[key] = info
@@ -827,23 +972,35 @@ def read_mesh_field_info(path):
 
 def read_vtm(path):
     """Parse a vtkMultiBlockDataSet: returns {block_name: vtu_path}."""
-    tree = ET.parse(path)
-    base = os.path.dirname(path)
+    key = _file_key(path)
+    cached = _VTM_CACHE.get(key)
+    if cached is not None:
+        _VTM_CACHE.move_to_end(key)
+        return cached
+    tree = ET.parse(key[0])
+    base = os.path.dirname(key[0])
     blocks = {}
-    for block in tree.getroot().iter():
-        if block.tag.endswith("Block"):
-            name = block.get("name", f"block{len(blocks)}")
-            ds = block.find("DataSet")
-            if ds is None:
-                ds = block.find("{*}DataSet")
-            if ds is not None and ds.get("file"):
-                blocks[name] = os.path.join(base, ds.get("file"))
-    # flat vtm (DataSets without Block wrappers)
-    if not blocks:
-        for ds in tree.getroot().iter():
-            if ds.tag.endswith("DataSet") and ds.get("file"):
-                blocks[ds.get("name", f"block{len(blocks)}")] = \
-                    os.path.join(base, ds.get("file"))
+    next_suffix = {}
+
+    def collect(parent, block_name=None):
+        for child in parent:
+            tag = _localname(child.tag)
+            if tag == "DataSet" and child.get("file"):
+                name = block_name or child.get("name") or f"block{len(blocks)}"
+                unique = name
+                suffix = next_suffix.get(name, 2)
+                while unique in blocks:
+                    unique = f"{name}_{suffix}"
+                    suffix += 1
+                next_suffix[name] = suffix
+                blocks[unique] = os.path.join(base, child.get("file"))
+            else:
+                collect(child, child.get("name") if tag == "Block" else block_name)
+
+    collect(tree.getroot())
+    _VTM_CACHE[key] = blocks
+    if len(_VTM_CACHE) > 1024:
+        _VTM_CACHE.popitem(last=False)
     return blocks
 
 
@@ -873,7 +1030,7 @@ def _frame_block_paths(pvd_path, frame_index):
         raise VtuParseError("Empty PVD collection")
     frame_index = max(0, min(int(frame_index), len(entries) - 1))
     _, path = entries[frame_index]
-    if path.endswith(".vtm"):
+    if os.path.splitext(path)[1].lower() == ".vtm":
         return read_vtm(path)
     return {"Volume": path}
 

@@ -1014,6 +1014,25 @@ if _parm is not None:
         {[list(color) for color in _INFRARED_COLORS]}))
 """
 
+ON_LOADED_CODE = """\
+import hou
+
+def _restore_follow(node):
+    try:
+        follow = node.parm("follow_running")
+        if follow is not None and follow.eval():
+            node.hdaModule().toggle_follow_running({"node": node}, restoring=True)
+    except hou.ObjectWasDeleted:
+        pass
+
+_node = kwargs["node"]
+if hou.isUIAvailable():
+    import hdefereval
+    hdefereval.executeDeferred(_restore_follow, _node)
+else:
+    _restore_follow(_node)
+"""
+
 
 def _force_curve_folder():
     """Analysis > Force Curves (review F4): reaction and contact force per
@@ -2883,6 +2902,9 @@ def build(out_dir):
                 section_name,
                 base64.b64encode(wheel_file.read()).decode("ascii"))
     definition.addSection("OnCreated", ON_CREATED_CODE)
+    definition.setExtraFileOption("OnLoaded/IsPython", True)
+    definition.setExtraFileOption("OnLoaded/IsScript", True)
+    definition.addSection("OnLoaded", ON_LOADED_CODE)
     definition.addSection("Help", hda_build.read_source("readpvd", "Help"))
     definition.addSection(
         "ViewerStateModule",

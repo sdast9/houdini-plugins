@@ -131,12 +131,12 @@ class State:
         local_origin = origin * inv
         local_direction = (
             (origin + direction) * inv - local_origin).normalized()
-        # Probe the primary result only. Excluding the readpvd_* decoration
-        # groups (glyphs, legend, gnomon, supplementary blocks)
-        # keeps the pick from snapping to a decoration point that carries no
-        # field data -- the cause of "position is right but values are zero".
+        # Keep clip/slice interior faces pickable and skip decorations,
+        # whose points have no primary result field data.
         intersector = su.GeometryIntersector(
-            geo, scene_viewer=self.scene_viewer, pattern="* ^readpvd_*")
+            geo, scene_viewer=self.scene_viewer,
+            pattern="* ^readpvd_legend ^readpvd_gnomon ^readpvd_glyphs "
+                    "^readpvd_fibers ^readpvd_block_*")
         intersector.intersect(local_origin, local_direction)
         if not intersector.intersected or intersector.prim_num < 0:
             return False

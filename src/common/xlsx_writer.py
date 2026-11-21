@@ -16,6 +16,7 @@ import datetime
 import math
 import os
 import re
+import tempfile
 import zipfile
 
 XLSX_MAX_ROWS = 1048576
@@ -175,7 +176,10 @@ class XlsxWorkbook:
             'schemas.openxmlformats.org/officeDocument/2006/relationships/'
             'styles" Target="styles.xml"/>')
         counts = []
-        temporary = path + ".tmp"
+        with tempfile.NamedTemporaryFile(dir=os.path.dirname(os.path.abspath(path)),
+                                         prefix=f".{os.path.basename(path)}.",
+                                         suffix=".tmp", delete=False) as temp:
+            temporary = temp.name
         try:
             with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as archive:
                 archive.writestr(
@@ -264,11 +268,9 @@ class XlsxWorkbook:
                         counts.append(self._write_sheet(handle, rows, widths,
                                                         header_rows))
             os.replace(temporary, path)
-        except Exception:
-            if os.path.exists(temporary):
-                try:
-                    os.remove(temporary)
-                except OSError:
-                    pass
-            raise
+        finally:
+            try:
+                os.remove(temporary)
+            except OSError:
+                pass
         return dict(zip(self.sheet_names, counts))

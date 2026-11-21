@@ -297,6 +297,13 @@ _ATTRIB_NAME_RE = re.compile(r"[^0-9A-Za-z_]")
 _DISPLAY_NAMES = {}
 # original vtu array name -> sanitized attribute name (collision-stable)
 _ATTRIB_NAMES = {}
+_FIELD_NAME_OWNERS = {}
+_RESERVED_FIELD_NAMES = {
+    "P", "Pw", "Cd", "Alpha", "N", "uv", "v", "id", "name", "orient",
+    "pscale", "scale", "up", "width",
+    "rest", "for_color", "coincident_id", "coincident_rep", "pvd_block",
+    "source_cell_index", "source_cell_family", "reference_comparison",
+}
 
 
 def _field_name(raw_name):
@@ -312,14 +319,17 @@ def _field_name(raw_name):
     name = _ATTRIB_NAME_RE.sub("_", raw_name)
     if not name or name[0].isdigit():
         name = "_" + name
-    if _DISPLAY_NAMES.get(name, raw_name) != raw_name:
+    if name.startswith("readpvd_"):
+        name = "vtu_" + name
+    if name in _RESERVED_FIELD_NAMES or name in _FIELD_NAME_OWNERS:
         suffix = 2
-        while _DISPLAY_NAMES.get(f"{name}_{suffix}", raw_name) != raw_name:
+        while f"{name}_{suffix}" in _FIELD_NAME_OWNERS:
             suffix += 1
         name = f"{name}_{suffix}"
     if name != raw_name:
         _DISPLAY_NAMES[name] = raw_name
     _ATTRIB_NAMES[raw_name] = name
+    _FIELD_NAME_OWNERS[name] = raw_name
     return name
 
 
@@ -1329,6 +1339,19 @@ def _first_color_field(node):
     return tokens[0] if tokens and tokens[0] else ""
 
 
+def _absent_from_completed_sequence(node, block):
+    path = node.evalParm("PVD_file")
+    if node.evalParm("follow_running") or not _manifest_is_finished(run_manifest(path)):
+        return False
+    try:
+        entries = read_pvd(path)
+        # A block listed in a VTM may still be waiting for its data file.
+        return bool(entries) and all(
+            block not in _frame_block_paths(path, step) for step in range(len(entries)))
+    except (OSError, ET.ParseError, VtuParseError, ValueError):
+        return False
+
+
 def sync_available_options(kwargs):
     """Keep all user-selectable data choices valid for the active block."""
     node = kwargs["node"]
@@ -1338,12 +1361,16 @@ def sync_available_options(kwargs):
         # Transient empty read (a running sim mid-write on this frame's
         # files): leave every selection parm exactly as the user set it
         # instead of resetting block/color/visibility to defaults.
+        node.setParms({name: 0 for name in (
+            "has_solution_data", "has_glyph_data", "has_fiber_data", "has_multibody",
+            "has_block_volume", "has_block_surface", "has_block_contact", "has_block_points")})
         node.parm("availability_status").set(
             "Current frame unreadable (sim writing?); keeping settings.")
         return
     block_tokens = _menu_tokens(source_block_menu({"node": node}))
     selected_block = _source_block_token(node)
-    if selected_block not in block_tokens:
+    if not selected_block or (selected_block not in metadata
+                              and _absent_from_completed_sequence(node, selected_block)):
         selected_block = block_tokens[0] if block_tokens else ""
         node.parm("source_block").set(selected_block)
 
@@ -1381,16 +1408,18 @@ def sync_available_options(kwargs):
         block_name = slug.title()
         present = int(block_name in metadata)
         flags[f"has_block_{slug}"] = present
-        if not present and node.parm(f"multi_{slug}_show") is not None:
-            node.parm(f"multi_{slug}_show").set(0)
     node.setParms(flags)
-    if not has_solution:
-        node.parm("show_deformed").set(0)
-    if not has_glyph:
-        node.parm("add_glyphs").set(0)
-    if not fiber_attribs:
-        node.parm("show_fibers").set(0)
-    elif not requirements["deformation_gradient"] \
+    if not has_glyph and node.evalParm("add_glyphs"):
+        # Preserve the toggle during temporary field loss. Retain the existing
+        # reset for explicit Derived-off and complete sequences with no tensor.
+        finished = not node.evalParm("follow_running") and _manifest_is_finished(
+            run_manifest(node))
+        frames = _sequence_metadata(node)[0] if finished and derived else []
+        if not derived or (frames and all(selected_block in frame for frame in frames)
+                           and not any(_requirements(frame[selected_block])[
+                               "deformation_gradient"] for frame in frames)):
+            node.parm("add_glyphs").set(0)
+    if fiber_attribs and not requirements["deformation_gradient"] \
             and _menu_token(node, "fiber_frame") != "reference":
         # The deformed direction needs F; fall back rather than draw the
         # reference direction while claiming it is deformed.
@@ -1595,6 +1624,8 @@ def _reduce_array(values, reduction):
         return values[:, {
             "principal_max": 0, "principal_middle": 1,
             "principal_min": 2}[reduction]]
+    if reduction == "z" and values.shape[1] < 3:
+        return np.zeros(len(values), dtype=np.float64)
     if reduction in ("x", "y", "z"):
         index = {"x": 0, "y": 1, "z": 2}[reduction]
         return values[:, min(index, values.shape[1] - 1)]
@@ -1811,46 +1842,38 @@ def cook_reference_comparison(node):
         asset.parm("reference_status").set("Comparison is disabled.")
         return
     field = asset.evalParm("color_attrib")
-    attrib = geo.findPointAttrib(field)
-    if attrib is None:
+    path = asset.evalParm("PVD_file")
+    step = entry_index(asset)
+    block, _ = _selected_fields(asset)
+    reduction = _menu_token(asset, "color_reduction")
+    current_mesh = load_block(path, step, block)
+    current = (_scan_reduced(asset, current_mesh, field, reduction)
+               if current_mesh is not None else None)
+    if current is None or geo.findPointAttrib(field) is None:
         asset.parm("reference_status").set(
             f"Current field '{field}' is unavailable.")
         return
-    components = attrib.size()
-    current = np.frombuffer(
-        geo.pointFloatAttribValuesAsString(field), dtype=np.float32)
-    if components > 1:
-        current = current.reshape(-1, components)
-    current = _reduce_array(current, _menu_token(asset, "color_reduction"))
     reference_frame = asset.evalParm("reference_frame")
     reference_step = frame_step(asset, reference_frame)
     try:
-        reference_mesh = load_block(
-            asset.evalParm("PVD_file"), reference_step,
-            _source_block_token(asset), fallback=False)
-        reference = _mesh_field(reference_mesh, field) \
-            if reference_mesh is not None else None
+        reference_mesh = load_block(path, reference_step, block, fallback=False)
+        reference = (_scan_reduced(asset, reference_mesh, field, reduction)
+                     if reference_mesh is not None else None)
     except Exception as exc:
-        reference = None
         asset.parm("reference_status").set(f"Reference load failed: {exc}")
+        return
     if reference is None:
         asset.parm("reference_status").set(
             f"Reference field '{field}' is unavailable.")
         return
-    reference = _reduce_array(
-        reference, _menu_token(asset, "color_reduction"))
-    if len(reference) != len(current):
+    if (reference_mesh["topo_key"] != current_mesh["topo_key"]
+            or len(reference) != len(current)
+            or len(current) != geo.intrinsicValue("pointcount")):
         asset.parm("reference_status").set(
             "Reference comparison requires matching point topology.")
         return
-    delta = current - reference
     mode = _menu_token(asset, "reference_mode")
-    if mode == "absolute":
-        delta = np.abs(delta)
-    elif mode == "percent":
-        delta = np.divide(
-            delta * 100.0, np.abs(reference), out=np.zeros_like(delta),
-            where=np.abs(reference) > 1e-20)
+    delta = _apply_reference(current, reference, mode)
     if geo.findPointAttrib("reference_comparison") is None:
         geo.addAttrib(hou.attribType.Point, "reference_comparison", 0.0,
                       create_local_variable=False)
@@ -2005,6 +2028,8 @@ def probe_readout(node, point_number):
             lines.append(f"PVD Block: {block}")
     color_attrib = node.evalParm("color_attrib")
     units_text = node.evalParm("field_units").strip()
+    comparison = geo.findPointAttrib("reference_comparison") is not None
+    comparison_units = "%" if comparison and _percent_reference(node) else units_text
     if node.evalParm("smooth_field"):
         for_color = geo.findPointAttrib("for_color")
         if for_color is not None:
@@ -2012,7 +2037,7 @@ def probe_readout(node, point_number):
             lines.append(
                 f"Displayed (smoothed {_field_label(color_attrib)}): "
                 f"{_fmt(smoothed)}"
-                + (f" {units_text}" if units_text else ""))
+                + (f" {comparison_units}" if comparison_units else ""))
     seen_names = set()
     for name in ("solution", color_attrib,
                  "reference_comparison", "body_ids", "sidesets",
@@ -2026,8 +2051,8 @@ def probe_readout(node, point_number):
             continue
         value = point.attribValue(attrib)
         text = _fmt(value)
-        units = units_text if name in (color_attrib,
-                                       "reference_comparison") else ""
+        units = (comparison_units if name == "reference_comparison" else
+                 units_text if name == color_attrib else "")
         lines.append(f"{_field_label(name)}: {text}"
                      + (f" {units}" if units else ""))
     return position, "\n".join(lines)
@@ -2051,16 +2076,17 @@ def _scan_reduced(node, mesh, field, reduction):
 
 
 def _reference_reduced(node, path, block, field, reduction):
-    """Reduced reference-frame field, or None when comparison is off/missing."""
+    """Reference topology and reduced field, or (None, None)."""
     if not node.evalParm("reference_enable"):
-        return None
+        return None, None
     try:
         mesh = load_block(path, frame_step(
-            node, node.evalParm("reference_frame")), block)
-        return _scan_reduced(node, mesh, field, reduction) \
-            if mesh is not None else None
+            node, node.evalParm("reference_frame")), block, fallback=False)
+        if mesh is not None:
+            return mesh["topo_key"], _scan_reduced(node, mesh, field, reduction)
     except Exception:
-        return None
+        pass
+    return None, None
 
 
 def _apply_reference(values, reference_reduced, mode):
@@ -2072,7 +2098,7 @@ def _apply_reference(values, reference_reduced, mode):
         return np.abs(delta)
     if mode == "percent":
         return np.divide(delta * 100.0, np.abs(reference_reduced),
-                         out=np.zeros_like(delta),
+                         out=np.where(delta == 0, 0.0, np.nan),
                          where=np.abs(reference_reduced) > 1e-20)
     return delta
 
@@ -2188,13 +2214,20 @@ def _scan_displayed_values(node, path):
         for row in _SCAN_CACHE["rows"]:
             yield row
         return
+    _SCAN_CACHE.clear()
     rows = []
+    total = 0
     for frame, timestep, values in _scan_frames(node, path):
-        rows.append((frame, timestep,
-                     None if values is None else values.astype(np.float32)))
+        if rows is not None:
+            if values is not None:
+                total += values.size * np.dtype(np.float32).itemsize
+            if total > _SCAN_CACHE_MAX_BYTES:
+                rows = None
+            else:
+                rows.append((frame, timestep,
+                             None if values is None else values.astype(np.float32)))
         yield frame, timestep, values
-    total = sum(row[2].nbytes for row in rows if row[2] is not None)
-    if total <= _SCAN_CACHE_MAX_BYTES:
+    if rows is not None:
         _SCAN_CACHE["key"] = key
         _SCAN_CACHE["rows"] = rows
     else:
@@ -2212,7 +2245,8 @@ def _scan_frames(node, path, frames=None):
     field = node.evalParm("color_attrib")
     reduction = _menu_token(node, "color_reduction")
     block = _source_block_token(node)
-    reference_reduced = _reference_reduced(node, path, block, field, reduction)
+    reference_topo, reference_reduced = _reference_reduced(
+        node, path, block, field, reduction)
     reference_mode = _menu_token(node, "reference_mode")
     smooth = bool(node.evalParm("smooth_field"))
     visible = _visible_body_set(node)
@@ -2227,7 +2261,7 @@ def _scan_frames(node, path, frames=None):
         if mesh is None:
             yield frame, timestep, None
             continue
-        if reference_reduced is not None:
+        if reference_reduced is not None and mesh["topo_key"] == reference_topo:
             values = _scan_reduced(node, mesh, field, reduction)
             if values is not None:
                 values = _apply_reference(
@@ -2417,6 +2451,11 @@ def legend_values(node):
     return legend_tick_values(node)[::-1]
 
 
+def _percent_reference(node):
+    return (bool(node.evalParm("reference_enable"))
+            and _menu_token(node, "reference_mode") == "percent")
+
+
 def legend_title_text(node):
     custom = node.evalParm("legend_title").strip()
     if custom:
@@ -2426,7 +2465,7 @@ def legend_title_text(node):
     label = _field_label(field)
     if reduction not in ("", "auto"):
         label += " - " + REDUCTION_LABELS.get(reduction, reduction)
-    units = node.evalParm("field_units").strip()
+    units = "%" if _percent_reference(node) else node.evalParm("field_units").strip()
     if units:
         label += f" [{units}]"
     return label
@@ -2762,6 +2801,33 @@ def cook_topology(node):
 # =============================================================================
 
 
+_INITIAL_TET_NOTE = (
+    "Note: over 25% of higher-order sub-tets on step 0 appear inverted or "
+    "degenerate; this may indicate non-PolyFEM VTK Lagrange node ordering "
+    "or severe initial mesh distortion.")
+
+
+def _note_initial_tet_orientation(asset, mesh):
+    types = mesh["cell_types"]
+    sizes = mesh["cell_sizes"]
+    higher_order = np.isin(types, (24, 71)) & np.isin(sizes, (10, 20, 35))
+    sources = mesh["cell_sources"].get("tet")
+    if sources is None or not higher_order.any():
+        return
+    invalid = count = 0
+    for start in range(0, len(sources), 16384):
+        span = slice(start, start + 16384)
+        corners = mesh["cells"]["tet"][span][higher_order[sources[span]]]
+        a, b, c, d = mesh["points"][corners].transpose(1, 0, 2)
+        invalid += np.count_nonzero(_tet_volumes(a, b, c, d) <= 0)
+        count += len(corners)
+    if invalid * 4 > count:
+        status = asset.parm("availability_status")
+        previous = status.eval()
+        if _INITIAL_TET_NOTE not in previous:
+            status.set(f"{previous} {_INITIAL_TET_NOTE}".strip())
+
+
 def cook_frame(node):
     geo = node.geometry()  # copy of input geometry (points + prims)
     asset = _asset_of(node)
@@ -2792,6 +2858,8 @@ def cook_frame(node):
     points = mesh["points"]
     if len(points) != n_points:
         raise hou.NodeError("Point count mismatch with topology frame")
+    if step == 0:
+        _note_initial_tet_orientation(asset, mesh)
 
     # rest positions + per-frame fields, all bulk binary uploads
     _set_floats(geo.setPointFloatAttribValuesFromString, "P", points)
@@ -2985,11 +3053,9 @@ def _bump_data_epoch(node):
 def refresh(kwargs=None, force_clear_cache=False):
     """Pick up new timesteps of the SAME simulation.
 
-    Every disk cache (parsed pvd/vtu, field info, sequence metadata, frame
-    scans) is keyed on (path, mtime, size), so files a running sim rewrites
-    invalidate themselves and unchanged steps keep hitting the cache -- no
-    wholesale clearing here, and the current frame position is never
-    touched. The cooked-frame cache (cache1) is kept as long as every frame
+    Parsed files are keyed on (path, mtime, size). Aggregate caches are
+    invalidated because referenced meshes can change without the PVD changing.
+    The current frame stays in place. The cooked-frame cache is kept as long as every frame
     it may hold still shows the same step from the same files; a frame made
     from rewritten files (a rerun into the same folder) or from a step the
     run had not reached yet empties it, since the Cache SOP cannot drop
@@ -2997,6 +3063,7 @@ def refresh(kwargs=None, force_clear_cache=False):
     """
     node = hou.pwd() if kwargs is None else kwargs["node"]
     pvd_path = node.evalParm("PVD_file")
+    _invalidate_pvd_aggregates(pvd_path)
     try:
         entries = read_pvd(pvd_path)
     except Exception as e:
@@ -3029,6 +3096,31 @@ def refresh(kwargs=None, force_clear_cache=False):
         clear_cache(kwargs)
 
 
+def _cache_path(key):
+    while isinstance(key, tuple) and key:
+        key = key[0]
+    return os.path.abspath(key) if isinstance(key, str) else None
+
+
+def _invalidate_pvd_aggregates(pvd_path):
+    if not pvd_path:
+        return
+    path = os.path.abspath(pvd_path)
+    for cache in (_SEQUENCE_METADATA_CACHE, _FORCE_FRAME_CACHE):
+        for key in list(cache):
+            if _cache_path(key) == path:
+                del cache[key]
+    for sid, memo in list(_FORCE_CURVES.items()):
+        if _cache_path(memo["key"]) == path:
+            del _FORCE_CURVES[sid]
+    record = scene_record_path(path)
+    for key in list(_FORCE_NODES_CACHE):
+        if _cache_path(key) == record:
+            del _FORCE_NODES_CACHE[key]
+    if _cache_path(_SCAN_CACHE.get("key")) == path:
+        _SCAN_CACHE.clear()
+
+
 def _invalidate_pvd_caches(pvd_path):
     """Drop cached disk data belonging to this PVD's folder without evicting
     other Read PVD nodes in the same Houdini session."""
@@ -3036,25 +3128,12 @@ def _invalidate_pvd_caches(pvd_path):
         return
     folder = os.path.dirname(os.path.abspath(pvd_path))
     prefix = folder + os.sep
-
-    def _matches(key):
-        first = key
-        while isinstance(first, tuple) and first:
-            first = first[0]
-        if not isinstance(first, str):
-            return False
-        norm = os.path.abspath(first)
-        return norm == os.path.abspath(pvd_path) or norm.startswith(prefix)
-
-    for cache_dict in (_PVD_CACHE, _FIELD_INFO_CACHE, _VTU_CACHE,
-                       _SEQUENCE_METADATA_CACHE, _FIBER_COMPANION_CACHE,
-                       _FIBER_POINT_CACHE, _MANIFEST_CACHE,
-                       _FORCE_FRAME_CACHE):
-        for k in [k for k in list(cache_dict) if _matches(k)]:
-            cache_dict.pop(k, None)
-    scan_key = _SCAN_CACHE.get("key")
-    if scan_key and _matches(scan_key):
-        _SCAN_CACHE.clear()
+    _invalidate_pvd_aggregates(pvd_path)
+    for cache in (_PVD_CACHE, _VTM_CACHE, _FIELD_INFO_CACHE, _VTU_CACHE,
+                  _FIBER_COMPANION_CACHE, _FIBER_POINT_CACHE, _MANIFEST_CACHE):
+        for key in list(cache):
+            if (_cache_path(key) or "").startswith(prefix):
+                del cache[key]
 
 
 def start(kwargs=None):
@@ -3140,110 +3219,150 @@ def _manifest_is_finished(manifest):
             or completion.get("exit_status") is not None)
 
 
-def poll_running_simulation(node, force=False, jump_frame=None):
-    """Check once whether a running simulation wrote new steps or finished.
-
-    Returns {"action": "noop" | "refreshed" | "finished" | "stopped", "steps": int}.
-    Rate-limited by follow_interval unless force=True.
-    """
+def _follow_identity(path, manifest):
+    if not manifest:
+        return None
+    for key in ("run_id", "started_at"):
+        if manifest.get(key):
+            return key, manifest[key]
     try:
-        sid = node.sessionId()
-        enabled = bool(node.evalParm("follow_running"))
-        pvd_path = node.evalParm("PVD_file").strip()
-        interval = max(0.5, float(node.evalParm("follow_interval")))
-    except hou.ObjectWasDeleted:
-        _stop_following(node)
-        return {"action": "stopped", "steps": 0}
-    if not enabled or not pvd_path:
+        manifest_path = os.path.join(os.path.dirname(os.path.abspath(path)),
+                                     "run-manifest.json")
+        return "file", _file_key(manifest_path)[1:]
+    except OSError:
+        return None
+
+
+def _follow_status(node, message):
+    node.parm("availability_status").set(message)
+    if hou.isUIAvailable():
+        hou.ui.setStatusMessage(message, hou.severityType.Message)
+
+
+def poll_running_simulation(node, force=False, jump_frame=None):
+    """Check once whether a running simulation wrote new steps or finished."""
+    sid = node.sessionId()
+    pvd_path = node.evalParm("PVD_file").strip()
+    if not node.evalParm("follow_running") or not pvd_path:
         _stop_following(sid)
         return {"action": "stopped", "steps": 0}
-
     watcher = _FOLLOW_WATCHERS.setdefault(sid, {
-        "node": node, "last_poll": 0.0, "last_pvd_key": None,
-        "last_count": 0, "callback": None,
+        "last_poll": 0.0, "path": pvd_path, "last_pvd_key": None,
+        "last_count": 0, "baseline": None, "run_identity": None,
     })
+    if watcher["path"] != pvd_path:
+        watcher.update(path=pvd_path, last_pvd_key=None, last_count=0,
+                       baseline=None, run_identity=None)
     now = time.monotonic()
-    if not force and (now - watcher["last_poll"]) < interval:
+    interval = max(0.5, float(node.evalParm("follow_interval")))
+    if not force and now - watcher["last_poll"] < interval:
         return {"action": "noop", "steps": watcher["last_count"]}
     watcher["last_poll"] = now
 
-    if not os.path.isfile(pvd_path):
-        return {"action": "noop", "steps": watcher["last_count"]}
-    try:
-        pvd_key = _file_key(pvd_path)
-    except OSError:
+    manifest = run_manifest(pvd_path)
+    identity = _follow_identity(pvd_path, manifest)
+    baseline = watcher["baseline"]
+    if baseline is not None and (identity is None or identity == baseline):
+        _follow_status(node, "Waiting for new run (previous run completed)")
         return {"action": "noop", "steps": watcher["last_count"]}
 
-    manifest = run_manifest(pvd_path)
+    previous = watcher["run_identity"]
+    if identity is not None:
+        if identity != previous and (baseline is not None or previous is not None):
+            watcher.update(last_pvd_key=None, last_count=0)
+            _invalidate_pvd_caches(pvd_path)
+            _bump_data_epoch(node)
+            clear_cache({"node": node})
+        watcher.update(baseline=None, run_identity=identity)
     finished = _manifest_is_finished(manifest)
     action = "noop"
     steps = watcher["last_count"]
+    try:
+        pvd_key = _file_key(pvd_path)
+    except FileNotFoundError:
+        pvd_key = None
+        watcher.update(last_pvd_key=None, last_count=0)
+        steps = 0
 
-    if pvd_key != watcher["last_pvd_key"]:
+    if pvd_key is not None and (pvd_key != watcher["last_pvd_key"] or finished):
         try:
             entries = read_pvd(pvd_path)
-        except Exception:
-            # Mid-write PVD file: skip this tick and retry next interval.
+        except (OSError, ET.ParseError, VtuParseError, ValueError):
+            # The solver may be replacing the collection. Retry next tick.
             return {"action": "noop", "steps": steps}
+        previous_count = steps
+        steps = len(entries)
+        if steps < previous_count:
+            _bump_data_epoch(node)
+            clear_cache({"node": node})
+            watcher.update(last_pvd_key=None, last_count=0)
         if entries:
-            prev_count = watcher["last_count"]
-            watcher["last_pvd_key"] = pvd_key
-            watcher["last_count"] = len(entries)
-            steps = len(entries)
             refresh({"node": node})
             do_jump = hou.isUIAvailable() if jump_frame is None else bool(jump_frame)
-            if do_jump and (len(entries) != prev_count or force):
-                hou.setFrame(int(entry_frame(node, len(entries) - 1)))
+            if do_jump and (steps != previous_count or force):
+                hou.setFrame(int(entry_frame(node, steps - 1)))
             action = "refreshed"
+        watcher.update(last_pvd_key=pvd_key, last_count=steps)
 
     if finished:
-        if node.parm("follow_running") is not None:
-            node.parm("follow_running").set(0)
+        node.parm("follow_running").set(0)
         _stop_following(sid)
-        if hou.isUIAvailable():
-            hou.ui.setStatusMessage(
-                f"Run finished ({steps} steps) — stopped following.",
-                hou.severityType.Message)
-        return {"action": "finished", "steps": steps}
+        _follow_status(node, f"Run finished ({steps} steps) — stopped following.")
+        action = "finished"
     return {"action": action, "steps": steps}
 
 
-def toggle_follow_running(kwargs):
-    """Callback for Follow Running Simulation toggle."""
+def toggle_follow_running(kwargs, restoring=False):
+    """Arm Follow explicitly, or restore the saved setting after scene load."""
     node = kwargs["node"]
     sid = node.sessionId()
-    if not node.evalParm("follow_running"):
-        _stop_following(sid)
-        return
-    pvd_path = node.evalParm("PVD_file").strip()
-    if not pvd_path:
-        node.parm("follow_running").set(0)
-        _message("Select a PVD file before enabling Follow Running Simulation.")
-        return
     _stop_following(sid)
+    if not node.evalParm("follow_running"):
+        return
+    path = node.evalParm("PVD_file").strip()
+    if not path:
+        node.parm("follow_running").set(0)
+        _follow_status(node, "Select a PVD file before enabling Follow Running Simulation.")
+        return
+    manifest = run_manifest(path)
+    finished = _manifest_is_finished(manifest)
+    if restoring and finished:
+        node.parm("follow_running").set(0)
+        return
+    identity = _follow_identity(path, manifest)
     try:
-        pvd_key = _file_key(pvd_path) if os.path.isfile(pvd_path) else None
-        count = len(read_pvd(pvd_path)) if pvd_key is not None else 0
-    except Exception:
+        pvd_key = _file_key(path)
+        count = len(read_pvd(path))
+    except (OSError, ET.ParseError, VtuParseError, ValueError):
         pvd_key, count = None, 0
 
-    def _tick():
+    def tick(force=False):
         try:
-            poll_running_simulation(node, force=False)
-        except Exception:
+            poll_running_simulation(node, force=force)
+        except hou.ObjectWasDeleted:
             _stop_following(sid)
+        except (OSError, ET.ParseError, VtuParseError) as error:
+            _follow_status(node, f"Waiting for simulation output: {error}")
+        except Exception as error:
+            _stop_following(sid)
+            node.parm("follow_running").set(0)
+            _follow_status(node, f"Follow Running Simulation stopped: {error}")
 
-    watcher = {
-        "node": node,
-        "last_poll": time.monotonic(),
-        "last_pvd_key": pvd_key,
-        "last_count": count,
-        "callback": _tick if hou.isUIAvailable() else None,
+    _FOLLOW_WATCHERS[sid] = {
+        "last_poll": 0.0, "path": path, "last_pvd_key": pvd_key,
+        "last_count": count, "baseline": identity if finished else None,
+        "run_identity": None if finished else identity,
+        "callback": tick if hou.isUIAvailable() else None,
     }
-    _FOLLOW_WATCHERS[sid] = watcher
     if hou.isUIAvailable():
-        hou.ui.addEventLoopCallback(_tick)
-    poll_running_simulation(node, force=True)
+        try:
+            hou.ui.addEventLoopCallback(tick)
+        except Exception as error:
+            _stop_following(sid)
+            node.parm("follow_running").set(0)
+            _follow_status(node, f"Follow Running Simulation stopped: {error}")
+            return
+    tick(force=True)
 
 
 def _frame_result(node):
@@ -4104,7 +4223,7 @@ FORCE_CSV = "force_curves.csv"
 FORCE_QUANTITIES = ("reaction", "contact")
 FORCE_COMPONENTS = ("x", "y", "z", "magnitude")
 FORCE_AGAINST = ("displacement", "time")
-_FORCE_NODES_CACHE = {}
+_FORCE_NODES_CACHE = OrderedDict()
 _FORCE_CURVES = {}
 _CHART_WINDOWS = {}
 
@@ -4185,16 +4304,20 @@ def _face_lattice(vertices, faces, order):
 def _force_nodes(record_key, mesh, definitions, chosen):
     """{set: (output points of its nodes, nodes looked for, not found)}:
     each node once (a representative of its coincidence group), matched by
-    position within the set's body. Cached per record and topology."""
-    key = (record_key, str(mesh.get("topo_key")), tuple(chosen))
-    cached = _FORCE_NODES_CACHE.get(key)
-    if cached is not None:
-        return cached
-    points = np.asarray(mesh["points"], dtype=np.float64)
+    position within the set's body. Cached per record and rest geometry."""
+    points = np.ascontiguousarray(mesh["points"], dtype=np.float64)
     body = mesh["point_data"].get("body_ids")
     if body is not None:
         body = np.rint(np.asarray(body, dtype=np.float64).reshape(
             len(points), -1)[:, 0]).astype(np.int64)
+    digest = hashlib.blake2b(points, digest_size=12)
+    if body is not None:
+        digest.update(body)
+    key = (record_key, str(mesh.get("topo_key")), tuple(chosen), digest.digest())
+    cached = _FORCE_NODES_CACHE.get(key)
+    if cached is not None:
+        _FORCE_NODES_CACHE.move_to_end(key)
+        return cached
     _, representative = _coincidence_groups(points, body)
     reps = np.flatnonzero(representative)
     extent = float(np.linalg.norm(np.ptp(points, axis=0))) or 1.0
@@ -4221,9 +4344,9 @@ def _force_nodes(record_key, mesh, definitions, chosen):
         found = distance <= tolerance
         result[index] = (np.unique(candidates[nearest[found]]), len(targets),
                          int((~found).sum()))
-    if len(_FORCE_NODES_CACHE) > 16:
-        _FORCE_NODES_CACHE.clear()
     _FORCE_NODES_CACHE[key] = result
+    if len(_FORCE_NODES_CACHE) > 16:
+        _FORCE_NODES_CACHE.popitem(last=False)
     return result
 
 
@@ -4705,7 +4828,7 @@ def open_force_csv(kwargs):
 
 EXPORT_FOLDER = "exports"
 _TET_TYPES = (10, 24, 71)
-_HEX_TYPES = (12, 25, 72)
+_HEX_TYPES = (12, 25, 29, 72)
 _CORNERS = {"tet": 4, "hex": 8}
 _PARAMS_CACHE = {}
 _TOPOLOGY_CACHE = {}
@@ -4958,6 +5081,7 @@ def volume_topology(mesh):
     point_element[members] = owner
     topology = {
         "key": key, "cells": cells, "hex": hexes, "starts": starts,
+        "types": types[cells],
         "sizes": sizes, "corners": corners, "corner_count": corner_count,
         "owner": owner, "members": members,
         "body": point_body[corners[:, 0]], "point_body": point_body,
@@ -5007,30 +5131,36 @@ def _p2_tet_volumes(nodes):
     return volume
 
 
+def _hex_jacobian_determinants(nodes, u, v, w):
+    dN = np.empty((8, 3))
+    for k, (a, b, c) in enumerate(_HEX_REFERENCE):
+        fu, fv, fw = (u if a else 1 - u), (v if b else 1 - v), (w if c else 1 - w)
+        su, sv, sw = (1 if a else -1), (1 if b else -1), (1 if c else -1)
+        dN[k] = (su * fv * fw, fu * sv * fw, fu * fv * sw)
+    return np.linalg.det(np.einsum("nki,kj->nij", nodes, dN))
+
+
 def hex_volumes(nodes):
-    """Exact volume of trilinear hexes from their 8 corners (n, 8, 3) in
-    VTK / Gmsh order (2 x 2 x 2 Gauss points)."""
+    """Exact signed volume of trilinear hexes in VTK / Gmsh order."""
     g = 0.5 / math.sqrt(3.0)
     volume = np.zeros(len(nodes))
-    for u in (0.5 - g, 0.5 + g):
-        for v in (0.5 - g, 0.5 + g):
-            for w in (0.5 - g, 0.5 + g):
-                dN = np.empty((8, 3))
-                for k, (a, b, c) in enumerate(_HEX_REFERENCE):
-                    fu, fv, fw = (u if a else 1 - u), (v if b else 1 - v), \
-                        (w if c else 1 - w)
-                    su, sv, sw = (1 if a else -1), (1 if b else -1), \
-                        (1 if c else -1)
-                    dN[k] = (su * fv * fw, fu * sv * fw, fu * fv * sw)
-                jacobian = np.einsum("nki,kj->nij", nodes, dN)
-                volume += np.linalg.det(jacobian) / 8.0
+    for u, v, w in itertools.product((0.5 - g, 0.5 + g), repeat=3):
+        volume += _hex_jacobian_determinants(nodes, u, v, w) / 8.0
     return volume
+
+
+def _inverted_hex_corners(nodes, orientation):
+    invalid = np.zeros(len(nodes), dtype=bool)
+    for u, v, w in _HEX_REFERENCE:
+        invalid |= ~(_hex_jacobian_determinants(nodes, u, v, w) * orientation > 0)
+    return invalid
 
 
 def element_volumes(topology, positions):
     """Signed volume of every element with its output points at
     `positions`: exact for straight and P2 tets and trilinear hexes;
-    P3/P4 tets as the sum of Read PVD's display sub-tets."""
+    P3/P4 tets and Q2/Q3 Lagrange or triquadratic hexes as the sum of
+    Read PVD's linear display sub-elements."""
     positions = np.asarray(positions, dtype=np.float64)
     volume = np.zeros(topology["n_elements"])
     corners = topology["corners"]
@@ -5060,8 +5190,19 @@ def element_volumes(topology, positions):
         c = corners[other, :4]
         volume[other] = _tet_volumes(*(positions[c[:, i]] for i in range(4)))
     hexes = topology["hex"]
-    if hexes.any():
-        volume[hexes] = hex_volumes(positions[corners[hexes]])
+    linear_hexes = hexes & (sizes != 27) & (sizes != 64)
+    if linear_hexes.any():
+        volume[linear_hexes] = hex_volumes(positions[corners[linear_hexes]])
+    triquadratic = topology["types"] == 29
+    for mask, table in ((hexes & (sizes == 27) & triquadratic, HEX27_TRIQUAD_SUBDIV),
+                        (hexes & (sizes == 27) & ~triquadratic, HEX27_SUBDIV),
+                        (hexes & (sizes == 64), HEX64_SUBDIV)):
+        selected = np.flatnonzero(mask)
+        for start in range(0, len(selected), 4096):
+            rows = selected[start:start + 4096]
+            sub = connectivity[starts[rows, None, None] + table]
+            volume[rows] = hex_volumes(positions[sub.reshape(-1, 8)]).reshape(
+                len(rows), len(table)).sum(axis=1)
     return volume
 
 
@@ -5327,19 +5468,22 @@ def deformed_mesh_positions(geometry, match, topology, solution, coordinates):
     corners = geometry["file_corners"]
     is_hex = geometry["is_hex"]
     ratio = np.empty(len(corners))
+    locally_inverted = np.zeros(len(corners), dtype=bool)
     for hexes in (False, True):
         local = np.flatnonzero(is_hex == hexes)
         if not len(local):
             continue
         if hexes:
             before = hex_volumes(rest[corners[local]])
-            after = hex_volumes(deformed[corners[local]])
+            current = deformed[corners[local]]
+            after = hex_volumes(current)
+            locally_inverted[local] = _inverted_hex_corners(current, np.sign(before))
         else:
             c = corners[local, :4]
             before = _tet_volumes(*(rest[c[:, i]] for i in range(4)))
             after = _tet_volumes(*(deformed[c[:, i]] for i in range(4)))
         ratio[local] = after / np.where(before == 0, np.nan, before)
-    bad = np.flatnonzero(~(ratio > 0))
+    bad = np.flatnonzero(~(ratio > 0) | locally_inverted)
     if len(bad):
         listed = ", ".join(str(int(i) + 1) for i in bad[:10])
         more = f" and {len(bad) - 10} more" if len(bad) > 10 else ""
@@ -5356,6 +5500,7 @@ def deformed_mesh_positions(geometry, match, topology, solution, coordinates):
         positions[used] = pulled[used]
     report = {"nodes": int(used.sum()), "unused": int((~used).sum()),
               "elements": len(corners),
+              "hex_corners_checked": bool(is_hex.any()),
               "ratio_min": float(np.nanmin(ratio)),
               "ratio_min_at": int(np.nanargmin(ratio)) + 1,
               "ratio_max": float(np.nanmax(ratio)),
@@ -5412,6 +5557,7 @@ def export_deformed_mesh(node):
     lines = [f"Step {step} of {len(entries) - 1} (t = {entries[step][0]:.6g})"
              f" written to {folder}"]
     written = []
+    used_names = set()
     for (geometry, positions, report, curvature), stem in zip(results, stems):
         if stems.count(stem) > 1:
             stem = f"{stem}_geo{geometry['number']}"
@@ -5419,16 +5565,24 @@ def export_deformed_mesh(node):
         # simulation coordinates get their own name: loading one in place of
         # the other would apply the Transform twice (or not at all)
         suffix = "_simulation" if coordinates == "simulation" else ""
-        path = os.path.join(
-            folder, f"{stem}_step{step:0{width}d}{suffix}{extension}")
+        tail = f"_step{step:0{width}d}{suffix}{extension}"
+        filename = stem + tail
+        serial = 2
+        while filename.casefold() in used_names:
+            filename = f"{stem}_{serial}{tail}"
+            serial += 1
+        used_names.add(filename.casefold())
+        path = os.path.join(folder, filename)
         write_moved_nodes(geometry["path"], positions, path)
         written.append(path)
+        inversion_check = ("none inverted in the tet and hex-corner checks"
+                           if report["hex_corners_checked"] else "none inverted")
         lines.append(
             f"Geometry {geometry['number']}: {os.path.basename(path)} -- "
             f"{report['nodes']} nodes moved, {report['elements']} elements, "
             f"element volume ratio {report['ratio_min']:.4g} (element "
             f"{report['ratio_min_at']}) to {report['ratio_max']:.4g} "
-            f"(element {report['ratio_max_at']}), none inverted.")
+            f"(element {report['ratio_max_at']}), {inversion_check}.")
         if report["unused"]:
             lines.append(f"  {report['unused']} node(s) that no element uses "
                          "keep their positions.")
@@ -5630,11 +5784,15 @@ _DIMENSIONLESS_FIELDS = {
     "stress_triaxiality", "nu", "k2", "kappa", "discr"}
 
 
+def _is_fiber_quantity(field):
+    return ":" in field and field.startswith("fiber_")
+
+
 def quantity_dimension(field):
     """'length', 'stress', ... or 'none' (dimensionless) or None (unknown)."""
     if field == "_volume":
         return "volume"
-    if field.startswith("fiber_"):
+    if _is_fiber_quantity(field):
         return "none"
     name = field[:-4] if field.endswith("_avg") else field
     base = name.rsplit("_", 1)[-1] if "_" in name else name
@@ -5761,7 +5919,7 @@ def _volume_fields(node):
 
 
 def _field_components(node, field):
-    if field == "_volume" or field.startswith("fiber_"):
+    if field == "_volume" or _is_fiber_quantity(field):
         return 1
     return _volume_fields(node).get(field, 0)
 
@@ -5919,7 +6077,7 @@ def point_or_element_values(mesh, topology, field, token, element_rows,
     fe = point_node >= 0
     needed[fe] |= node_mask[point_node[fe]]
     rows = np.flatnonzero(needed)
-    if field.startswith("fiber_"):
+    if _is_fiber_quantity(field):
         values = _fiber_point_values(mesh, field, rows, pvd_path)
     else:
         raw = _mesh_field(_sub_mesh(mesh, rows) if len(rows) < len(needed)
@@ -6389,7 +6547,7 @@ def _quantity_header(quantity, components):
         return quantity["label"]
     field, token = quantity["field"], quantity["value"]
     name = _HEADER_NAMES.get(field[:-4] if field.endswith("_avg") else field)
-    if field.startswith("fiber_"):
+    if _is_fiber_quantity(field):
         kind, family = field.split(":", 1)
         base = {"fiber_stretch": "fiber stretch",
                 "fiber_isochoric_stretch": "fiber isochoric stretch",
@@ -6609,7 +6767,7 @@ def export_data(node, progress=None):
     probe_order = list(dict.fromkeys([steps[0], steps[-1]] + list(steps)))
     missing_fields = {q["field"] for q in quantities
                       if q["field"] != "_volume"
-                      and not q["field"].startswith("fiber_")}
+                      and not _is_fiber_quantity(q["field"])}
     for step in probe_order:
         if not missing_fields:
             break
@@ -6622,7 +6780,7 @@ def export_data(node, progress=None):
         missing_fields -= set(avail)
     components = {}
     for q in quantities:
-        if q["field"] == "_volume" or q["field"].startswith("fiber_"):
+        if q["field"] == "_volume" or _is_fiber_quantity(q["field"]):
             components[q["index"]] = 1
         else:
             components[q["index"]] = step_fields.get(
