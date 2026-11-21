@@ -338,6 +338,11 @@ def test_legend_and_gnomon_autoplace(work):
     assert 0.0 < l_ty < 0.015, f"legend should be vertically centered, got {l_ty}"
     assert abs(l_tz) < 1e-4, f"legend should align with model Z midpoint, got {l_tz}"
 
+    # Verify scene legend glyphs are pre-triangulated (no concave N-gons > 4 verts)
+    legend_geo = node.node("legend_bar").geometry()
+    max_legend_verts = max(p.numVertices() for p in legend_geo.prims())
+    assert max_legend_verts <= 4, f"expected triangulated text + quad bar, got {max_legend_verts}-gon"
+
     # 2. Enabling Gnomon auto-sizes compactly and places cleanly on lower-left
     node.parm("gnomon_show").set(1)
     mod.gnomon_show_changed({"node": node})

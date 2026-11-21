@@ -2465,15 +2465,32 @@ _LEGEND_TITLE_GAP = 0.06
 
 
 def _font_geometry(text, size, halign, valign, position, color, rotate=0):
-    """Render `text` as filled polygons placed/aligned in local space."""
+    """Render `text` as pre-triangulated filled polygons in local space.
+
+    Generates glyphs at unit scale (fontsize=1.0), triangulates concave
+    bridged-hole glyph N-gons via the Divide SOP while vertices are well
+    above float32 precision limits, and then scales/positions to target size.
+    This avoids Houdini's viewport ear-clipper artifacts on small-scale text.
+    """
     verb = hou.sopNodeTypeCategory().nodeVerb("font")
     verb.setParms({
-        "text": text, "fontsize": float(size), "halign": halign,
+        "text": text, "fontsize": 1.0, "halign": halign,
         "valign": valign, "type": 2, "hole": True,
-        "t": (float(position[0]), float(position[1]), 0.0),
-        "r": (0.0, 0.0, float(rotate))})
-    geo = hou.Geometry()
-    verb.execute(geo, [])
+        "t": (0.0, 0.0, 0.0), "r": (0.0, 0.0, 0.0)})
+    raw = hou.Geometry()
+    verb.execute(raw, [])
+    if len(raw.prims()):
+        geo = hou.Geometry()
+        div = hou.sopNodeTypeCategory().nodeVerb("divide")
+        div.setParms({"convex": True, "numsides": 3, "usemaxsides": True})
+        div.execute(geo, [raw])
+        xform = (hou.hmath.buildScale(float(size), float(size), 1.0)
+                 * hou.hmath.buildRotate((0.0, 0.0, float(rotate)), "xyz")
+                 * hou.hmath.buildTranslate(
+                     float(position[0]), float(position[1]), 0.0))
+        geo.transform(xform)
+    else:
+        geo = raw
     geo.addAttrib(hou.attribType.Point, "Cd", (1.0, 1.0, 1.0),
                   create_local_variable=False)
     if len(geo.points()):
