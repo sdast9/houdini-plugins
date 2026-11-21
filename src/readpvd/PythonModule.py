@@ -1254,15 +1254,32 @@ def _available_body_ids(node):
     path = node.evalParm("PVD_file")
     if not path:
         return []
+    frame = entry_index(node)
+    selected = _source_block_token(node)
+    # Metadata scan is already cached and costs milliseconds: if this block
+    # has no body_ids field at all, avoid reading any mesh arrays from disk.
     try:
-        blocks = load_frame(path, entry_index(node))
+        info = frame_field_info(path, frame)
+    except Exception:
+        info = {}
+    if info:
+        block_name = selected if selected in info else next(iter(info))
+        if "body_ids" not in info[block_name].get("point_data", {}):
+            return []
+    try:
+        block_paths = _frame_block_paths(path, frame)
     except Exception:
         return []
-    mesh = blocks.get(_source_block_token(node)) or next(
-        iter(blocks.values()), None)
-    if mesh is None:
+    block_path = block_paths.get(selected)
+    if not block_path or not os.path.isfile(block_path):
+        block_path = next(
+            (p for p in block_paths.values() if os.path.isfile(p)), None)
+    if not block_path:
         return []
-    body = mesh["point_data"].get("body_ids")
+    try:
+        body = read_mesh_point_field(block_path, "body_ids")
+    except Exception:
+        return []
     if body is None:
         return []
     return sorted(int(value) for value in np.unique(np.asarray(body)))
@@ -1419,13 +1436,18 @@ def _autocenter_clip(node):
     if not path:
         return
     try:
-        blocks = load_frame(path, 0)
+        block_paths = _frame_block_paths(path, 0)
     except Exception:
         return
     low = np.full(3, np.inf)
     high = np.full(3, -np.inf)
-    for mesh in blocks.values():
-        points = np.asarray(mesh.get("points", ()), dtype=np.float64)
+    for block_path in block_paths.values():
+        if not os.path.isfile(block_path):
+            continue
+        try:
+            points = np.asarray(read_mesh_points(block_path), dtype=np.float64)
+        except Exception:
+            continue
         if points.ndim == 2 and len(points):
             low = np.minimum(low, points.min(axis=0))
             high = np.maximum(high, points.max(axis=0))
@@ -1803,8 +1825,9 @@ def cook_reference_comparison(node):
     reference_frame = asset.evalParm("reference_frame")
     reference_step = frame_step(asset, reference_frame)
     try:
-        blocks = load_frame(asset.evalParm("PVD_file"), reference_step)
-        reference_mesh = blocks.get(_source_block_token(asset))
+        reference_mesh = load_block(
+            asset.evalParm("PVD_file"), reference_step,
+            _source_block_token(asset), fallback=False)
         reference = _mesh_field(reference_mesh, field) \
             if reference_mesh is not None else None
     except Exception as exc:
@@ -2032,9 +2055,8 @@ def _reference_reduced(node, path, block, field, reduction):
     if not node.evalParm("reference_enable"):
         return None
     try:
-        blocks = load_frame(path, frame_step(
-            node, node.evalParm("reference_frame")))
-        mesh = blocks.get(block) or next(iter(blocks.values()), None)
+        mesh = load_block(path, frame_step(
+            node, node.evalParm("reference_frame")), block)
         return _scan_reduced(node, mesh, field, reduction) \
             if mesh is not None else None
     except Exception:
@@ -2198,11 +2220,10 @@ def _scan_frames(node, path, frames=None):
     for frame in (range(len(entries)) if frames is None else frames):
         timestep = entries[frame][0]
         try:
-            blocks = load_frame(path, frame)
+            mesh = load_block(path, frame, block)
         except Exception:
             yield frame, timestep, None
             continue
-        mesh = blocks.get(block) or next(iter(blocks.values()), None)
         if mesh is None:
             yield frame, timestep, None
             continue
@@ -2336,7 +2357,7 @@ def cook_multi_blocks(node):
               and asset.evalParm(f"multi_{name.lower()}_show")]
     if not wanted:
         return
-    blocks = load_frame(path, entry_index(asset))
+    blocks = load_frame(path, entry_index(asset), blocks=wanted)
     invalid_rgb = tuple(float(c) for c in asset.evalParmTuple("invalid_color"))
 
     for block_name, mesh in blocks.items():
@@ -2669,8 +2690,9 @@ def cook_topology(node):
     else:
         frame_index = frame_step(asset, asset.evalParm("topo_frame"))
 
-    blocks = load_frame(pvd_path, frame_index)
-    mesh = _block_for(asset, blocks)
+    mesh = load_block(pvd_path, frame_index, _source_block_token(asset))
+    if mesh is None:
+        raise hou.NodeError("No readable mesh block in this frame.")
 
     points = mesh["points"]
     geo.createPoints(np.ascontiguousarray(points, dtype=np.float64))
@@ -2731,8 +2753,9 @@ def cook_frame(node):
         return
 
     step = entry_index(asset)
-    blocks = load_frame(pvd_path, step)
-    mesh = _block_for(asset, blocks)
+    mesh = load_block(pvd_path, step, _source_block_token(asset))
+    if mesh is None:
+        raise hou.NodeError("No readable mesh block in this frame.")
     # What this frame was made from, so Refresh can tell a cached frame whose
     # files were rewritten (a rerun into the same folder) or that showed a
     # step the run had not reached yet (review 2026-11-14, items 1 and 2).
@@ -3026,16 +3049,30 @@ def start(kwargs=None):
     if watcher is not None:
         watcher["last_pvd_key"] = None
         watcher["last_count"] = 0
-    _invalidate_pvd_caches(node.evalParm("PVD_file"))
-    refresh(kwargs, force_clear_cache=True)
-    _autocenter_clip(node)
-    if hou.isUIAvailable() and (
+    pvd_path = node.evalParm("PVD_file")
+    _invalidate_pvd_caches(pvd_path)
+    # Jump to the first frame before inspecting frame options so start() does
+    # not inspect Houdini's default frame 1 only to discard it for frame 0.
+    if hou.isUIAvailable() and pvd_path and (
             node.parm("update_playbar") is None
             or node.evalParm("update_playbar")):
-        hou.setFrame(playbar_range(node)[0])
+        try:
+            if read_pvd(pvd_path):
+                first, last = playbar_range(node)
+                hou.playbar.setUseIntegerFrames(True)
+                hou.playbar.setFrameIncrement(1)
+                hou.playbar.setFrameRange(first, last)
+                hou.playbar.setPlaybackRange(first, last)
+                hou.setFrame(first)
+        except Exception:
+            pass
+    refresh(kwargs, force_clear_cache=True)
     # First look: colors spread over the result's values instead of the
     # 0..1 a new node starts with, and the model centered in the viewport.
+    # Run auto_range_default before _autocenter_clip so frame 0's active block
+    # is already warm in _VTU_CACHE when _autocenter_clip inspects its bounds.
     auto_range_default(node)
+    _autocenter_clip(node)
     update_color_status({"node": node})
     _frame_result(node)
 
@@ -3059,6 +3096,27 @@ def _stop_following(node_or_id):
             hou.ui.removeEventLoopCallback(callback)
         except Exception:
             pass
+
+
+def _manifest_is_finished(manifest):
+    """True only once run-manifest.json records a finalized completion state.
+
+    PolyFEM writes completion={"status": "running", "exit_status": null,
+    "finished_at": null, ...} as soon as a run starts, so a non-empty
+    completion dict alone does NOT mean the run has finished.
+    """
+    if not isinstance(manifest, dict):
+        return False
+    completion = manifest.get("completion")
+    if not isinstance(completion, dict) or not completion:
+        return False
+    status = str(completion.get("status") or "").strip().lower()
+    if status in ("running", "in_progress", "active"):
+        return False
+    if status:
+        return True
+    return (completion.get("finished_at") is not None
+            or completion.get("exit_status") is not None)
 
 
 def poll_running_simulation(node, force=False, jump_frame=None):
@@ -3096,7 +3154,7 @@ def poll_running_simulation(node, force=False, jump_frame=None):
         return {"action": "noop", "steps": watcher["last_count"]}
 
     manifest = run_manifest(pvd_path)
-    finished = bool(isinstance(manifest, dict) and manifest.get("completion"))
+    finished = _manifest_is_finished(manifest)
     action = "noop"
     steps = watcher["last_count"]
 
@@ -4031,7 +4089,7 @@ def force_curves(node):
     nodes = {}
     for step in range(len(entries)):
         try:
-            mesh = _volume_block(load_frame(path, step))
+            mesh = _volume_block(load_frame(path, step, blocks=("Volume",)))
         except ForceCurveError:
             raise
         except Exception:
@@ -4158,7 +4216,7 @@ def force_readout_text(node):
                 _FORCE_FRAME_CACHE.move_to_end(step_key)
                 values = cached
             else:
-                mesh = _volume_block(load_frame(path, step))
+                mesh = _volume_block(load_frame(path, step, blocks=("Volume",)))
                 nodes = _force_nodes(record_key, mesh, definitions, chosen)
                 values = _frame_set_values(mesh, nodes)
                 _FORCE_FRAME_CACHE[step_key] = values

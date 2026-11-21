@@ -187,16 +187,35 @@ def test_follow_running_simulation(work):
     node.updateParmStates()
     assert node.parm("follow_interval").isDisabled()
 
+    # Real PolyFEM writes completion={"status": "running", ...} from step 0.
+    # Follow Running Simulation MUST stay checked while status == "running".
+    manifest_path = os.path.join(run_dir, "run-manifest.json")
+    with open(manifest_path, "w") as handle:
+        json.dump({
+            "schema": "polyfem-run-manifest",
+            "completion": {
+                "status": "running",
+                "exit_status": None,
+                "finished_at": None,
+                "message": None,
+                "peak_rss_mb": None,
+                "wall_seconds": None,
+            },
+        }, handle)
+
     # Enable Follow Running Simulation
     node.parm("follow_running").set(1)
     node.updateParmStates()
     assert not node.parm("follow_interval").isDisabled()
     mod.toggle_follow_running({"node": node})
+    assert node.evalParm("follow_running") == 1, \
+        "follow_running must stay enabled while manifest status is 'running'"
     assert node.sessionId() in mod._FOLLOW_WATCHERS
 
-    # Unchanged PVD -> noop
+    # Unchanged PVD -> noop (and still following)
     res0 = mod.poll_running_simulation(node, force=True, jump_frame=True)
     assert res0["action"] == "noop" and res0["steps"] == 1, res0
+    assert node.evalParm("follow_running") == 1
 
     # Simulate solver writing step 1
     _write_ascii_tet_vtu(os.path.join(run_dir, "step_1.vtu"), 0.5)
@@ -210,12 +229,13 @@ def test_follow_running_simulation(work):
     res1 = mod.poll_running_simulation(node, force=True, jump_frame=True)
     assert res1["action"] == "refreshed" and res1["steps"] == 2, res1
     assert int(hou.frame()) == 1, hou.frame()
+    assert node.evalParm("follow_running") == 1
 
-    # Simulate solver writing run-manifest.json completion -> auto-stop following
-    with open(os.path.join(run_dir, "run-manifest.json"), "w") as handle:
+    # Simulate solver writing finalized run-manifest.json -> auto-stop following
+    with open(manifest_path, "w") as handle:
         json.dump({
             "schema": "polyfem-run-manifest",
-            "completion": {"status": "completed", "exit_code": 0},
+            "completion": {"status": "completed", "exit_status": 0},
         }, handle)
     res2 = mod.poll_running_simulation(node, force=True, jump_frame=True)
     assert res2["action"] == "finished" and res2["steps"] == 2, res2
@@ -223,6 +243,42 @@ def test_follow_running_simulation(work):
     assert node.sessionId() not in mod._FOLLOW_WATCHERS
     node.destroy()
     print("PASS: Read PVD Follow Running Simulation (live refresh, jump, auto-stop)")
+
+
+def test_single_block_loading(work):
+    mb_dir = os.path.join(work, "multiblock")
+    os.makedirs(mb_dir, exist_ok=True)
+    vol = os.path.join(mb_dir, "step_0.vtu")
+    surf = os.path.join(mb_dir, "step_0_surf.vtu")
+    contact = os.path.join(mb_dir, "step_0_contact.vtu")
+    _write_ascii_tet_vtu(vol, 0.0)
+    _write_ascii_tet_vtu(surf, 0.1)
+    _write_ascii_tet_vtu(contact, 0.2)
+    vtm = os.path.join(mb_dir, "step_0.vtm")
+    with open(vtm, "w") as handle:
+        handle.write(
+            '<?xml version="1.0"?>\n<VTKFile type="vtkMultiBlockDataSet" version="1.0">\n'
+            '  <vtkMultiBlockDataSet>\n'
+            '    <Block index="0" name="Volume"><DataSet index="0" file="step_0.vtu"/></Block>\n'
+            '    <Block index="1" name="Surface"><DataSet index="0" file="step_0_surf.vtu"/></Block>\n'
+            '    <Block index="2" name="Contact"><DataSet index="0" file="step_0_contact.vtu"/></Block>\n'
+            '  </vtkMultiBlockDataSet>\n</VTKFile>\n')
+    pvd = os.path.join(mb_dir, "sim.pvd")
+    with open(pvd, "w") as handle:
+        handle.write(
+            '<?xml version="1.0"?>\n<VTKFile type="Collection" version="0.1">\n'
+            '  <Collection><DataSet timestep="0.0" file="step_0.vtm"/></Collection>\n'
+            '</VTKFile>\n')
+
+    node = hou.node("/obj").createNode("readPVD::1.0", "single_block_viewer")
+    mod = node.hdaModule()
+    mod._VTU_CACHE.clear()
+    mesh = mod.load_block(pvd, 0, "Volume")
+    assert mesh is not None
+    cached_names = [os.path.basename(k[0]) for k in mod._VTU_CACHE.keys()]
+    assert cached_names == ["step_0.vtu"], cached_names
+    node.destroy()
+    print("PASS: Read PVD single-block load avoids parsing unused sibling VTM blocks")
 
 
 def test_msh_reader_introspection_and_order(work):
@@ -344,6 +400,7 @@ def main():
     try:
         test_higher_order_hex_subdivision(work)
         test_follow_running_simulation(work)
+        test_single_block_loading(work)
         test_msh_reader_introspection_and_order(work)
         print("ALL READPVD & MSH READER BATCH TESTS PASSED")
     finally:

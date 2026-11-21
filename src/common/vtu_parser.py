@@ -265,7 +265,7 @@ _VTU_CACHE = OrderedDict()
 # but never more than _VTU_CACHE_BYTES beyond the newest entry: a 2.4M-point
 # frame parses to ~2 GB, and the cooked-frame cache (cache1) already keeps
 # every visited frame.
-_VTU_CACHE_SIZE = 3
+_VTU_CACHE_SIZE = 6
 _VTU_CACHE_BYTES = 4 << 30
 
 
@@ -878,11 +878,82 @@ def _frame_block_paths(pvd_path, frame_index):
     return {"Volume": path}
 
 
-def load_frame(pvd_path, frame_index):
-    """pvd -> vtm -> vtu/hdf frame -> {block_name: parsed mesh dict}."""
-    blocks = _frame_block_paths(pvd_path, frame_index)
-    return {name: read_mesh_cached(p) for name, p in blocks.items()
+def load_frame(pvd_path, frame_index, blocks=None):
+    """pvd -> vtm -> vtu/hdf frame -> {block_name: parsed mesh dict}.
+
+    When `blocks` is provided (an iterable of block names), only those blocks
+    are parsed from disk, avoiding unnecessary I/O and cache eviction of other
+    blocks in multi-block VTM outputs.
+    """
+    paths = _frame_block_paths(pvd_path, frame_index)
+    if blocks is not None:
+        wanted = set(blocks)
+        paths = {name: p for name, p in paths.items() if name in wanted}
+    return {name: read_mesh_cached(p) for name, p in paths.items()
             if os.path.isfile(p)}
+
+
+def load_block(pvd_path, frame_index, block_name=None, fallback=True):
+    """Load only one named block from a PVD frame, or None if unavailable.
+
+    Reads just that block's file through read_mesh_cached instead of decoding
+    every sibling block in a VTM. When `fallback` is True and `block_name` is
+    absent, falls back to the first existing block in the frame.
+    """
+    paths = _frame_block_paths(pvd_path, frame_index)
+    if block_name and block_name in paths and os.path.isfile(paths[block_name]):
+        return read_mesh_cached(paths[block_name])
+    if fallback:
+        for p in paths.values():
+            if os.path.isfile(p):
+                return read_mesh_cached(p)
+    return None
+
+
+def read_mesh_points(path):
+    """Read only the Points array of a mesh file (reusing cache when warm).
+
+    For VTK-HDF files not already cached, reads only /VTKHDF/Points instead of
+    inflating every PointData/CellData dataset and element connectivity.
+    """
+    key = _file_key(path)
+    cached = _VTU_CACHE.get(key)
+    if cached is not None:
+        return cached["points"]
+    if _is_hdf(path):
+        h5py = _import_h5py()
+        with h5py.File(path, "r") as handle:
+            if "VTKHDF" not in handle or "Points" not in handle["VTKHDF"]:
+                return np.zeros((0, 3), dtype=np.float64)
+            pts = np.asarray(handle["VTKHDF"]["Points"][...], dtype=np.float64)
+            if pts.ndim == 2 and pts.shape[1] < 3:
+                padded = np.zeros((len(pts), 3), dtype=np.float64)
+                padded[:, :pts.shape[1]] = pts
+                pts = padded
+            return pts
+    return read_mesh_cached(path)["points"]
+
+
+def read_mesh_point_field(path, field_name):
+    """Read one PointData array from a mesh file (reusing cache when warm).
+
+    For VTK-HDF files not already cached, reads only that single dataset.
+    """
+    key = _file_key(path)
+    cached = _VTU_CACHE.get(key)
+    if cached is not None:
+        return cached["point_data"].get(field_name)
+    if _is_hdf(path):
+        h5py = _import_h5py()
+        with h5py.File(path, "r") as handle:
+            root = handle.get("VTKHDF")
+            if root is None or "PointData" not in root:
+                return None
+            pd = root["PointData"]
+            if field_name not in pd:
+                return None
+            return pd[field_name][...]
+    return read_mesh_cached(path)["point_data"].get(field_name)
 
 
 def frame_field_info(pvd_path, frame_index):
