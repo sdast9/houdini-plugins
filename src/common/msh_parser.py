@@ -10,6 +10,7 @@ read_msh(path) returns a dict:
     cells           {family: {"corners": (M, k) int64 point INDICES,
                               "entity":  (M,)  int32 physical tag (0 if none),
                               "num_nodes": int nodes per element in the file,
+                              "gmsh_types": sorted list of Gmsh type codes,
                               "order":   (M,)  int64 position among the file's
                                          elements of the same dimension}}
                     families: tet, hex, tri, quad, line, point, prism, pyramid
@@ -310,7 +311,7 @@ def _binary_entities(src):
 
 
 def _entity_groups(data, sections, binary_format):
-    ent_phys = {}
+    model_phys, partition_phys = {}, {}
     for section in ("Entities", "PartitionedEntities"):
         if section not in sections:
             continue
@@ -320,12 +321,17 @@ def _entity_groups(data, sections, binary_format):
         else:
             entities = _ascii_entities(_tokens(data, sections[section]), section)
         for dim, tag, parent, tags in entities:
+            key = (dim, tag)
             phys = _physical_list(tags)
-            if not phys and parent is not None and parent[0] == dim:
-                phys = ent_phys.get(parent, [])
-            if phys or parent is not None:
-                ent_phys[(dim, tag)] = phys
-    return ent_phys
+            if parent is None:
+                model_phys[key] = phys
+            else:
+                # Parent tags refer to model entities even when a partition
+                # entity has reused the same (dimension, tag) key.
+                if not phys and parent[0] == dim:
+                    phys = model_phys.get(parent, [])
+                partition_phys[key] = phys
+    return {**model_phys, **partition_phys}
 
 
 def _tag_index_map(node_tags):
@@ -432,14 +438,15 @@ def _v22_copies(node_tags, entity, elementary):
            == elementary[candidates][order][:-1])
     repeat = np.zeros(len(order), dtype=bool)
     repeat[1:] = same
-    drop[candidates[order[repeat]]] = True
+    duplicates = candidates[order[repeat]]
+    drop[duplicates] = True
     groups = set()
     pair_entity, pair_group = pairs // width, pairs % width + group_min
-    # Sorted pairs are already grouped by entity. Avoid scanning the entire
-    # array for each entity that has more than one physical group.
-    starts = np.searchsorted(pair_entity, multi)
-    for start, count in zip(starts, counts[counts > 1]):
-        groups.add(tuple(int(t) for t in pair_group[start:start + count]))
+    duplicate_entities = np.unique(entity_ids[duplicates])
+    starts = np.searchsorted(pair_entity, duplicate_entities)
+    ends = np.searchsorted(pair_entity, duplicate_entities, side="right")
+    for start, end in zip(starts, ends):
+        groups.add(tuple(int(t) for t in pair_group[start:end]))
     return drop, groups
 
 
@@ -468,11 +475,11 @@ def _finalize_cells(cells, lookup, notes):
                 notes["shared_groups"].update((dim, g) for g in groups)
                 keep = ~drop
                 corners, entity, order = corners[keep], entity[keep], order[keep]
-        parts.setdefault(family, []).append((corners, entity, order, n_nodes))
+        parts.setdefault(family, []).append((corners, entity, order, n_nodes, etype))
 
     out = {}
     for family, blocks in parts.items():
-        corners, entities, orders, widths = zip(*blocks)
+        corners, entities, orders, widths, gmsh_types = zip(*blocks)
         if len(blocks) == 1:
             corners, entity, order = corners[0], entities[0], orders[0]
         else:
@@ -483,7 +490,8 @@ def _finalize_cells(cells, lookup, notes):
             entity = np.concatenate(entities)[permutation]
             order = order[permutation]
         out[family] = {"corners": corners, "entity": entity,
-                       "num_nodes": max(widths), "order": order}
+                       "num_nodes": max(widths), "gmsh_types": sorted(gmsh_types),
+                       "order": order}
     # With copies left out, renumber positions densely per dimension.
     for dim in notes["duplicates"]:
         dimension_cells = [cell for family, cell in out.items()

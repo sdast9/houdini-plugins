@@ -43,6 +43,8 @@ PRIMARY_FAMILIES = {
     2: ("tri", "quad"),
     3: ("tet", "hex"),
 }
+# Primary element types recognized by PolyFEM's MshReader.cpp.
+POLYFEM_GMSH_TYPES = {2, 9, 21, 23, 25, 3, 10, 4, 11, 29, 30, 31, 5, 12, 6, 7}
 
 
 def _sanitize_group_name(prefix, tag, name):
@@ -149,8 +151,9 @@ def _primary_quality(points, cells, primary):
 def mesh_summary_text(node):
     """Read-only Mesh Summary string for the MSH Reader parameter pane."""
     path = node.evalParm("File").strip()
-    if node.parm("import_surfaces") is not None:
-        node.evalParm("import_surfaces")
+    for name in ("import_surfaces", "create_groups"):
+        if node.parm(name) is not None:
+            node.evalParm(name)
     if not path:
         return "Select a .msh file."
     inner = node.node("read_msh")
@@ -165,6 +168,28 @@ def mesh_summary_text(node):
     except hou.Error:
         pass
     return "Mesh failed to load; check node errors."
+
+
+def _polyfem_compatibility_warnings(cells, mesh_dim, max_tag):
+    warnings = []
+    primary_types = {etype for family, cell in cells.items()
+                     if FAMILY_DIM[family] == mesh_dim
+                     for etype in cell["gmsh_types"]}
+    unsupported = sorted(primary_types - POLYFEM_GMSH_TYPES)
+    if unsupported:
+        types = ", ".join(f"{etype} ({GMSH_ELEM_TYPES[etype][0]}{GMSH_ELEM_TYPES[etype][1]})"
+                          for etype in unsupported)
+        consequence = ("PolyFEM will skip these elements."
+                       if primary_types & POLYFEM_GMSH_TYPES else
+                       "PolyFEM will reject this mesh because it has no supported primary elements.")
+        warnings.append(
+            f"PolyFEM's MshReader does not support primary Gmsh element type(s) {types}. "
+            + consequence)
+    if max_tag == _INT32_MAX:
+        warnings.append(
+            f"This mesh contains node tag {_INT32_MAX}. PolyFEM's MshReader requires "
+            f"node tags < {_INT32_MAX}. Renumber the nodes in Gmsh before solving.")
+    return warnings
 
 
 def cook(node):
@@ -206,11 +231,13 @@ def cook(node):
     # Entity convention from 2.2: polyfem ids must be positive, so if any
     # primary element has physical tag 0 (no physical group), shift ALL by +1.
     mesh_dim = max(FAMILY_DIM[f] for f in cells)
+    compatibility_warnings = _polyfem_compatibility_warnings(cells, mesh_dim, max_tag)
     primary = tuple(f for f in PRIMARY_FAMILIES.get(mesh_dim, ()) if f in cells)
     if not primary:
         families = sorted(f for f in cells if FAMILY_DIM[f] == mesh_dim)
-        raise hou.NodeError(
-            f"Unsupported primary element families in {mesh_dim}D mesh: {families}")
+        raise hou.NodeError("\n".join([
+            f"Unsupported primary element families in {mesh_dim}D mesh: {families}",
+            *compatibility_warnings]))
     primary_entities = [cells[f]["entity"] for f in primary]
     shift = 1 if min(int(e.min()) for e in primary_entities) <= 0 else 0
 
@@ -324,7 +351,7 @@ def cook(node):
         supported.update(("line", "point"))
     elif mesh_dim == 1:
         supported.add("point")
-    warnings = []
+    warnings = compatibility_warnings.copy()
     unsupported = sorted(set(cells) - supported)
     if unsupported:
         counts = ", ".join(f"{len(cells[f]['entity'])} {f}"
@@ -389,6 +416,7 @@ def cook(node):
     if flags:
         summary_lines.append(" | ".join(flags))
     summary_lines.extend(group_notes)
+    summary_lines.extend("WARNING: " + warning for warning in compatibility_warnings)
     if roundoff_warning:
         summary_lines.append("WARNING: " + roundoff_warning)
         warnings.append(roundoff_warning)

@@ -1,6 +1,6 @@
 """MSH Reader 3.0 review regressions. Run with hython after src/build_all.py."""
 
-from contextlib import ExitStack, redirect_stderr, redirect_stdout
+from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 import io
 import os
 from pathlib import Path
@@ -9,7 +9,7 @@ import struct
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import hou
 import numpy as np
@@ -62,7 +62,7 @@ def msh22(points, elements, tags=None, names=(), binary=False, separator=b"\n"):
 
 
 def partitioned41(endian=None, size=8, tags=(10, 11, 12, 13), declared=3,
-                  separator=b"\n", points=(*TRI, (0, 0, 1))):
+                  separator=b"\n", points=(*TRI, (0, 0, 1)), parent_collision=False):
     """A tet inherits its volume's group. A face on the same parent is an
     untagged interface, and a second face explicitly has a physical tag."""
     size_code = {4: "I", 8: "Q"}[size]
@@ -75,8 +75,9 @@ def partitioned41(endian=None, size=8, tags=(10, 11, 12, 13), declared=3,
     fmt = b"4.1 1 " + row([size]) + b"\n" + pack("i", 1) if endian else b"4.1 0 8"
     bbox = (0, 0, 0, 1, 1, 1)
     entities = pack("4S", 0, 0, 0, 1) + pack("i6dSiS", 10, *bbox, 1, 123, 0)
-    partitions = pack("2S2i4S", 2, 1, 44, 2, 0, 0, 2, 1)
-    for tag, phys in ((30, ()), (31, (-17,)), (40, ())):
+    partitions = pack("2S2i4S", 2, 1, 44, 2, 0, 0, 2, 1 + parent_collision)
+    volumes = [(10, (999,)), (40, ())] if parent_collision else [(40, ())]
+    for tag, phys in [(30, ()), (31, (-17,)), *volumes]:
         partitions += (pack("3iSi6dS", tag, 3, 10, 1, 1, *bbox, len(phys))
                        + (pack("i", *phys) if phys else b"") + pack("S", 0))
 
@@ -184,6 +185,25 @@ class ParserTests(ScratchTest):
             cell = mesh["cells"]["tri"]
             self.assertEqual(cell["entity"].tolist(), [2, 2, 1])
             self.assertEqual(cell["corners"].tolist(), [[0, 1, 5], [0, 2, 1], [0, 1, 2]])
+
+    def test_v22_shared_groups_exclude_entities_without_removed_copies(self):
+        triangles = [(2, (2, 10), (1, 2, 3)), (2, (1, 10), (1, 2, 3)),
+                     (2, (4, 20), (1, 3, 4)), (2, (5, 20), (5, 6, 7))]
+        for binary in (False, True):
+            with self.subTest(binary=binary):
+                mesh = self.parse(msh22(CUBE, triangles, binary=binary))
+                self.assertEqual(mesh["duplicate_elements"], {2: 1})
+                self.assertEqual(mesh["shared_groups"], [(2, (1, 2))])
+                self.assertEqual(mesh["cells"]["tri"]["entity"].tolist(), [1, 4, 5])
+
+    def test_partition_groups_inherit_from_model_even_when_tags_collide(self):
+        for endian, size in ((None, 8), ("<", 4), (">", 8)):
+            with self.subTest(endian=endian, size=size):
+                data, _ = partitioned41(endian, size, parent_collision=True)
+                mesh = self.parse(data)
+                self.assertEqual(mesh["cells"]["tet"]["entity"].tolist(), [123])
+                self.assertEqual(mesh["cells"]["tet"]["gmsh_types"], [4])
+                self.assertNotIn("hex", mesh["cells"])
 
     def test_nonfinite_coordinates_in_all_node_formats(self):
         for bad in (float("nan"), float("inf"), float("-inf")):
@@ -405,6 +425,7 @@ class ParserTests(ScratchTest):
             self.assertEqual(cell["entity"].tolist(), [8, 2, 1])
             self.assertEqual(cell["order"].tolist(), [0, 1, 2])
             self.assertEqual(cell["num_nodes"], 6)
+            self.assertEqual(cell["gmsh_types"], [2, 9])
             bad = [(9, (3, 20), (*first[:5], 99)), (9, (1, 20), first)]
             self.refused(msh22(points, bad, binary=binary), "references node tag 99")
 
@@ -557,6 +578,15 @@ class ReaderTests(ScratchTest):
         self.assertIn("surf_wall_A_7_", summary)
         self.assertEqual(node.evalParm("mesh_summary"), summary)
 
+        # Evaluate the readout directly, before explicitly cooking the geometry.
+        node.parm("create_groups").set(0)
+        self.assertNotIn("Disambiguated", node.evalParm("mesh_summary"))
+        node.parm("create_groups").set(1)
+        self.assertEqual(node.evalParm("mesh_summary"), summary)
+        probe = Mock(wraps=node)
+        self.assertEqual(node.hdaModule().mesh_summary_text(probe), summary)
+        probe.evalParm.assert_any_call("create_groups")
+
         node.parm("import_surfaces").set(0)
         self.assertEqual(len(node.geometry().prims()), 2)
         self.assertNotIn("surf_wall_A", node.geometry().attribValue("msh_summary"))
@@ -569,6 +599,16 @@ class ReaderTests(ScratchTest):
         geo = node.geometry()
         self.assertEqual(geo.pointIntAttribValues("msh_pt_id"), tags)
         self.assertEqual(geo.prim(0).attribValue("Entity"), max_int32)
+        warning = "PolyFEM's MshReader requires node tags < 2147483647"
+        self.assertIn(warning, geo.attribValue("msh_summary"))
+        self.assertIn(warning, node.evalParm("mesh_summary"))
+        self.assertIn(warning, " ".join(node.node("read_msh").warnings()))
+        self.assertIn(warning, " ".join(node.warnings()))
+
+        tags_below_limit = (1, 2, max_int32 - 1)
+        near_limit = self.reader(msh22(TRI, [(2, (max_int32,), tags_below_limit)], tags_below_limit))
+        self.assertNotIn(warning, near_limit.geometry().attribValue("msh_summary"))
+        self.assertFalse(near_limit.warnings())
 
         cases = [
             (msh22(TRI, [(2, (), (1, 2, tag))], (1, 2, tag)),
@@ -583,6 +623,48 @@ class ReaderTests(ScratchTest):
                 self.assertIsNone(node.geometry())
                 self.assertIn(error, " ".join(node.node("read_msh").errors()))
                 self.assertIn(error, " ".join(node.errors()))
+
+    def test_polyfem_type_warning_uses_exact_primary_gmsh_codes(self):
+        points = [*CUBE, *((0.5, 0.5, 0.5),) * 12]
+        hex20 = (17, (1,), tuple(range(1, 21)))
+        hex8 = (5, (1,), tuple(range(1, 9)))
+        boundary_quad8 = (16, (2,), (1, 2, 3, 4, 9, 10, 11, 12))
+        for binary in (False, True):
+            mixed = msh22(points, [hex20, hex8, boundary_quad8], binary=binary)
+            mesh = self.parse(mixed)
+            self.assertEqual(mesh["cells"]["hex"]["gmsh_types"], [5, 17])
+            self.assertEqual(mesh["cells"]["quad"]["gmsh_types"], [16])
+            self.assertEqual(mesh["cells"]["hex"]["num_nodes"], 20)
+            for elements, consequence in (([hex20, hex8, boundary_quad8], "skip these elements"),
+                                          ([hex20, boundary_quad8], "reject this mesh")):
+                with self.subTest(binary=binary, consequence=consequence):
+                    node = self.reader(msh22(points, elements, binary=binary))
+                    summary = node.geometry().attribValue("msh_summary")
+                    self.assertEqual(node.evalParm("mesh_summary"), summary)
+                    for report in (summary, *node.node("read_msh").warnings(), *node.warnings()):
+                        self.assertIn("primary Gmsh element type(s) 17 (hex20)", report)
+                        self.assertIn(consequence, report)
+                        self.assertNotIn("16 (quad8)", report)
+                    self.assertTrue(node.node("read_msh").warnings())
+                    self.assertTrue(node.warnings())
+
+        incomplete = [(22, (1,), tuple(range(1, 13))), (20, (1,), tuple(range(1, 10))),
+                      boundary_quad8]
+        node = self.reader(msh22(points, incomplete))
+        self.assertIn("16 (quad8), 20 (tri9), 22 (tri12)",
+                      node.geometry().attribValue("msh_summary"))
+        supported = self.reader(msh22(points, [hex8, boundary_quad8]))
+        self.assertNotIn("primary Gmsh element", supported.geometry().attribValue("msh_summary"))
+        self.assertFalse(supported.warnings())
+
+    def test_reader_warns_only_for_groups_on_entities_with_removed_copies(self):
+        triangles = [(2, (2, 10), (1, 2, 3)), (2, (1, 10), (1, 2, 3)),
+                     (2, (4, 20), (1, 3, 4)), (2, (5, 20), (5, 6, 7))]
+        node = self.reader(msh22(CUBE, triangles))
+        self.assertEqual(node.geometry().attribValue("msh_duplicate_elements"), 1)
+        warnings = " ".join(node.warnings())
+        self.assertIn("Physical groups 1, 2 share elements", warnings)
+        self.assertNotIn("Physical groups 4, 5 share elements", warnings)
 
     def test_empty_higher_dimension_block_does_not_change_mesh_dimension(self):
         data = partitioned41()[0]
@@ -705,85 +787,251 @@ class BuildTests(ScratchTest):
         self.assertEqual(destination.read_bytes(), b"previous asset")
         self.verify_cleanup()
 
-    def test_build_all_defers_install_and_uses_atomic_replace(self):
-        otls = self.work / "otls"
-        otls.mkdir()
-        outputs = [self.work / f"asset{i}.hdanc" for i in range(3)]
-        installed = [otls / path.name for path in outputs]
-        for p in installed:
-            p.write_bytes(b"old")
-        calls = []
+    def test_detach_matches_canonical_library_paths(self):
+        canonical = self.work.resolve() / "asset.hdanc"
+        canonical.touch()
+        alias_dir = self.work / "linked"
+        alias_dir.symlink_to(canonical.parent, target_is_directory=True)
+        aliases = [alias_dir / canonical.name]
+        if canonical.is_relative_to("/private/var") and Path("/var").is_symlink():
+            aliases.append(Path("/var") / canonical.relative_to("/private/var"))
+        unrelated = canonical.with_name("other.hdanc")
+        for alias in aliases:
+            for tmp, loaded in ((alias, canonical), (canonical, alias)):
+                with self.subTest(tmp=tmp, loaded=loaded):
+                    self.assertNotEqual(str(tmp), str(loaded))
+                    node = Mock()
+                    with (patch.object(hou.hda, "loadedFiles", return_value=(str(unrelated), str(loaded))),
+                          patch.object(hou.hda, "uninstallFile") as uninstall):
+                        hda_build._detach_asset(str(tmp), node)
+                    node.destroy.assert_called_once_with()
+                    uninstall.assert_called_once_with(str(loaded))
 
-        def build(i):
-            def run(out):
-                self.assertEqual(Path(out), self.work)
-                self.assertEqual([p.read_bytes() for p in installed], [b"old"] * 3)
-                calls.append(i)
-                outputs[i].write_bytes(f"new {i}".encode())
-                return str(outputs[i])
-            return run
+    def test_transaction_discards_all_assets_and_preserves_original_error(self):
+        discard_asset = hda_build._discard_asset
+        for body_fails in (True, False):
+            with self.subTest(body_fails=body_fails):
+                discarded = []
+                original = RuntimeError("build failed")
+                cleanup_error = OSError("discard failed")
 
-        def fail(_):
-            self.new_asset("last", category="GeoObject")
-            raise RuntimeError("third build failed")
+                def fail_first_discard(staged):
+                    discard_asset(staged)
+                    discarded.append(staged[0])
+                    if len(discarded) == 1:
+                        raise cleanup_error
 
-        builders = (build_all.msh_build, build_all.polyfem_build, build_all.readpvd_build)
-        with ExitStack() as stack:
-            stack.enter_context(patch.object(build_all, "OUT", str(self.work)))
-            stack.enter_context(patch.object(build_all, "OTLS_DIR", str(otls)))
-            stack.enter_context(redirect_stdout(io.StringIO()))
-            for i, builder in enumerate(builders):
-                stack.enter_context(patch.object(builder, "build", side_effect=build(i)))
-            with patch.object(builders[-1], "build", side_effect=fail):
-                with self.assertRaisesRegex(RuntimeError, "third build failed"):
-                    build_all.main()
-                self.assertEqual(calls, [0, 1])
-                self.assertEqual([p.read_bytes() for p in installed], [b"old"] * 3)
+                with patch.object(hda_build, "_discard_asset", side_effect=fail_first_discard):
+                    with self.assertRaises(RuntimeError if body_fails else OSError) as caught:
+                        with hda_build.build_transaction():
+                            assets = [self.new_asset(suffix) for suffix in ("one", "two", "three")]
+                            staged_paths = [a.type().definition().libraryFilePath() for a in assets]
+                            if body_fails:
+                                raise original
+                self.assertIs(caught.exception, original if body_fails else cleanup_error)
+                self.assertIn("discard failed", " ".join(caught.exception.__notes__))
+                self.assertCountEqual(discarded, staged_paths)
                 self.verify_cleanup()
 
+    def test_commit_preserves_mode_or_uses_umask(self):
+        self.destination.chmod(0o664)
+        mode_cases = ((self.destination, 0o077, 0o664),
+                      (self.work / "new.hdanc", 0o022, 0o644),
+                      (self.work / "new2.hdanc", 0o002, 0o664))
+        for i, (destination, mask, expected) in enumerate(mode_cases):
+            with self.subTest(destination=destination, mask=mask):
+                asset = self.new_asset(f"mode_{i}", destination)
+                Path(asset.type().definition().libraryFilePath()).chmod(0o600)
+                old_mask = os.umask(mask)
+                try:
+                    hda_build.commit_asset(asset)
+                finally:
+                    os.umask(old_mask)
+                self.assertEqual(stat.S_IMODE(destination.stat().st_mode), expected)
+                self.verify_cleanup()
+
+    @staticmethod
+    def snapshot(directory):
+        if not directory.exists():
+            return None
+        return {path.name: (path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
+                for path in directory.iterdir()}
+
+    @contextmanager
+    def mocked_batch(self, *, fail_builder=None, have_otls=True, default_otls=False):
+        with tempfile.TemporaryDirectory(dir=self.work) as root, ExitStack() as stack:
+            out = Path(root) / "out"
+            home = Path(root) / "home"
+            otls = home / "otls"
+            out.mkdir()
+            home.mkdir()
+            if have_otls:
+                otls.mkdir()
+            for target, mode in ((out, 0o644), (otls, 0o664)):
+                if target.exists():
+                    for i in range(3):
+                        asset = target / f"asset{i}.hdanc"
+                        asset.write_bytes(f"old {target.name} {i}".encode())
+                        asset.chmod(mode)
+                    (target / "unrelated.txt").write_bytes(b"leave unchanged")
+            calls = []
+            stack.enter_context(patch.object(build_all, "OUT", str(out)))
+            stack.enter_context(patch.object(build_all, "OTLS_DIR", str(otls)))
+            if default_otls:
+                stack.enter_context(patch.object(hou, "homeHoudiniDirectory", return_value=str(home)))
+            stack.enter_context(redirect_stdout(io.StringIO()))
+
+            def build(i):
+                def run(stage_dir):
+                    stage = Path(stage_dir).resolve()
+                    for target in (out, otls, *map(Path, hou.houdiniPath("HOUDINI_OTLSCAN_PATH"))):
+                        self.assertFalse(stage.is_relative_to(target.resolve()))
+                    if calls:
+                        self.assertEqual(stage, calls[0][1])
+                    calls.append((i, stage))
+                    if i == fail_builder:
+                        self.new_asset("failed", stage / "failed.hdanc", category="GeoObject")
+                        raise RuntimeError(f"builder {i + 1} failed")
+                    path = stage / f"asset{i}.hdanc"
+                    path.write_bytes(f"new {i}".encode())
+                    path.chmod(0o600)
+                    return str(path)
+                return run
+
+            builders = (build_all.msh_build, build_all.polyfem_build, build_all.readpvd_build)
+            for i, builder in enumerate(builders):
+                stack.enter_context(patch.object(builder, "build", side_effect=build(i)))
+            yield out, otls, calls
+
+    def check_batch_cleanup(self, calls, count):
+        self.assertEqual([i for i, _ in calls], list(range(count)))
+        self.assertFalse(calls[0][1].exists())
+        self.verify_cleanup()
+
+    def test_builder_failures_leave_both_destinations_unchanged(self):
+        for failed in (1, 2):
+            with self.subTest(builder=failed + 1), self.mocked_batch(fail_builder=failed) as batch:
+                out, otls, calls = batch
+                before = (self.snapshot(out), self.snapshot(otls))
+                with self.assertRaisesRegex(RuntimeError, f"builder {failed + 1} failed"):
+                    build_all.main()
+                self.assertEqual((self.snapshot(out), self.snapshot(otls)), before)
+                self.check_batch_cleanup(calls, failed + 1)
+
+    def test_stage_avoids_a_temp_directory_in_the_houdini_scan_path(self):
+        with self.mocked_batch() as (out, otls, calls):
+            scan_path = self.work / "scan"
+            scan_path.mkdir()
+            with (patch.object(hou, "houdiniPath", return_value=(str(scan_path),)),
+                  patch.object(tempfile, "gettempdir", return_value=str(scan_path))):
+                self.assertEqual(build_all.main(), 0)
+            self.check_batch_cleanup(calls, 3)
+
+    def test_batch_stages_every_replacement_and_preserves_modes(self):
+        with self.mocked_batch() as (out, otls, calls):
+            directories = (out, otls)
+            for target in directories:
+                (target / "asset2.hdanc").unlink()
             replace = os.replace
             replacements = []
 
-            def assert_atomic(source, dest):
-                path = Path(dest)
-                self.assertEqual(calls, [0, 1, 2])
-                self.assertEqual(Path(source).parent, otls)
-                self.assertEqual(path.read_bytes(), b"old")
-                i = installed.index(path)
-                self.assertEqual(Path(source).read_bytes(), f"new {i}".encode())
-                replacements.append(i)
-                replace(source, dest)
+            def check_replace(source, destination):
+                path = Path(destination)
+                self.assertEqual(len(calls), 3)
+                if not replacements:
+                    for target in directories:
+                        self.assertEqual(len(list(target.glob(".*/*.new"))), 3)
+                        self.assertEqual(len(list(target.glob(".*/*.old"))), 2)
+                self.assertEqual(Path(source).stat().st_dev, path.parent.stat().st_dev)
+                replacements.append(path)
+                replace(source, destination)
 
-            calls.clear()
-            with patch.object(build_all.os, "replace", side_effect=assert_atomic):
-                self.assertEqual(build_all.main(), 0)
-            self.assertEqual(replacements, [0, 1, 2])
-            self.assertEqual([p.read_bytes() for p in installed], [b"new 0", b"new 1", b"new 2"])
-            self.verify_cleanup(otls)
+            old_mask = os.umask(0o027)
+            try:
+                with patch.object(build_all.os, "replace", side_effect=check_replace):
+                    self.assertEqual(build_all.main(), 0)
+            finally:
+                os.umask(old_mask)
+            self.assertEqual(replacements, [target / f"asset{i}.hdanc"
+                                            for target in directories for i in range(3)])
+            for target, existing_mode in ((out, 0o644), (otls, 0o664)):
+                after = self.snapshot(target)
+                self.assertEqual(sorted(after), [*(f"asset{i}.hdanc" for i in range(3)), "unrelated.txt"])
+                for i in range(3):
+                    self.assertEqual(after[f"asset{i}.hdanc"],
+                                     (f"new {i}".encode(), 0o640 if i == 2 else existing_mode))
+            self.check_batch_cleanup(calls, 3)
 
-        def interrupted_copy(_source, stage):
-            Path(stage).write_bytes(b"partial")
-            raise OSError("copy interrupted")
+    def test_rename_failures_roll_back_outputs_and_installs(self):
+        for install in (False, True):
+            for index in (1, 2):
+                with self.subTest(install=install, rename=index + 1), self.mocked_batch() as batch:
+                    out, otls, calls = batch
+                    target = otls if install else out
+                    if index == 2:
+                        (target / "asset0.hdanc").unlink()
+                    before = (self.snapshot(out), self.snapshot(otls))
+                    replace = os.replace
+                    failure_path = target / f"asset{index}.hdanc"
 
-        with patch.object(build_all.shutil, "copy2", side_effect=interrupted_copy):
-            with self.assertRaisesRegex(OSError, "copy interrupted"):
-                build_all._install_asset(str(outputs[0]), str(otls))
-        self.assertEqual(installed[0].read_bytes(), b"new 0")
-        self.verify_cleanup(otls)
+                    def interrupted_replace(source, destination):
+                        if Path(destination) == failure_path and Path(source).suffix == ".new":
+                            self.assertEqual((target / "asset0.hdanc").read_bytes(), b"new 0")
+                            if install:
+                                self.assertEqual((out / "asset2.hdanc").read_bytes(), b"new 2")
+                            raise OSError("rename interrupted")
+                        replace(source, destination)
+
+                    with patch.object(build_all.os, "replace", side_effect=interrupted_replace):
+                        with self.assertRaisesRegex(OSError, "rename interrupted"):
+                            build_all.main()
+                    self.assertEqual((self.snapshot(out), self.snapshot(otls)), before)
+                    self.check_batch_cleanup(calls, 3)
+
+    def test_copy_failure_leaves_both_destinations_unchanged(self):
+        with self.mocked_batch() as (out, otls, calls):
+            before = (self.snapshot(out), self.snapshot(otls))
+            copyfile = build_all.shutil.copyfile
+
+            def interrupted_copy(source, stage, **kwargs):
+                stage = Path(stage)
+                if stage.parent.parent == otls and stage.name == "asset1.hdanc.new":
+                    stage.write_bytes(b"partial")
+                    raise OSError("copy interrupted")
+                return copyfile(source, stage, **kwargs)
+
+            with (patch.object(build_all.shutil, "copyfile", side_effect=interrupted_copy),
+                  patch.object(build_all.os, "replace", wraps=os.replace) as replace):
+                with self.assertRaisesRegex(OSError, "copy interrupted"):
+                    build_all.main()
+                replace.assert_not_called()
+            self.assertEqual((self.snapshot(out), self.snapshot(otls)), before)
+            self.check_batch_cleanup(calls, 3)
 
     def test_build_all_absent_otls_can_be_required(self):
-        otls = self.work / "missing"
-        with ExitStack() as stack:
-            stack.enter_context(patch.object(build_all, "OTLS_DIR", str(otls)))
-            stack.enter_context(redirect_stdout(io.StringIO()))
-            for builder in (build_all.msh_build, build_all.polyfem_build, build_all.readpvd_build):
-                stack.enter_context(patch.object(builder, "build", return_value="built.hdanc"))
-            for required, code, line in (("0", 0, "WARNING"), ("1", 1, "ERROR")):
-                with patch.dict(os.environ, POLYFEM_REQUIRE_INSTALL=required):
-                    with redirect_stderr(io.StringIO()) as stderr:
-                        self.assertEqual(build_all.main(), code)
-                    self.assertIn(f"{line}: {otls} not found", stderr.getvalue())
-            self.assertFalse(otls.exists())
+        for required, code, line in (("0", 0, "WARNING"), ("1", 1, "ERROR")):
+            with self.subTest(required=required), self.mocked_batch(have_otls=False) as batch:
+                out, otls, calls = batch
+                before = self.snapshot(out)
+                with (patch.dict(os.environ, POLYFEM_REQUIRE_INSTALL=required),
+                      redirect_stderr(io.StringIO()) as stderr):
+                    self.assertEqual(build_all.main(), code)
+                self.assertIn(f"{line}: {otls} not found", stderr.getvalue())
+                self.assertFalse(otls.exists())
+                if required == "1":
+                    self.assertEqual(self.snapshot(out), before)
+                else:
+                    self.assertEqual((out / "asset2.hdanc").read_bytes(), b"new 2")
+                self.check_batch_cleanup(calls, 3)
+
+    def test_build_all_creates_default_otls_under_existing_houdini_home(self):
+        with self.mocked_batch(have_otls=False, default_otls=True) as (out, otls, calls):
+            with patch.dict(os.environ, POLYFEM_REQUIRE_INSTALL="1"):
+                self.assertEqual(build_all.main(), 0)
+            for i in range(3):
+                self.assertEqual((otls / f"asset{i}.hdanc").read_bytes(),
+                                 (out / f"asset{i}.hdanc").read_bytes())
+            self.check_batch_cleanup(calls, 3)
 
 
 if __name__ == "__main__":

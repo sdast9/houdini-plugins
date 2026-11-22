@@ -8,6 +8,7 @@ then save the .hdanc. Reproducible alternative to hand-editing assets.
 from contextlib import contextmanager
 import os
 import shutil
+import stat
 import tempfile
 
 import hou
@@ -29,8 +30,10 @@ def _detach_asset(tmp_path, cleanup_node):
     except hou.ObjectWasDeleted:
         pass
     finally:
-        if tmp_path in hou.hda.loadedFiles():
-            hou.hda.uninstallFile(tmp_path)
+        canonical = os.path.realpath(tmp_path)
+        for loaded_path in hou.hda.loadedFiles():
+            if os.path.realpath(loaded_path) == canonical:
+                hou.hda.uninstallFile(loaded_path)
 
 
 def _discard_asset(staged):
@@ -45,11 +48,42 @@ def _discard_asset(staged):
 def build_transaction():
     """Discard any staged assets left by a builder, including on exceptions."""
     previous = set(_STAGED)
+    original = None
     try:
         yield
+    except BaseException as error:
+        original = error
+        raise
     finally:
+        failures = []
         for asset_id in _STAGED.keys() - previous:
-            _discard_asset(_STAGED.pop(asset_id))
+            staged = _STAGED.pop(asset_id)
+            try:
+                _discard_asset(staged)
+            except BaseException as error:
+                failures.append((staged[0], error))
+        if failures:
+            first = original if original is not None else failures[0][1]
+            for path, error in failures:
+                first.add_note(f"Could not discard staged HDA {path}: {error!r}")
+            if original is None:
+                raise first
+
+
+def set_replacement_mode(source, destination):
+    """Set the mode before replacing a destination with a staged file."""
+    try:
+        mode = stat.S_IMODE(os.stat(destination).st_mode)
+    except FileNotFoundError:
+        # Let the OS apply the umask without changing it for other threads.
+        with tempfile.TemporaryDirectory(dir=os.path.dirname(source)) as probe_dir:
+            fd = os.open(os.path.join(probe_dir, "mode"),
+                         os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+            try:
+                mode = stat.S_IMODE(os.fstat(fd).st_mode)
+            finally:
+                os.close(fd)
+    os.chmod(source, mode)
 
 
 def new_asset(category, type_name, label, hda_path, min_inputs=0, max_inputs=0):
@@ -105,6 +139,7 @@ def commit_asset(asset):
     tmp_path, hda_path, cleanup_node = staged
     try:
         _detach_asset(tmp_path, cleanup_node)
+        set_replacement_mode(tmp_path, hda_path)
         os.replace(tmp_path, hda_path)
         return hda_path
     finally:
