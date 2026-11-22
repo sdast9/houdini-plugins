@@ -11,6 +11,7 @@ These are HDAs necessary to run a GUI for polyfem preprocessing and postprocessi
 | `stevenabramowitch::dev::PolyFEM::2.0` (Object) | `object_stevenabramowitch.dev.PolyFEM.2.0.hdanc` | `PolyFEM.IBS.0.2` |
 | `readPVD::1.0` (Object) | `object_readPVD.1.0.hdanc` | `readPVD.0.24` |
 | `MSH_Reader::3.0` (SOP) | `sop_MSH_Reader.3.0.hdanc` | `MSH_Readerv0.8` |
+| `writeMSH::2` (SOP) | `sop_writeMSH.2.hdanc` | earlier standalone writeMSH |
 
 The `.hdanc` files are what you install (see Setup). They are **built from
 `src/`**, which is the source of truth -- Python modules, VEX, and the
@@ -20,10 +21,10 @@ parameter interface. Rebuild any time with:
 hython src/build_all.py
 ```
 
-which also installs the results into your `otls` directory. The committed
-`.hdanc` files are built from the committed `src/`; note that Houdini stamps
-each save, so a rebuild always shows up as a binary diff even when nothing
-changed.
+The batch build also copies the three pipeline assets into your `otls`
+directory. The standalone writer is built in the project folder. Run
+`hython src/write_msh/build.py` to rebuild just that library. Houdini stamps
+each build, so rebuilding the same source can change the `.hdanc` bytes.
 
 Tests are headless and drive the real PolyFEM binary, which they expect to
 find at `../polyfem/build/PolyFEM_bin` -- i.e. with this repo checked out
@@ -37,6 +38,8 @@ some-dir/
 
 ```bash
 hython tests/test_polyfem_hda.py     # end-to-end: scene -> json -> sim -> pvd
+hython tests/test_sop_mesh_import.py
+hython tests/test_write_msh_hda.py
 hython tests/test_polyfem_materials.py
 hython tests/test_readpvd_materials.py
 ```
@@ -44,7 +47,7 @@ hython tests/test_readpvd_materials.py
 Further reading:
 
 * [docs/hdas.md](docs/hdas.md) -- what each asset does, what changed from the
-  previous generation, and the conventions the three assets share.
+  previous generation, and the conventions the assets share.
 * [docs/per-element-materials.md](docs/per-element-materials.md) -- fiber
   models, composites, and per-element material data, including the PolyFEM-side
   contract they depend on.
@@ -61,7 +64,7 @@ The first initial setup only has to be done once.
    - **Other platforms**: If the folders are not where just described, you will have to create the "otls" directory in the correct location.
    - **Updating Houdini**: If you are updating Houdini from a previous verision to a newer version and you are using these HDAs, be sure to copy the 'otls' directory from the old version to the corresponding directory of the new verision. You will also need to rerun the setup steps below for the new version. 
 
-3. **Place the HDAs**: Place the three `.hdanc` files from this GitHub into the "otls" folder. (If you build from source instead, `hython src/build_all.py` copies them there for you.) 
+3. **Place the HDAs**. Place the PolyFEM, MSH Reader, and Read PVD libraries in your `otls` folder, or build them with `hython src/build_all.py`. Load the standalone `writeMSH` library when you need to export tetrahedra.
 
 4. **Set up Houdini Shell**: With Houdini installed and running on your desktop, select the "Windows" dropdown menu and then select "Shell". If you are on Linux, this should have opened an xterm window. Houdini assumes that you are using xterm as your terminal. To proceed, install xterm on your system (e.g. `sudo apt install xterm`) and try again. You may have to close and reopen Houdini.
 

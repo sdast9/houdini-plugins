@@ -49,7 +49,7 @@
                 default { "" }
                 disablewhen "{ mesh_source# != sop }"
                 hidewhen "{ mesh_source# != sop }"
-                help    "Path to a Houdini SOP node supplying this geometry. For simulated bodies the SOP must contain tetrahedra or hexahedra (optional prim int 'Entity' / 'subdomain' / 'class' sets subdomains); for rigid obstacles any polygon surface is triangulated and exported automatically."
+                help    "Choose the solid output of Tet Conform or Tet Embed, or a SOP with native Houdini tetrahedra or hexahedra. Accompanying polygon faces are skipped. A scalar integer primitive attribute named Entity, entity, or subdomain assigns subdomains. For rigid obstacles, choose a polygon surface SOP."
                 parmtag { "opfilter" "!!SOP!!" }
                 parmtag { "script_callback" "hou.pwd().hm().load_sop_mesh(kwargs)" }
                 parmtag { "script_callback_language" "python" }

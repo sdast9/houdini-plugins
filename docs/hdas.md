@@ -10,6 +10,7 @@ old definitions; installed-library state should be checked in Houdini.
 | `MSH_Reader::3.0` (SOP) | `sop_MSH_Reader.3.0.hdanc` | 2.2 |
 | `stevenabramowitch::dev::PolyFEM::2.0` (Object) | `object_stevenabramowitch.dev.PolyFEM.2.0.hdanc` | 1.2 |
 | `readPVD::1.0` (Object) | `object_readPVD.1.0.hdanc` | readPVD_higher_order 0.26 |
+| `writeMSH::2` (SOP) | `sop_writeMSH.2.hdanc` | earlier standalone writeMSH |
 
 Design notes: [SPEC_per_element_materials.md](per-element-materials.md) —
 fiber models, composites, and per-element material data. **Implemented**
@@ -24,10 +25,25 @@ OpenCL, and DialogScript sources; rebuild any time with
 /Applications/Houdini/Current/Frameworks/Houdini.framework/Versions/Current/Resources/bin/hython src/build_all.py
 ```
 
+**Standalone writeMSH.** Connect a tetrahedral SOP, choose **File to Save**,
+and click **Save to MSH**. The SOP passes through its input and writes a
+Gmsh 2.2 ASCII file on demand. **Flip elements?** defaults on and fixes
+negative orientation. Turn it off to keep the input vertex order.
+
+The writer takes volume tags from a scalar primitive integer `class` first,
+then `Entity`, `entity`, or `subdomain`. Tag 0 denotes an ungrouped region.
+Direct PolyFEM SOP import takes `Entity`, `entity`, or `subdomain`, shifts
+tags to positive integers when needed, and also accepts hexahedra.
+
+Run `hython src/write_msh/build.py` from this directory to rebuild just the
+project writer. The batch build also refreshes this project copy. Its user
+`otls/` install step covers the three simulation pipeline assets.
+
 Tests (headless, also exercise the real PolyFEM binary):
 
 ```bash
 hython tests/test_polyfem_hda.py         # end-to-end: scene -> json -> sim -> pvd
+hython tests/test_write_msh_hda.py       # packaged writeMSH on Tet Conform / Tet Embed
 hython tests/test_sideset_conditions.py  # every sideset condition reaches PolyFEM
 hython tests/test_check_setup.py         # Check Setup, confirmed against the solver
 hython tests/test_improved_max.py        # Remove Duplicate Contacts: export, refusal, run
@@ -442,7 +458,7 @@ Output tab ergonomics for `PolyFEM 2.0` (`tests/test_polyfem_batch_b.py`):
 
 | Feature | Details |
 | --- | --- |
-| **Direct Houdini SOP input (`F1`)** | New **Mesh Source** selector (`Mesh File` vs `Houdini SOP`) with **Source SOP** (`sop_path#`) and **Reload SOP Mesh** (`load_sop#`) per geometry. Volume SOPs (`Tet Conform` / `Tet Embed` tetrahedra or hexahedra) are exported directly to `<working_dir>/input/sop_geo<N>.msh` with automatic positive-volume orientation and subdomain preservation from integer prim attributes (`Entity`, `entity`, `subdomain`, `class`). Rigid obstacle SOPs are triangulated directly to `<working_dir>/input/sop_obs<N>.obj`. Toggling `Obstacle (rigid)` on a SOP geometry automatically re-exports in the matching format |
+| **Direct Houdini SOP input (`F1`)** | Set **Mesh Source** to **Houdini SOP** and point **Source SOP** at the solid output of Tet Conform or Tet Embed. In Houdini 22.0.508, both have a single output. A Null wired to that output works as well. The HDA writes native tetrahedra or hexahedra to `<working_dir>/input/sop_geo<N>.msh` as Gmsh 2.2 ASCII with positive orientation and subdomains from the scalar integer primitive attribute `Entity`, `entity`, or `subdomain`. It skips accompanying polygon faces. **Reload SOP Mesh** re-exports and validates the file before replacing it. For **Obstacle (rigid)**, polygon SOPs export to `<working_dir>/input/sop_obs<N>.obj`. |
 | **Rebuild Display Network & `OnLoaded` upgrade** | New **Main ▸ Rebuild Display Network** button rebuilds internal viewport SOPs (`surface_`, `entitycolor_`, `mindist_`, `fiberdata_`, `fiberviz_`, `null_`, and sideset `group_` chains) from the current asset definition while preserving all transforms, materials, subdomains, element reassignments, sidesets, and boundary conditions. `OnLoaded` checks `polyfem_display_version` and upgrades older saved `.hipnc` scenes automatically |
 | **Smart defaults & non-destructive binary check** | New nodes automatically populate **PolyFEM Binary** from `$POLYFEM_BIN` (when set) and default **Working Directory** to `$HIP/polyfem/$OS/`. Mistyping `PolyFEM Binary` warns without wiping the entered path |
 | **Output drawer promotions** | Promoted **Use HDF5** (`use_hdf5`), **Minimal Fields (derive in readPVD)** (`minimal_fields`), and **Nodal Forces (force curves)** (`forces_fields`) out of the collapsed *Options* / *Volume Specific Data* sub-drawers directly to the top level of *Output ▸ Paraview* |

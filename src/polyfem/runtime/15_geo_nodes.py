@@ -71,6 +71,18 @@ def portable_path(parent, path):
     return raw.rstrip("/\\") + "/" + relative
 
 
+def _set_reader_mesh_path(parent, parm, path):
+    # $OS in Working Directory names the PolyFEM object. A child reader
+    # evaluates that same variable as its own name, even during the probe.
+    portable = re.sub(r"\$(?:\{OS\}|OS\b)", lambda _: parent.name(),
+                      portable_path(parent, path))
+    parm.set(portable)
+    if os.path.abspath(parm.eval()) != path:
+        parm.set(path)
+        return path
+    return portable
+
+
 # Files Write itself creates in input/ (rewritten at every Write). A material
 # file staged under one of these names would be overwritten by the export.
 _EXPORT_FILE_RE = re.compile(
@@ -278,101 +290,6 @@ def polyfem_bin_check(kwargs):
         _message(f"PolyFEM binary not found at: {polyfem_bin}")
 
 
-def _write_sop_volume_msh(sop_geo, dst_path):
-    """Export tetrahedra/hexahedra from a Houdini SOP Geometry to MSH 2.2.
-
-    Auto-orients every element to strictly positive Gmsh/PolyFEM volume
-    (Houdini's TetConform creates negative-signed tets relative to Gmsh) and
-    preserves integer subdomain tags from prim attribute Entity/entity/
-    subdomain when present as a scalar integer.
-    """
-    n_pts = sop_geo.intrinsicValue("pointcount")
-    if not n_pts:
-        raise hou.NodeError("Source SOP has no points.")
-    pts = np.frombuffer(
-        sop_geo.pointFloatAttribValuesAsString(
-            "P", float_type=hou.numericData.Float64),
-        dtype=np.float64).reshape(-1, 3)
-
-    entity_vals = None
-    for attr_name in ("Entity", "entity", "subdomain"):
-        attr = sop_geo.findPrimAttrib(attr_name)
-        if attr is not None and attr.dataType() == hou.attribData.Int \
-                and attr.size() == 1 and not attr.isArrayType():
-            entity_vals = np.frombuffer(
-                sop_geo.primIntAttribValuesAsString(attr_name),
-                dtype=np.int32).astype(np.int64)
-            break
-
-    tets, hexes = [], []
-    rows = []
-    for prim in sop_geo.prims():
-        ptype = prim.type()
-        tag = int(entity_vals[prim.number()]) if entity_vals is not None else 1
-        if ptype == hou.primType.Tetrahedron:
-            verts = [v.point().number() for v in prim.vertices()]
-            if len(verts) == 4:
-                rows.append((4, len(tets), tag))
-                tets.append(verts)
-        elif ptype == hou.primType.Hexahedron:
-            verts = [v.point().number() for v in prim.vertices()]
-            if len(verts) == 8:
-                rows.append((5, len(hexes), tag))
-                # Houdini hex vertex order [0,1,3,2,4,5,7,6] -> Gmsh [0..7]
-                hexes.append([verts[0], verts[1], verts[3], verts[2],
-                              verts[4], verts[5], verts[7], verts[6]])
-
-    if not tets and not hexes:
-        return {"n_points": n_pts, "n_tets": 0, "n_hexes": 0}
-
-    shift = max(0, 1 - min(tag for _, _, tag in rows))
-
-    tets_arr = np.asarray(tets, dtype=np.int64).reshape(-1, 4)
-    if len(tets_arr):
-        v0 = pts[tets_arr[:, 0]]
-        vol6 = np.einsum(
-            "ij,ij->i",
-            np.cross(pts[tets_arr[:, 1]] - v0, pts[tets_arr[:, 2]] - v0),
-            pts[tets_arr[:, 3]] - v0)
-        flip = vol6 < 0
-        if np.any(flip):
-            tmp = tets_arr[flip, 2].copy()
-            tets_arr[flip, 2] = tets_arr[flip, 3]
-            tets_arr[flip, 3] = tmp
-
-    hexes_arr = np.asarray(hexes, dtype=np.int64).reshape(-1, 8)
-    if len(hexes_arr):
-        v0 = pts[hexes_arr[:, 0]]
-        vol6 = np.einsum(
-            "ij,ij->i",
-            np.cross(pts[hexes_arr[:, 1]] - v0, pts[hexes_arr[:, 3]] - v0),
-            pts[hexes_arr[:, 4]] - v0)
-        flip = vol6 < 0
-        if np.any(flip):
-            hexes_arr[flip] = hexes_arr[flip][:, [4, 5, 6, 7, 0, 1, 2, 3]]
-
-    n_elems = len(tets_arr) + len(hexes_arr)
-    os.makedirs(os.path.dirname(os.path.abspath(dst_path)), exist_ok=True)
-    tmp_path = dst_path + ".tmp"
-    with open(tmp_path, "w") as handle:
-        handle.write("$MeshFormat\n2.2 0 8\n$EndMeshFormat\n")
-        handle.write(f"$Nodes\n{n_pts}\n")
-        for idx, (x, y, z) in enumerate(pts.tolist(), 1):
-            handle.write(f"{idx} {x!r} {y!r} {z!r}\n")
-        handle.write("$EndNodes\n")
-        handle.write(f"$Elements\n{n_elems}\n")
-        cells = {4: tets_arr.tolist(), 5: hexes_arr.tolist()}
-        for row in solver_element_order(sop_geo, is_direct_sop=True):
-            kind, index, tag = rows[row]
-            eid = row + 1
-            ptag = tag + shift
-            vertices = " ".join(str(v + 1) for v in cells[kind][index])
-            handle.write(f"{eid} {kind} 2 {ptag} {ptag} {vertices}\n")
-        handle.write("$EndElements\n")
-    os.replace(tmp_path, dst_path)
-    return {"n_points": n_pts, "n_tets": len(tets_arr), "n_hexes": len(hexes_arr)}
-
-
 def _write_sop_surface_obj(sop_geo, dst_path):
     """Export polygon faces from a Houdini SOP Geometry to a triangulated OBJ."""
     n_pts = sop_geo.intrinsicValue("pointcount")
@@ -426,6 +343,12 @@ def load_sop_mesh(kwargs):
     return False
 
 
+def _resolve_source_sop(parent, path):
+    path = path.strip().removeprefix("op:").strip()
+    node = parent.node(path) if path else None
+    return node if isinstance(node, hou.SopNode) else None
+
+
 def _load_sop_mesh(kwargs):
     parent = kwargs["node"]
     geo_number = str(kwargs.get("script_multiparm_index", "1"))
@@ -437,48 +360,40 @@ def _load_sop_mesh(kwargs):
         parent.parm(f"file_location{geo_number}").revertToDefaults()
         _status(f"Geometry {geo_number}: Source SOP cleared.")
         return False
-    sop_node = parent.node(sop_path) or hou.node(sop_path)
-    if sop_node is None or sop_node.type().category() != hou.sopNodeTypeCategory():
+    sop_node = _resolve_source_sop(parent, sop_path)
+    if sop_node is None:
         _message(f"Geometry {geo_number}: SOP node not found: {sop_path}")
         return False
     try:
         sop_node.cook(force=False)
         sop_geo = sop_node.geometry()
-    except hou.OperationFailed as exc:
+    except hou.Error as exc:
         _message(f"Geometry {geo_number}: failed to cook SOP {sop_path}: {exc}")
+        return False
+    if sop_geo is None:
+        _message(f"Geometry {geo_number}: SOP {sop_path} produced no geometry.")
         return False
 
     is_obstacle = bool(parent.evalParm(f"is_obstacle{geo_number}"))
     try:
         dst_abs = _sop_staging_path(parent, geo_number, is_obstacle)
-        if is_obstacle:
-            stats = _write_sop_surface_obj(sop_geo, dst_abs)
-            if stats["n_tris"] == 0:
-                _message(
-                    f"Geometry {geo_number}: SOP '{sop_path}' has no polygon "
-                    "faces to export as an obstacle surface.")
-                return False
-        else:
-            stats = _write_sop_volume_msh(sop_geo, dst_abs)
-            if stats["n_tets"] == 0 and stats["n_hexes"] == 0:
-                _message(
-                    f"Geometry {geo_number}: SOP '{sop_path}' has no "
-                    "tetrahedra or hexahedra (only surface polygons). Use a "
-                    "Tet Conform / Tet Embed SOP for a simulated volume mesh, "
-                    "or enable 'Obstacle (rigid)' to use this surface as an "
-                    "obstacle.")
+        # Probe the new file before replacing any valid mesh in input/.
+        with tempfile.TemporaryDirectory(prefix=".polyfem_sop_",
+                                         dir=os.path.dirname(dst_abs)) as stage:
+            candidate = os.path.join(stage, os.path.basename(dst_abs))
+            if is_obstacle:
+                stats = _write_sop_surface_obj(sop_geo, candidate)
+                if not stats["n_tris"]:
+                    raise hou.NodeError("SOP has no polygon faces to export as an obstacle.")
+            else:
+                stats = _write_sop_volume_msh(sop_geo, candidate)
+            if not create_geo_nodes({"node": parent, "script_multiparm_index": geo_number},
+                                    sop_export=(candidate, dst_abs)):
                 return False
     except (OSError, hou.Error) as exc:
         _message(f"Geometry {geo_number}: could not export SOP {sop_path}: {exc}")
         return False
 
-    parent.setParms({f"file_location{geo_number}": dst_abs})
-    if not create_geo_nodes({
-        "node": parent,
-        "script_multiparm_index": geo_number,
-        "parm_name": f"file_location{geo_number}",
-    }):
-        return False
     if is_obstacle:
         _status(
             f"Geometry {geo_number}: loaded obstacle surface from SOP "
@@ -488,7 +403,9 @@ def _load_sop_mesh(kwargs):
             f"Geometry {geo_number}: loaded volume mesh from SOP "
             f"{sop_node.path()} ({stats['n_tets']} tets, "
             f"{stats['n_hexes']} hexes).")
-    if not is_obstacle:
+        if stats["n_skin"]:
+            _status(f"Geometry {geo_number}: exported the solid mesh and skipped "
+                    f"{stats['n_skin']} accompanying polygon faces.")
         for note in _sop_subdomain_notes(sop_geo, geo_number):
             _status(note)
     return True
@@ -505,13 +422,16 @@ def _sop_subdomain_notes(sop_geo, geo):
             yield f"Geometry {geo}: ignored '{name}' because it is an integer tuple or array."
 
 
-def create_geo_nodes(kwargs):
+def create_geo_nodes(kwargs, *, sop_export=None):
     """File parm callback: (re)build the import chain for one geometry.
 
     Picking a mesh for a geometry that already has one is a reload: the
     subdomains keep their materials, sidesets and initial conditions, matched
     by Gmsh physical group (subdomain numbers follow the sorted groups, see
     physical_groups), and anything that could not be kept is reported.
+
+    For a SOP import, sop_export holds a candidate file and its final input
+    path. The file is promoted only after the reader validates it.
     """
     parent = kwargs["node"]
     parent.allowEditingOfContents()
@@ -519,13 +439,14 @@ def create_geo_nodes(kwargs):
     # If the user toggled Obstacle while Mesh Source is Houdini SOP, re-export
     # the SOP in the new format (.obj surface vs .msh volume).
     src_parm = parent.parm(f"mesh_source{geo_number}")
-    if kwargs.get("parm_name") == f"is_obstacle{geo_number}" \
+    if sop_export is None and kwargs.get("parm_name") == f"is_obstacle{geo_number}" \
             and src_parm is not None and src_parm.evalAsString() == "sop" \
             and parent.evalParm(f"sop_path{geo_number}").strip():
         load_sop_mesh(kwargs)
         return
-    path_parm = parent.parm("file_location" + geo_number).eval()
-    if not working_dir_check(kwargs):
+    path_parm = sop_export[1] if sop_export is not None else \
+        parent.evalParm(f"file_location{geo_number}")
+    if sop_export is None and not working_dir_check(kwargs):
         parent.parm("file_location" + geo_number).revertToDefaults()
         return
 
@@ -553,8 +474,7 @@ def create_geo_nodes(kwargs):
         else:
             parent.parm("file_location" + geo_number).revertToDefaults()
 
-    root, extension = os.path.splitext(path_parm)
-    extension = extension.lower()
+    extension = os.path.splitext(path_parm)[1].lower()
     non_msh = extension in (".obj", ".stl", ".ply")
     if not non_msh and extension != ".msh":
         _message(
@@ -571,31 +491,40 @@ def create_geo_nodes(kwargs):
     # so a missing, unreadable or invalid file does not wipe loaded geometry.
     working_dir = parent.evalParm("working_dir")
     input_dir = os.path.join(working_dir, "input")
-    try:
-        dst_abs = _stage_mesh(
-            geo_number, path_parm, input_dir,
-            _staged_meshes(parent, input_dir, exclude=geo_number))
-    except (OSError, hou.Error) as e:
-        _message(f"Could not copy mesh into working dir: {e}")
-        _restore_file_parm()
-        return
-    digest = _file_digest(dst_abs)
-    dst = portable_path(parent, dst_abs)
+    if sop_export is None:
+        try:
+            dst_abs = _stage_mesh(
+                geo_number, path_parm, input_dir,
+                _staged_meshes(parent, input_dir, exclude=geo_number))
+        except (OSError, hou.Error) as e:
+            _message(f"Could not copy mesh into working dir: {e}")
+            _restore_file_parm()
+            return
+        candidate = dst_abs
+    else:
+        candidate, dst_abs = sop_export
+    digest = _file_digest(candidate)
 
     stale_probe = parent.node("__staging_probe")
     if stale_probe is not None:
         stale_probe.destroy()
     if obstacle_check == 0 or not non_msh:
         file_node = parent.createNode("MSH_Reader::3.0", "__staging_probe")
-        file_node.parm("File").set(dst)
+        reader_path = file_node.parm("File")
     else:
         file_node = parent.createNode("file", "__staging_probe")
-        file_node.parm("file").set(dst)
+        reader_path = file_node.parm("file")
+    if sop_export is None:
+        dst = _set_reader_mesh_path(parent, reader_path, dst_abs)
+    else:
+        reader_path.set(candidate)
     try:
         file_node.cook(force=True)
-    except hou.OperationFailed:
+    except hou.OperationFailed as exc:
+        errors = file_node.errors()
         file_node.destroy()
-        _message("Failed to read the mesh; check the file.")
+        detail = "\n".join(errors) if errors else str(exc)
+        _message(f"Failed to read the mesh {dst_abs}: {detail}")
         _restore_file_parm()
         return
 
@@ -624,6 +553,13 @@ def create_geo_nodes(kwargs):
     # What a reload must keep, captured before the old chain goes away.
     previous = _capture_previous_mesh(parent, geo_number) \
         if existing_geo else None
+    if sop_export is not None:
+        try:
+            dst = _set_reader_mesh_path(parent, reader_path, dst_abs)
+            os.replace(candidate, dst_abs)
+        except (OSError, hou.Error):
+            file_node.destroy()
+            raise
     destroy_geo_nodes(parent, geo_number)
     file_node.setName("geo_" + geo_number)
 

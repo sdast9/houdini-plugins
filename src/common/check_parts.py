@@ -16,7 +16,7 @@ else:
 
 
 SRC_ROOT = Path(__file__).resolve().parents[1]
-HDAS = ("msh_reader", "polyfem", "readpvd")
+HDAS = ("msh_reader", "polyfem", "readpvd", "write_msh")
 _AMBIENT = set(vars(builtins)) | {
     "__annotations__", "__builtins__", "__cached__", "__doc__", "__file__",
     "__loader__", "__name__", "__package__", "__spec__", "kwargs",

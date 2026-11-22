@@ -867,9 +867,11 @@ class BuildTests(ScratchTest):
             home.mkdir()
             if have_otls:
                 otls.mkdir()
-            for target, mode in ((out, 0o644), (otls, 0o664)):
+            pipeline_count = len(build_all.PIPELINE_BUILDERS)
+            for target, mode, count in ((out, 0o644, pipeline_count + 1),
+                                        (otls, 0o664, pipeline_count)):
                 if target.exists():
-                    for i in range(3):
+                    for i in range(count):
                         asset = target / f"asset{i}.hdanc"
                         asset.write_bytes(f"old {target.name} {i}".encode())
                         asset.chmod(mode)
@@ -898,7 +900,7 @@ class BuildTests(ScratchTest):
                     return str(path)
                 return run
 
-            builders = (build_all.msh_build, build_all.polyfem_build, build_all.readpvd_build)
+            builders = (*build_all.PIPELINE_BUILDERS, build_all.write_msh_build)
             for i, builder in enumerate(builders):
                 stack.enter_context(patch.object(builder, "build", side_effect=build(i)))
             yield out, otls, calls
@@ -909,7 +911,7 @@ class BuildTests(ScratchTest):
         self.verify_cleanup()
 
     def test_builder_failures_leave_both_destinations_unchanged(self):
-        for failed in (1, 2):
+        for failed in (1, 2, 3):
             with self.subTest(builder=failed + 1), self.mocked_batch(fail_builder=failed) as batch:
                 out, otls, calls = batch
                 before = (self.snapshot(out), self.snapshot(otls))
@@ -925,23 +927,23 @@ class BuildTests(ScratchTest):
             with (patch.object(hou, "houdiniPath", return_value=(str(scan_path),)),
                   patch.object(tempfile, "gettempdir", return_value=str(scan_path))):
                 self.assertEqual(build_all.main(), 0)
-            self.check_batch_cleanup(calls, 3)
+            self.check_batch_cleanup(calls, 4)
 
     def test_batch_stages_every_replacement_and_preserves_modes(self):
         with self.mocked_batch() as (out, otls, calls):
-            directories = (out, otls)
-            for target in directories:
+            outputs = ((out, 4), (otls, 3))
+            for target, _ in outputs:
                 (target / "asset2.hdanc").unlink()
             replace = os.replace
             replacements = []
 
             def check_replace(source, destination):
                 path = Path(destination)
-                self.assertEqual(len(calls), 3)
+                self.assertEqual(len(calls), 4)
                 if not replacements:
-                    for target in directories:
-                        self.assertEqual(len(list(target.glob(".*/*.new"))), 3)
-                        self.assertEqual(len(list(target.glob(".*/*.old"))), 2)
+                    for target, count in outputs:
+                        self.assertEqual(len(list(target.glob(".*/*.new"))), count)
+                        self.assertEqual(len(list(target.glob(".*/*.old"))), count - 1)
                 self.assertEqual(Path(source).stat().st_dev, path.parent.stat().st_dev)
                 replacements.append(path)
                 replace(source, destination)
@@ -953,14 +955,15 @@ class BuildTests(ScratchTest):
             finally:
                 os.umask(old_mask)
             self.assertEqual(replacements, [target / f"asset{i}.hdanc"
-                                            for target in directories for i in range(3)])
+                                            for target, count in outputs for i in range(count)])
             for target, existing_mode in ((out, 0o644), (otls, 0o664)):
+                count = 4 if target == out else 3
                 after = self.snapshot(target)
-                self.assertEqual(sorted(after), [*(f"asset{i}.hdanc" for i in range(3)), "unrelated.txt"])
-                for i in range(3):
+                self.assertEqual(sorted(after), [*(f"asset{i}.hdanc" for i in range(count)), "unrelated.txt"])
+                for i in range(count):
                     self.assertEqual(after[f"asset{i}.hdanc"],
                                      (f"new {i}".encode(), 0o640 if i == 2 else existing_mode))
-            self.check_batch_cleanup(calls, 3)
+            self.check_batch_cleanup(calls, 4)
 
     def test_rename_failures_roll_back_outputs_and_installs(self):
         for install in (False, True):
@@ -986,7 +989,7 @@ class BuildTests(ScratchTest):
                         with self.assertRaisesRegex(OSError, "rename interrupted"):
                             build_all.main()
                     self.assertEqual((self.snapshot(out), self.snapshot(otls)), before)
-                    self.check_batch_cleanup(calls, 3)
+                    self.check_batch_cleanup(calls, 4)
 
     def test_copy_failure_leaves_both_destinations_unchanged(self):
         with self.mocked_batch() as (out, otls, calls):
@@ -1006,7 +1009,7 @@ class BuildTests(ScratchTest):
                     build_all.main()
                 replace.assert_not_called()
             self.assertEqual((self.snapshot(out), self.snapshot(otls)), before)
-            self.check_batch_cleanup(calls, 3)
+            self.check_batch_cleanup(calls, 4)
 
     def test_build_all_absent_otls_can_be_required(self):
         for required, code, line in (("0", 0, "WARNING"), ("1", 1, "ERROR")):
@@ -1021,8 +1024,8 @@ class BuildTests(ScratchTest):
                 if required == "1":
                     self.assertEqual(self.snapshot(out), before)
                 else:
-                    self.assertEqual((out / "asset2.hdanc").read_bytes(), b"new 2")
-                self.check_batch_cleanup(calls, 3)
+                    self.assertEqual((out / "asset3.hdanc").read_bytes(), b"new 3")
+                self.check_batch_cleanup(calls, 4)
 
     def test_build_all_creates_default_otls_under_existing_houdini_home(self):
         with self.mocked_batch(have_otls=False, default_otls=True) as (out, otls, calls):
@@ -1031,7 +1034,9 @@ class BuildTests(ScratchTest):
             for i in range(3):
                 self.assertEqual((otls / f"asset{i}.hdanc").read_bytes(),
                                  (out / f"asset{i}.hdanc").read_bytes())
-            self.check_batch_cleanup(calls, 3)
+            self.assertTrue((out / "asset3.hdanc").is_file())
+            self.assertFalse((otls / "asset3.hdanc").exists())
+            self.check_batch_cleanup(calls, 4)
 
 
 if __name__ == "__main__":

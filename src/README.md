@@ -1,9 +1,10 @@
 # HDA source map
 
-Three Houdini digital assets make up the PolyFEM workflow. **MSH Reader** turns
+**MSH Reader** turns
 Gmsh meshes into Houdini geometry. **PolyFEM** prepares simulation inputs and
-manages runs. **Read PVD** loads, displays, and exports the results. Each asset
-has a `build.py` and a `runtime_manifest.py` under its source directory.
+manages runs. **Read PVD** loads, displays, and exports the results.
+**writeMSH** exports tetrahedral meshes from Houdini. Each asset has a
+`build.py` and a `runtime_manifest.py` under its source directory.
 
 ## Embedded Python and parameter interfaces
 
@@ -65,6 +66,14 @@ hooks live beside the builder, and the viewport picker lives in
 
 ## Shared code and verification
 
+[`write_msh/definition/`](write_msh/definition/) contains the editable
+Python SOP definition for `writeMSH::2`. The builder uses Houdini's
+`hotl` to package those sections with the runtime generated from
+`write_msh`'s [runtime manifest](write_msh/runtime_manifest.py). PolyFEM's
+direct volume SOP import and `writeMSH` both embed
+[`common/sop_msh_writer.py`](common/sop_msh_writer.py). Run
+`hython src/write_msh/build.py` to rebuild its project library on its own.
+
 [`common/`](common/) contains build helpers plus the shared Gmsh and VTU
 parsers and XLSX writer. From the HDA project directory, run the static check
 with plain Python. Use Houdini's `hython` for builds and saved-asset checks.
@@ -75,8 +84,11 @@ hython src/build_all.py
 hython src/common/hda_fingerprint.py --dir . --compare /path/to/baseline_hda_fingerprint.json
 ```
 
-The build writes all three libraries and installs them if the user `otls/`
-directory is available. To capture a fingerprint from an existing set of
-libraries, use `--record /path/to/fingerprint.json` with `--dir`. The
+The batch build writes all four project libraries. Its install step copies
+MSH Reader, PolyFEM and Read PVD into the user `otls/` directory when available.
+To capture a fingerprint for those three pipeline libraries, use
+`--record /path/to/fingerprint.json` with `--dir`. The
 [isolated loader tests](../tests/test_hda_modular_loader.py) check the embedded
-part contents and exercise loading and tracebacks under `hython`.
+part contents and exercise loading and tracebacks under `hython`. The
+[`writeMSH` smoke test](../tests/test_write_msh_hda.py) checks its embedded
+sources and the export button on real tetrahedral SOPs.

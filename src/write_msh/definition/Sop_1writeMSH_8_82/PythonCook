@@ -1,0 +1,5 @@
+# This code is called when instances of this SOP cook.
+node = hou.pwd()
+geo = node.geometry()
+
+# Add code to modify the contents of geo.

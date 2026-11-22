@@ -26,6 +26,7 @@ PARTS = [
     ("90_import_materials", ("polyfem", "runtime", "90_import_materials.py")),
     ("95_import_legacy", ("polyfem", "runtime", "95_import_legacy.py")),
     ("96_import_apply", ("polyfem", "runtime", "96_import_apply.py")),
+    ("sop_msh_writer", ("common", "sop_msh_writer.py")),
 ]
 
 # The parts preserve the original source byte for byte, with no include gaps.

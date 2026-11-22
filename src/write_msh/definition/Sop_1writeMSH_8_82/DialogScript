@@ -1,0 +1,46 @@
+# Dialog script for writeMSH::2 automatically generated
+
+{
+    name	writeMSH::2
+    script	writeMSH
+    label	writeMSH
+
+    help {
+	""
+    }
+
+    inputlabel	1	"Input #1"
+
+    parm {
+        name    "file_to_save"
+        label   "File to Save"
+        type    file
+        default { "" }
+        parmtag { "filechooser_mode" "write" }
+        parmtag { "script_callback_language" "python" }
+    }
+    parm {
+        name    "flip"
+        label   "Flip elements?"
+        type    toggle
+        joinnext
+        default { "1" }
+        help    "Fix negative tetrahedron orientation for Gmsh and PolyFEM. Turn off to keep the input vertex order."
+        parmtag { "script_callback_language" "python" }
+    }
+    parm {
+        name    "labelparm"
+        label   "Message"
+        type    label
+        default { "Automatically orient tetrahedra for Gmsh and PolyFEM" }
+        parmtag { "sidefx::look" "block" }
+    }
+    parm {
+        name    "export"
+        label   "Save to MSH"
+        type    button
+        default { "0" }
+        parmtag { "script_callback" "hou.pwd().hdaModule().save_geo(hou.pwd())" }
+        parmtag { "script_callback_language" "python" }
+    }
+}

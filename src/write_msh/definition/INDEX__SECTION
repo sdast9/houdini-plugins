@@ -1,0 +1,13 @@
+Operator:     writeMSH::2
+Label:        writeMSH
+Path:         oplib:/Sop/writeMSH::2?Sop/writeMSH::2
+Icon:         MISC_python
+Table:        Sop
+License:
+Extra:
+User:
+Inputs:       1 to 1
+Subnet:       false
+Python:       true
+Empty:        false
+Modified:     @BUILD_TIME@

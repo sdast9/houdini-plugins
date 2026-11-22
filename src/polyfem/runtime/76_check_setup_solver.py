@@ -56,9 +56,8 @@ def check_setup(parent, purpose="check", cache=None, *, raise_shared=False):
         obstacle = bool(parent.evalParm(f"is_obstacle{geo}"))
         source = parent.parm(f"mesh_source{geo}")
         if not obstacle and source is not None and source.evalAsString() == "sop":
-            sop_path = parent.evalParm(f"sop_path{geo}")
-            sop = (parent.node(sop_path) or hou.node(sop_path)) if sop_path else None
-            if isinstance(sop, hou.SopNode):
+            sop = _resolve_source_sop(parent, parent.evalParm(f"sop_path{geo}"))
+            if sop is not None:
                 try:
                     notes.extend(_sop_subdomain_notes(sop.geometry(), geo))
                 except hou.Error:

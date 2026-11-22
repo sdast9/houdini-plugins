@@ -1,10 +1,9 @@
-"""Build all PolyFEM pipeline HDAs.
+"""Build the project HDAs.
 
 Usage: hython src/build_all.py
-Emits sop_MSH_Reader.3.0.hdanc, object_stevenabramowitch.dev.PolyFEM.2.0.hdanc,
-object_readPVD.1.0.hdanc next to the legacy assets in houdini_HDAs/, and
-installs a copy of each into the Houdini user otls directory so running
-sessions pick them up after a Refresh Asset Libraries / restart.
+Builds MSH Reader, PolyFEM, Read PVD, and writeMSH in houdini_HDAs/.
+The three pipeline assets also publish to the Houdini user otls directory.
+The standalone writeMSH build is project-local.
 """
 
 import os
@@ -26,10 +25,12 @@ sys.path.insert(0, HERE)
 from msh_reader import build as msh_build  # noqa: E402
 from polyfem import build as polyfem_build  # noqa: E402
 from readpvd import build as readpvd_build  # noqa: E402
+from write_msh import build as write_msh_build  # noqa: E402
 from common import check_parts  # noqa: E402
 import hda_build  # noqa: E402 (shared by the builders)
 
 OTLS_DIR = os.path.join(hou.homeHoudiniDirectory(), "otls")
+PIPELINE_BUILDERS = (msh_build, polyfem_build, readpvd_build)
 
 
 def _build_stage():
@@ -42,13 +43,13 @@ def _build_stage():
     raise RuntimeError("No system temporary directory outside the HDA output and OTL scan paths")
 
 
-def _publish_assets(built_assets, directories):
+def _publish_assets(destinations):
     staging = []
     replacements = []
     published = []
     recovery = set()
     try:
-        for directory in directories:
+        for directory, built_assets in destinations:
             if any(os.path.samefile(directory, target) for target, _ in staging):
                 continue
             scratch = tempfile.mkdtemp(prefix=".polyfem_hda_publish_", dir=directory)
@@ -96,10 +97,12 @@ def main():
 
     stage_dir = _build_stage()
     try:
-        built_assets = []
-        for builder in (msh_build, polyfem_build, readpvd_build):
+        pipeline_assets = []
+        for builder in PIPELINE_BUILDERS:
             with hda_build.build_transaction():
-                built_assets.append(builder.build(stage_dir))
+                pipeline_assets.append(builder.build(stage_dir))
+        with hda_build.build_transaction():
+            project_assets = [*pipeline_assets, write_msh_build.build(stage_dir)]
 
         home = hou.homeHoudiniDirectory()
         if OTLS_DIR == os.path.join(home, "otls") and os.path.isdir(home):
@@ -110,11 +113,14 @@ def main():
                   file=sys.stderr)
             return 1
 
-        _publish_assets(built_assets, (OUT, OTLS_DIR) if install else (OUT,))
-        for built in built_assets:
+        destinations = [(OUT, project_assets)]
+        if install:
+            destinations.append((OTLS_DIR, pipeline_assets))
+        _publish_assets(destinations)
+        for built in project_assets:
             name = os.path.basename(built)
             print("built:", os.path.join(OUT, name))
-            if install:
+            if install and built in pipeline_assets:
                 print("installed:", os.path.join(OTLS_DIR, name))
         if not install:
             print(f"WARNING: {OTLS_DIR} not found; HDAs were built but not installed",

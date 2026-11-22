@@ -1,0 +1,18 @@
+= writeMSH =
+
+#type: node
+#context: sop
+#internal: writeMSH::2
+
+Connect a tetrahedral SOP, choose **File to Save**, then click **Save to MSH**.
+The node passes through its input and writes only when you click the button.
+
+The file uses Gmsh 2.2 ASCII. Only solid tetrahedra are exported. Optional
+polygon faces emitted by Tet Conform or Tet Embed are skipped. **Flip
+elements?** fixes negative orientation for Gmsh and PolyFEM. Turn it off
+to keep the input vertex order.
+
+A scalar integer primitive attribute named `class` assigns physical tags.
+If it is absent, the node looks for `Entity`, `entity` or `subdomain`.
+Tag 0 denotes an ungrouped region. If tags are negative, they receive a
+common offset to keep the regions distinct.
