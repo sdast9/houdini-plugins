@@ -17,11 +17,6 @@ else:
 
 SRC_ROOT = Path(__file__).resolve().parents[1]
 HDAS = ("msh_reader", "polyfem", "readpvd")
-_LEGACY_INCLUDES = {
-    "# @VTU_PARSER@": "vtu_parser.py",
-    "# @MSH_PARSER@": "msh_parser.py",
-    "# @XLSX_WRITER@": "xlsx_writer.py",
-}
 _AMBIENT = set(vars(builtins)) | {
     "__annotations__", "__builtins__", "__cached__", "__doc__", "__file__",
     "__loader__", "__name__", "__package__", "__spec__", "kwargs",
@@ -53,12 +48,6 @@ class CheckError:
 class SourcePart:
     path: str
     text: str
-    origins: tuple[tuple[str, int], ...] = ()
-
-    def location(self, line):
-        if self.origins and 1 <= line <= len(self.origins):
-            return self.origins[line - 1]
-        return self.path, line
 
 
 @dataclass
@@ -540,8 +529,7 @@ def check_sources(asset, parts, callback_sources=(), *, legacy_polyfem=False):
     definitions = {}
 
     def report(rule, part, line, name, detail):
-        path, line = part.location(line)
-        errors.append(CheckError(asset, rule, path, line, name, detail))
+        errors.append(CheckError(asset, rule, part.path, line, name, detail))
 
     for part in parts:
         try:
@@ -558,9 +546,9 @@ def check_sources(asset, parts, callback_sources=(), *, legacy_polyfem=False):
                 elif not (legacy_polyfem and name == "_IMPORT_KEYS"
                           and _legacy_conversion(part, previous, stmt)):
                     first_part, first_stmt = previous
-                    path, line = first_part.location(first_stmt.lineno)
                     report("duplicate-definition", part, stmt.lineno, name,
-                           f"{name!r} was already defined at {path}:{line}")
+                           f"{name!r} was already defined at "
+                           f"{first_part.path}:{first_stmt.lineno}")
         names.scan(part, tree)
 
     for read in names.reads:
@@ -589,32 +577,6 @@ def check_sources(asset, parts, callback_sources=(), *, legacy_polyfem=False):
     return errors
 
 
-def _legacy_part(root, asset):
-    path = f"{asset}/PythonModule.py"
-    text = (root / path).read_text(encoding="utf-8")
-    if asset != "readpvd":
-        return SourcePart(path, text)
-    chunks, origins = [], []
-    markers = _LEGACY_INCLUDES.copy()
-    for number, line in enumerate(text.splitlines(keepends=True), 1):
-        filename = markers.pop(line.strip(), None)
-        if filename is None:
-            chunks.append(line)
-            origins.append((path, number))
-            continue
-        include = f"common/{filename}"
-        source = (root / include).read_text(encoding="utf-8")
-        # Match the legacy build's marker replacement, including its newline.
-        expanded = source.splitlines(keepends=True)
-        chunks.append(source + line[len(line.rstrip("\r\n")):])
-        origins.extend((include, index) for index in range(1, len(expanded) + 1))
-        if source.endswith("\n"):
-            origins.append((path, number))
-    if markers:
-        raise ValueError(f"Missing readpvd source markers: {', '.join(markers)}")
-    return SourcePart(path, "".join(chunks), tuple(origins))
-
-
 def _manifest_entries(path):
     """Read the manifest's literal PARTS without importing asset code."""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -634,7 +596,9 @@ def check_hda(src_root, asset):
             parts = [SourcePart("/".join(path), root.joinpath(*path).read_text(encoding="utf-8"))
                      for _, path, _ in entries]
         else:
-            parts = [_legacy_part(root, asset)]
+            path = directory / "PythonModule.py"
+            parts = [SourcePart(path.relative_to(root).as_posix(),
+                                path.read_text(encoding="utf-8"))]
 
         callbacks = []
         for path in sorted(directory.rglob("*")):

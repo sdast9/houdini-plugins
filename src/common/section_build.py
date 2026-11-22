@@ -5,6 +5,68 @@ import hashlib
 import re
 
 
+_EXECUTE_IN_PARTS = '''\
+    # A part's standalone docstring did not become the HDA module docstring
+    # when that part was embedded in the middle of the legacy PythonModule.
+    doc_missing = object()
+    original_doc = ns.get("__doc__", doc_missing)
+    try:
+        for section, relpath, digest in parts:
+            src = part_sections[section].contents()
+            filename = f"<{asset_tag}:{relpath}@{digest}>"
+            linecache.cache[filename] = (len(src), None, src.splitlines(True), filename)
+            exec(compile(src, filename, "exec", dont_inherit=True), ns)
+    finally:
+        if original_doc is doc_missing:
+            ns.pop("__doc__", None)
+        else:
+            ns["__doc__"] = original_doc
+'''
+
+_EXECUTE_AS_MODULE = '''\
+    from bisect import bisect_right
+    from types import CodeType
+
+    chunks, starts, filenames = [], [], []
+    line = 1
+    for (section, relpath, digest), gap in zip(parts, line_gaps, strict=True):
+        src = part_sections[section].contents()
+        filename = f"<{asset_tag}:{relpath}@{digest}>"
+        linecache.cache[filename] = (len(src), None, src.splitlines(True), filename)
+        line += gap
+        starts.append(line)
+        filenames.append(filename)
+        chunk = src if src.endswith("\\n") else src + "\\n"
+        chunks.extend(("\\n" * gap, chunk))
+        line += chunk.count("\\n")
+
+    # CPython optimizes calls using module-wide import bindings and can store
+    # absolute source lines in class constants. Compile with the legacy layout
+    # first, then make each nested code object point to its own source section.
+    source = "".join(chunks)
+    linecache.cache[module_filename] = (
+        len(source), None, source.splitlines(True), module_filename)
+    module_code = compile(source, module_filename, "exec", dont_inherit=True)
+
+    def relocate(code, filename, offset):
+        return code.replace(
+            co_filename=filename,
+            co_firstlineno=code.co_firstlineno - offset,
+            co_consts=tuple(relocate(value, filename, offset)
+                            if isinstance(value, CodeType) else value
+                            for value in code.co_consts),
+        )
+
+    constants = []
+    for value in module_code.co_consts:
+        if isinstance(value, CodeType):
+            index = bisect_right(starts, value.co_firstlineno) - 1
+            value = relocate(value, filenames[index], starts[index] - 1)
+        constants.append(value)
+    exec(module_code.replace(co_consts=tuple(constants)), ns)
+'''
+
+
 @dataclass(frozen=True)
 class PartMetadata:
     part_key: str
@@ -38,8 +100,8 @@ def manifest_entries(parts):
     return entries
 
 
-def build_runtime_sections(asset_tag, type_name, parts):
-    """Return the sections for finalize() and their ordered part metadata."""
+def build_runtime_sections(asset_tag, type_name, parts, *, compile_line_gaps=None):
+    """Pack runtime sections, optionally compiling with legacy gaps before parts."""
     # Use the same module object as the builders, including patched readers.
     import hda_build
 
@@ -55,6 +117,15 @@ def build_runtime_sections(asset_tag, type_name, parts):
         f"        ({part.section_name!r}, {'/'.join(part.relpath)!r}, {part.digest!r}),"
         for part in metadata
     )
+    execute = _EXECUTE_IN_PARTS
+    if compile_line_gaps is not None:
+        gaps = tuple(compile_line_gaps.get(part.part_key, 0) for part in metadata)
+        identity = (gaps, tuple(part.digest for part in metadata))
+        digest = hashlib.sha256(repr(identity).encode("ascii")).hexdigest()[:12]
+        module_filename = f"<{asset_tag}:PythonModule@{digest}>"
+        execute = (f"    line_gaps = {gaps!r}\n"
+                   f"    module_filename = {module_filename!r}\n"
+                   + _EXECUTE_AS_MODULE)
     sections["PythonModule"] = f'''# Generated from the asset's runtime manifest.
 def _bootstrap_hda_parts(ns, kwargs):
     import linecache
@@ -86,22 +157,7 @@ def _bootstrap_hda_parts(ns, kwargs):
             + ", ".join(missing)
             + ". Rebuild the HDA with hython src/build_all.py."
         )
-    # A part's standalone docstring did not become the HDA module docstring
-    # when that part was embedded in the middle of the legacy PythonModule.
-    doc_missing = object()
-    original_doc = ns.get("__doc__", doc_missing)
-    try:
-        for section, relpath, digest in parts:
-            src = part_sections[section].contents()
-            filename = f"<{{asset_tag}}:{{relpath}}@{{digest}}>"
-            linecache.cache[filename] = (len(src), None, src.splitlines(True), filename)
-            exec(compile(src, filename, "exec", dont_inherit=True), ns)
-    finally:
-        if original_doc is doc_missing:
-            ns.pop("__doc__", None)
-        else:
-            ns["__doc__"] = original_doc
-
+{execute}
 
 try:
     _bootstrap_hda_parts(globals(), globals().get("kwargs", {{}}))

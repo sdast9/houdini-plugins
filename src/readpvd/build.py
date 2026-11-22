@@ -11,9 +11,14 @@ if not __package__:
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
 import hda_build  # noqa: E402
-from readpvd import network, parms, scripts  # noqa: E402
+import section_build  # noqa: E402
 
-TYPE_NAME = "readPVD::1.0"
+if __package__:
+    from . import network, parms, runtime_manifest, scripts
+else:
+    from readpvd import network, parms, runtime_manifest, scripts
+
+TYPE_NAME = runtime_manifest.TYPE_NAME
 LABEL = "Read PVD 1.0 (PolyFEM results)"
 
 # Official h5py wheels from PyPI (SHA-256 in vendor/README.md), embedded as
@@ -37,21 +42,16 @@ def build(out_dir):
 
     network.build_network(asset)
 
-    module = hda_build.read_source("readpvd", "PythonModule.py")
-    for marker, source in (("# @VTU_PARSER@", "vtu_parser.py"),
-                           ("# @MSH_PARSER@", "msh_parser.py"),
-                           ("# @XLSX_WRITER@", "xlsx_writer.py")):
-        if marker not in module:
-            raise RuntimeError(
-                f"Missing {marker} marker in readpvd/PythonModule.py")
-        module = module.replace(
-            marker, hda_build.read_source("common", source), 1)
+    runtime_sections, _ = section_build.build_runtime_sections(
+        runtime_manifest.ASSET_TAG, runtime_manifest.TYPE_NAME, runtime_manifest.PARTS,
+        compile_line_gaps=runtime_manifest.COMPILE_LINE_GAPS)
 
     state_name = TYPE_NAME
     definition = asset.type().definition()
     definition.updateFromNode(asset)
     definition.setParmTemplateGroup(parms.build_parm_templates())
-    definition.addSection("PythonModule", module)
+    for section_name, source in runtime_sections.items():
+        definition.addSection(section_name, source)
     for section_name, wheel in H5PY_WHEELS.items():
         wheel_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "vendor", wheel)
