@@ -6,6 +6,7 @@ import linecache
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,7 @@ BASE = Path(__file__).resolve().parents[1]
 SRC = BASE / "src"
 READER = "sop_MSH_Reader.3.0.hdanc"
 READ_PVD = "object_readPVD.1.0.hdanc"
+POLYFEM = "object_stevenabramowitch.dev.PolyFEM.2.0.hdanc"
 TYPE_NAME = "MSH_Reader::3.0"
 
 TRIANGLE = """\
@@ -123,7 +125,7 @@ def _exercise_installed_readpvd(path):
         check.assertTrue(callable(mod.read_msh))
         check.assertTrue(callable(mod.XlsxWorkbook))
 
-        malformed = path.parent / "malformed.pvd"
+        malformed = path.parent.parent / "malformed.pvd"
         malformed.write_text("<VTKFile>", encoding="utf-8")
         try:
             mod.read_pvd(str(malformed))
@@ -139,7 +141,7 @@ def _exercise_installed_readpvd(path):
         else:
             check.fail("The parser accepted malformed PVD XML")
 
-        collection = path.parent / "collection.pvd"
+        collection = path.parent.parent / "collection.pvd"
         collection.write_text(
             '<VTKFile type="Collection"><Collection>'
             '<DataSet timestep="1.25" file="mesh.vtu"/>'
@@ -150,6 +152,60 @@ def _exercise_installed_readpvd(path):
             check.assertEqual(mod._pvd_times(timeline), [1.25])
         timeline.evalParm.assert_called_once_with("PVD_file")
         parse.assert_called_once_with(str(collection))
+    finally:
+        node.destroy()
+
+
+def _exercise_installed_polyfem(path):
+    """Load PolyFEM from the isolated library without importing src."""
+    import hou
+
+    check = unittest.TestCase()
+    check.assertFalse(any(Path(entry).resolve().is_relative_to(SRC) for entry in sys.path))
+    hou.hda.installFile(str(path), force_use_assets=True)
+    node = hou.node("/obj").createNode("stevenabramowitch::dev::PolyFEM::2.0",
+                                      "modular_polyfem_test", run_init_scripts=False,
+                                      exact_type_name=True)
+    try:
+        definition = node.type().definition()
+        check.assertEqual(Path(definition.libraryFilePath()).resolve(), path.resolve())
+        mod = node.hdaModule()
+        namespace = mod.stop_run.__globals__
+        check.assertNotIn("_bootstrap_hda_parts", namespace)
+        check.assertIs(mod._message.__globals__, namespace)
+        check.assertIs(mod.read_cell_vectors_legacy_vtk.__globals__, namespace)
+        check.assertIs(namespace["os"], mod.os)
+
+        work = path.parent.parent
+        run = {"pid": 12345, "output": str(work / "output")}
+        active_run = Mock(return_value=run)
+        matches = Mock(return_value=True)
+        message = Mock()
+        with (patch.dict(namespace, active_run=active_run,
+                         _run_pid_matches=matches, _message=message),
+              patch.object(mod.platform, "system", return_value="Linux"),
+              patch.object(mod.os, "kill", side_effect=OSError("test signal failure")) as kill):
+            check.assertFalse(mod.stop_run({"node": node}))
+        active_run.assert_called_once_with(node)
+        matches.assert_called_once_with(run, run["pid"], for_signal=True)
+        kill.assert_called_once_with(run["pid"], signal.SIGTERM)
+        message.assert_called_once_with("Could not stop the run: test signal failure")
+
+        try:
+            mod.read_cell_vectors_legacy_vtk(str(work / "missing.vtk"), "fibers")
+        except FileNotFoundError as error:
+            frame = next(frame for frame in traceback.extract_tb(error.__traceback__)
+                         if frame.name == "read_cell_vectors_legacy_vtk")
+            source = definition.sections()["py_10_45_materials.py"].contents()
+            digest = hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
+            check.assertEqual(frame.filename,
+                              f"<polyfem:polyfem/runtime/45_materials.py@{digest}>")
+            check.assertEqual(linecache.getline(frame.filename, frame.lineno),
+                              source.splitlines(keepends=True)[frame.lineno - 1])
+            check.assertEqual(frame.line, "with open(path) as handle:")
+        else:
+            check.fail("The VTK reader did not raise for a missing file")
+        check.assertFalse(any(Path(entry).resolve().is_relative_to(SRC) for entry in sys.path))
     finally:
         node.destroy()
 
@@ -333,7 +389,22 @@ def calculate():
 
         self._check_isolated_asset(READ_PVD, runtime_manifest, "--embedded-readpvd")
 
-    def _check_isolated_asset(self, filename, manifest, child_mode):
+    @unittest.skipUnless(
+        "hython" in Path(sys.executable).name.lower() and importlib.util.find_spec("hou"),
+        "requires hython and a rebuilt PolyFEM",
+    )
+    def test_isolated_embedded_polyfem(self):
+        from polyfem import runtime_manifest
+
+        viewer_sections = ("ViewerStateModule", "ViewerStateInstall", "ViewerStateUninstall")
+        script_sections = ("PythonModule", "OnCreated", "OnLoaded", "OnUpdated", *viewer_sections)
+        flags = {f"{name}/{flag}": True for name in script_sections
+                 for flag in ("IsPython", "IsScript")}
+        flags.update({f"{name}/IsViewerState": True for name in viewer_sections})
+        self._check_isolated_asset(POLYFEM, runtime_manifest, "--embedded-polyfem",
+                                   expected_flags=flags)
+
+    def _check_isolated_asset(self, filename, manifest, child_mode, *, expected_flags=None):
         from common import hda_build, section_build
         import hou
 
@@ -351,6 +422,8 @@ def calculate():
             self.assertEqual({name for name in sections if name.startswith("py_")},
                              {name for _, _, name in entries})
             flags = definition.extraFileOptions()
+            if expected_flags is not None:
+                self.assertEqual(flags, expected_flags)
             for flag in ("IsPython", "IsScript"):
                 self.assertTrue(flags.get(f"PythonModule/{flag}"))
             for _, relpath, name in entries:
@@ -379,5 +452,7 @@ if __name__ == "__main__":
         _exercise_installed_reader(Path(sys.argv[2]))
     elif len(sys.argv) == 3 and sys.argv[1] == "--embedded-readpvd":
         _exercise_installed_readpvd(Path(sys.argv[2]))
+    elif len(sys.argv) == 3 and sys.argv[1] == "--embedded-polyfem":
+        _exercise_installed_polyfem(Path(sys.argv[2]))
     else:
         unittest.main()

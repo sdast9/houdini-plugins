@@ -444,7 +444,7 @@ def _definitions(stmt):
 
 def _legacy_conversion(part, previous, current):
     old_part, old_stmt = previous
-    if part.path != "polyfem/PythonModule.py" or old_part is not part:
+    if part.path != "polyfem/runtime/96_import_apply.py" or old_part is not part:
         return False
     return tuple(
         hashlib.sha256(ast.get_source_segment(part.text, stmt).encode()).hexdigest()
@@ -522,7 +522,7 @@ def _callback_call_references(factories, calls):
                     yield part, name, call.lineno
 
 
-def check_sources(asset, parts, callback_sources=(), *, legacy_polyfem=False):
+def check_sources(asset, parts, callback_sources=()):
     """Check ordered SourceParts and callback-bearing sources, without Houdini."""
     errors = []
     names = _Names()
@@ -543,7 +543,7 @@ def check_sources(asset, parts, callback_sources=(), *, legacy_polyfem=False):
                 previous = definitions.get(name)
                 if previous is None:
                     definitions[name] = (part, stmt)
-                elif not (legacy_polyfem and name == "_IMPORT_KEYS"
+                elif not (asset == "polyfem" and name == "_IMPORT_KEYS"
                           and _legacy_conversion(part, previous, stmt)):
                     first_part, first_stmt = previous
                     report("duplicate-definition", part, stmt.lineno, name,
@@ -589,16 +589,10 @@ def _manifest_entries(path):
 def check_hda(src_root, asset):
     root = Path(src_root)
     directory = root / asset
-    manifest = directory / "runtime_manifest.py"
     try:
-        if manifest.is_file():
-            entries = _manifest_entries(manifest)
-            parts = [SourcePart("/".join(path), root.joinpath(*path).read_text(encoding="utf-8"))
-                     for _, path, _ in entries]
-        else:
-            path = directory / "PythonModule.py"
-            parts = [SourcePart(path.relative_to(root).as_posix(),
-                                path.read_text(encoding="utf-8"))]
+        entries = _manifest_entries(directory / "runtime_manifest.py")
+        parts = [SourcePart("/".join(path), root.joinpath(*path).read_text(encoding="utf-8"))
+                 for _, path, _ in entries]
 
         callbacks = []
         for path in sorted(directory.rglob("*")):
@@ -616,8 +610,7 @@ def check_hda(src_root, asset):
     except (OSError, KeyError, TypeError, ValueError, SyntaxError) as error:
         return [CheckError(asset, "source", f"{asset}/", 1, "", str(error))]
 
-    return check_sources(asset, parts, callbacks,
-                         legacy_polyfem=asset == "polyfem" and not manifest.is_file())
+    return check_sources(asset, parts, callbacks)
 
 
 def check_all(src_root=SRC_ROOT):

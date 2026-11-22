@@ -6,11 +6,20 @@ import sys
 
 import hou
 
+if not __package__:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
 import dialogscript  # noqa: E402
 import hda_build  # noqa: E402
+import section_build  # noqa: E402
 
-TYPE_NAME = "stevenabramowitch::dev::PolyFEM::2.0"
+if __package__:
+    from . import runtime_manifest
+else:
+    from polyfem import runtime_manifest
+
+TYPE_NAME = runtime_manifest.TYPE_NAME
 LABEL = "PolyFEM (Dev) 2.0"
 STATE_NAME = "stevenabramowitch::dev::PolyFEM::2.0"
 
@@ -128,9 +137,12 @@ def build(out_dir):
     definition = asset.type().definition()
     definition.updateFromNode(asset)
 
+    runtime_sections, _ = section_build.build_runtime_sections(
+        runtime_manifest.ASSET_TAG, runtime_manifest.TYPE_NAME, runtime_manifest.PARTS,
+        compile_line_gaps=runtime_manifest.COMPILE_LINE_GAPS)
     sections = {
         "DialogScript": _patched_dialog_script(),
-        "PythonModule": hda_build.read_source("polyfem", "PythonModule.py"),
+        **runtime_sections,
         "ViewerStateModule": hda_build.read_source(
             "polyfem", "sections", "ViewerStateModule.py"),
         "OnCreated": hda_build.read_source("polyfem", "OnCreated.py"),

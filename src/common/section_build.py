@@ -23,6 +23,9 @@ _EXECUTE_IN_PARTS = '''\
             ns["__doc__"] = original_doc
 '''
 
+# Phase 3 parity checks showed that compiling with COMPILE_LINE_GAPS preserves
+# CPython 3.13 bytecode and class __firstlineno__ values. Relocating the nested
+# code objects then points function tracebacks at the individual part files.
 _EXECUTE_AS_MODULE = '''\
     from bisect import bisect_right
     from types import CodeType
