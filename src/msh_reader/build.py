@@ -7,8 +7,14 @@ import hou
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
 import hda_build  # noqa: E402
+import section_build  # noqa: E402
 
-TYPE_NAME = "MSH_Reader::3.0"
+if __package__:
+    from . import runtime_manifest
+else:
+    import runtime_manifest
+
+TYPE_NAME = runtime_manifest.TYPE_NAME
 LABEL = "MSH Reader 3.0"
 
 PYTHON_SOP_CODE = """\
@@ -110,25 +116,13 @@ def _build(out_dir):
     ptg.append(groups_parm)
     ptg.append(summary_parm)
 
-    # ---- PythonModule: embed the native parser ----------------------------
-    parser_src = hda_build.read_source("common", "msh_parser.py")
-    module_src = hda_build.read_source("msh_reader", "PythonModule.py")
-    if "# @MSH_PARSER@" not in module_src:
-        raise RuntimeError("Missing # @MSH_PARSER@ marker in msh_reader/PythonModule.py")
-    module_src = module_src.replace("# @MSH_PARSER@", parser_src, 1)
-    module_src += """
-
-def reload(kwargs):
-    node = kwargs["node"]
-    inner = node.node("read_msh")
-    if inner is not None:
-        inner.cook(force=True)
-"""
+    runtime_sections, _ = section_build.build_runtime_sections(
+        runtime_manifest.ASSET_TAG, TYPE_NAME, runtime_manifest.PARTS)
 
     path = hda_build.finalize(
         asset,
         parm_template_group=ptg,
-        sections={"PythonModule": module_src,
+        sections={**runtime_sections,
                   "Help": hda_build.read_source("msh_reader", "Help"),
                   # show the reader's errors AND warnings on the asset
                   # (an inner node's warning does not reach it otherwise)

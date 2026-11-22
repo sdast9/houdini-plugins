@@ -30,10 +30,6 @@ import numpy as np
 
 import hou
 
-# ---- embedded native parser (built from src/common/msh_parser.py) ----------
-# @MSH_PARSER@
-# ---- end embedded parser ----------------------------------------------------
-
 FAMILY_DIM = {
     "point": 0, "line": 1, "tri": 2, "quad": 2,
     "tet": 3, "hex": 3, "prism": 3, "pyramid": 3,
@@ -434,3 +430,10 @@ def cook(node):
             "in a single physical group.")
     if warnings:
         raise hou.NodeWarning("\n".join(warnings))
+
+
+def reload(kwargs):
+    node = kwargs["node"]
+    inner = node.node("read_msh")
+    if inner is not None:
+        inner.cook(force=True)

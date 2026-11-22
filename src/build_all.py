@@ -26,6 +26,7 @@ sys.path.insert(0, HERE)
 from msh_reader import build as msh_build  # noqa: E402
 from polyfem import build as polyfem_build  # noqa: E402
 from readpvd import build as readpvd_build  # noqa: E402
+from common import check_parts  # noqa: E402
 import hda_build  # noqa: E402 (shared by the builders)
 
 OTLS_DIR = os.path.join(hou.homeHoudiniDirectory(), "otls")
@@ -87,6 +88,12 @@ def _publish_assets(built_assets, directories):
 
 
 def main():
+    errors = check_parts.check_all(HERE)
+    if errors:
+        for error in errors:
+            print(error, file=sys.stderr)
+        return 1
+
     stage_dir = _build_stage()
     try:
         built_assets = []

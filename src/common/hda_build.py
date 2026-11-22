@@ -165,6 +165,9 @@ def finalize(asset, parm_template_group=None, sections=None, tools_shelf=None,
 
         for name, text in (sections or {}).items():
             definition.addSection(name, text)
+            if name == "PythonModule":
+                definition.setExtraFileOption("PythonModule/IsPython", True)
+                definition.setExtraFileOption("PythonModule/IsScript", True)
 
         if tools_shelf is not None:
             definition.addSection("Tools.shelf", tools_shelf)
