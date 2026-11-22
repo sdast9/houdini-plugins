@@ -229,8 +229,8 @@ def _strip_inline_payloads(data):
     pos = 0
     while True:
         start = data.find(b"<DataArray", pos)
-        comment = data.find(b"<!--", pos)
-        if comment >= 0 and (start < 0 or comment < start):
+        comment = data.find(b"<!--", pos, len(data) if start < 0 else start)
+        if comment >= 0:
             end_comment = data.find(b"-->", comment + 4)
             if end_comment < 0:
                 out += data[pos:]
@@ -329,7 +329,7 @@ class _Reader:
             end = self.data.rfind(b"</AppendedData>")
             if tag_end < 0 or start < 0 or end <= start:
                 raise VtuParseError("Incomplete AppendedData section")
-            self.appended = self.data[start + 1:end]
+            self.appended = memoryview(self.data)[start + 1:end]
             # ElementTree chokes on raw bytes inside AppendedData: replace
             # the payload with nothing for the XML parse.
             xml_bytes = self.data[:start + 1] + self.data[end:]
@@ -343,6 +343,14 @@ class _Reader:
         self._payload = {}
         data_arrays = [elem for elem in self.root.iter()
                        if _localname(elem.tag) == "DataArray"]
+        try:
+            offsets = sorted({int(elem.get("offset", "0"))
+                              for elem in data_arrays
+                              if elem.get("format") == "appended"})
+        except ValueError as error:
+            raise VtuParseError("Invalid VTK appended offset") from error
+        self._appended_ends = dict(zip(
+            offsets, offsets[1:] + [len(self.appended or b"")]))
         for elem, span in zip(data_arrays, payload_ranges):
             if span is not None:
                 self._payload[id(elem)] = span
@@ -457,7 +465,7 @@ class _Reader:
             offset = int(elem.get("offset", "0"))
             if offset < 0 or offset >= len(self.appended):
                 raise VtuParseError("VTK appended offset lies outside the payload")
-            payload = memoryview(self.appended)[offset:]
+            payload = self.appended[offset:self._appended_ends[offset]]
             if self.appended_encoding == "base64":
                 raw = self._decode_appended_base64(payload)
             elif self.appended_encoding == "raw":
@@ -676,10 +684,22 @@ def _hdf_datasets(group):
 
     def collect(name, value):
         if isinstance(value, h5py.Dataset):
-            arrays[name] = value[...]
+            array = value[...]
+            arrays[name] = (array[:, 0]
+                            if array.ndim == 2 and array.shape[1] == 1 else array)
 
     group.visititems(collect)
     return arrays
+
+
+def _check_hdf_steps(root):
+    steps = root.get("Steps")
+    if steps is not None and (
+            int(steps.attrs.get("NSteps", 1)) > 1
+            or ("Values" in steps and steps["Values"].size > 1)):
+        raise VtuParseError(
+            "Temporal multi-step VTKHDF is unsupported; export a "
+            "separate mesh file for each timestep.")
 
 
 def read_hdf(path):
@@ -690,6 +710,7 @@ def read_hdf(path):
             if "VTKHDF" not in handle:
                 raise VtuParseError(f"No /VTKHDF group in {path}")
             root = handle["VTKHDF"]
+            _check_hdf_steps(root)
             vtk_type = root.attrs.get("Type", "")
             if isinstance(vtk_type, bytes):
                 vtk_type = vtk_type.decode(errors="replace")
@@ -948,6 +969,7 @@ def read_hdf_field_info(path):
         if "VTKHDF" not in handle:
             raise VtuParseError(f"No /VTKHDF group in {path}")
         root = handle["VTKHDF"]
+        _check_hdf_steps(root)
         for group_name, out_key in (("PointData", "point_data"),
                                     ("CellData", "cell_data")):
             if group_name not in root:

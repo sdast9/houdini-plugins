@@ -16,11 +16,13 @@ import datetime
 import math
 import os
 import re
+import stat
 import tempfile
 import zipfile
 
 XLSX_MAX_ROWS = 1048576
 XLSX_MAX_COLUMNS = 16384
+XLSX_MAX_TEXT = 32767
 _XLSX_SHEET_FORBIDDEN = re.compile(r"[\[\]:*?/\\]")
 # characters XML 1.0 cannot carry at all
 _XLSX_XML_INVALID = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
@@ -46,7 +48,7 @@ def xlsx_sheet_name(title, taken=()):
     with an apostrophe."""
     name = _XLSX_SHEET_FORBIDDEN.sub("_", str(title)).strip().strip("'")
     name = _XLSX_XML_INVALID.sub("", name)[:31].strip().strip("'") or "Sheet"
-    lowered = {value.lower() for value in taken}
+    lowered = {"history", *(value.lower() for value in taken)}
     candidate, number = name, 2
     while candidate.lower() in lowered:
         suffix = f" ({number})"
@@ -67,6 +69,10 @@ def _xlsx_cell(reference, value, style):
         return ""
     attributes = f' r="{reference}"' + (f' s="{style}"' if style else "")
     if isinstance(value, str):
+        value = _XLSX_XML_INVALID.sub("", value)
+        if len(value.encode("utf-16-le")) > 2 * XLSX_MAX_TEXT:
+            raise XlsxLimitError(
+                f"Cell {reference} exceeds Excel's {XLSX_MAX_TEXT:,}-character limit")
         text = _xlsx_escape(value)
         if not text:
             return ""
@@ -176,7 +182,8 @@ class XlsxWorkbook:
             'schemas.openxmlformats.org/officeDocument/2006/relationships/'
             'styles" Target="styles.xml"/>')
         counts = []
-        with tempfile.NamedTemporaryFile(dir=os.path.dirname(os.path.abspath(path)),
+        directory = os.path.dirname(os.path.abspath(path))
+        with tempfile.NamedTemporaryFile(dir=directory,
                                          prefix=f".{os.path.basename(path)}.",
                                          suffix=".tmp", delete=False) as temp:
             temporary = temp.name
@@ -267,10 +274,23 @@ class XlsxWorkbook:
                                       force_zip64=True) as handle:
                         counts.append(self._write_sheet(handle, rows, widths,
                                                         header_rows))
+            try:
+                mode = stat.S_IMODE(os.stat(path).st_mode)
+            except FileNotFoundError:
+                # Let the OS apply the umask without changing it for other
+                # threads or exposing an incomplete workbook.
+                with tempfile.TemporaryDirectory(dir=directory) as probe:
+                    fd = os.open(os.path.join(probe, "mode"),
+                                 os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+                    try:
+                        mode = stat.S_IMODE(os.fstat(fd).st_mode)
+                    finally:
+                        os.close(fd)
+            os.chmod(temporary, mode)
             os.replace(temporary, path)
         finally:
             try:
-                os.remove(temporary)
-            except OSError:
+                os.unlink(temporary)
+            except FileNotFoundError:
                 pass
         return dict(zip(self.sheet_names, counts))

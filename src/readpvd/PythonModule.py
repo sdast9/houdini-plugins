@@ -292,18 +292,30 @@ FIBER_COMPANION_NAME = "polyfem_fiber_families.npz"
 # addAttrib raise and the whole frame fail to load, so every vtu name is
 # sanitized on the way in and mapped back for display.
 _ATTRIB_NAME_RE = re.compile(r"[^0-9A-Za-z_]")
+_COMPANION_NAME_RE = re.compile(r"hda_g\d+_v\d+_f\d+(?:_[pm])?_fiber_direction")
 
 # sanitized attribute name -> original vtu array name (only when they differ)
 _DISPLAY_NAMES = {}
 # original vtu array name -> sanitized attribute name (collision-stable)
 _ATTRIB_NAMES = {}
 _FIELD_NAME_OWNERS = {}
+_MECHANICS_INPUT_NAMES = {
+    "F_1", "F_2", "F_3", "solution", "body_ids", "von_mises",
+    "von_mises_avg", "_volume",
+}
+for _stress in ("cauchy_stress", "pk1_stress", "pk2_stress"):
+    _MECHANICS_INPUT_NAMES.update(
+        {_stress, _stress + "_avg",
+         *(f"{_stress}{avg}_{i}" for avg in ("", "_avg") for i in (1, 2, 3))})
 _RESERVED_FIELD_NAMES = {
     "P", "Pw", "Cd", "Alpha", "N", "uv", "v", "id", "name", "orient",
     "pscale", "scale", "up", "width",
     "rest", "for_color", "coincident_id", "coincident_rep", "pvd_block",
     "source_cell_index", "source_cell_family", "reference_comparison",
+    "green_lagrange", "almansi", "hencky", "infinitesimal", "cauchy",
+    *DERIVED_FIELD_REQUIREMENTS,
 }
+_PROTECTED_FIELD_NAMES = _RESERVED_FIELD_NAMES | _MECHANICS_INPUT_NAMES
 
 
 def _field_name(raw_name):
@@ -321,9 +333,12 @@ def _field_name(raw_name):
         name = "_" + name
     if name.startswith("readpvd_"):
         name = "vtu_" + name
-    if name in _RESERVED_FIELD_NAMES or name in _FIELD_NAME_OWNERS:
+    if ((name in _PROTECTED_FIELD_NAMES and raw_name not in _MECHANICS_INPUT_NAMES)
+            or _COMPANION_NAME_RE.fullmatch(name)
+            or name in _FIELD_NAME_OWNERS):
         suffix = 2
-        while f"{name}_{suffix}" in _FIELD_NAME_OWNERS:
+        while (f"{name}_{suffix}" in _FIELD_NAME_OWNERS
+               or f"{name}_{suffix}" in _PROTECTED_FIELD_NAMES):
             suffix += 1
         name = f"{name}_{suffix}"
     if name != raw_name:
@@ -439,6 +454,19 @@ def _load_fiber_companion(pvd_path):
         and len(result["family_body_ids"]) == families)
     if not valid:
         return None
+    # Keep established family names and disambiguate names that sanitize to
+    # the same attribute, without sharing the special menu token "all".
+    used = set()
+    for i, raw_name in enumerate(result["family_names"]):
+        base = (raw_name if _COMPANION_NAME_RE.fullmatch(raw_name) else
+                "readpvd_companion_" + (_ATTRIB_NAME_RE.sub("_", raw_name) or "fiber"))
+        name = base
+        suffix = 2
+        while name in used:
+            name = f"{base}_{suffix}"
+            suffix += 1
+        result["family_names"][i] = name
+        used.add(name)
     if len(_FIBER_COMPANION_CACHE) > 8:
         _FIBER_COMPANION_CACHE.clear()
     _FIBER_COMPANION_CACHE[key] = result
@@ -561,7 +589,7 @@ def _companion_point_fibers(pvd_path, mesh):
         companion_identity = (0, 0)
     cache_key = (
         companion_path, companion_identity, str(mesh.get("topo_key")),
-        len(mesh["points"]))
+        _rest_geometry_digest(mesh))
     cached = _FIBER_POINT_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -569,7 +597,7 @@ def _companion_point_fibers(pvd_path, mesh):
     points = np.asarray(mesh["points"], dtype=np.float64)
     point_bodies = mesh["point_data"].get("body_ids")
     if point_bodies is not None and len(point_bodies) == len(points):
-        point_bodies = np.asarray(point_bodies).reshape(-1).astype(np.int64)
+        point_bodies = np.asarray(point_bodies).reshape(-1)
     else:
         point_bodies = None
 
@@ -1292,7 +1320,8 @@ def _available_body_ids(node):
         return []
     if body is None:
         return []
-    return sorted(int(value) for value in np.unique(np.asarray(body)))
+    body = np.asarray(body)
+    return sorted(int(value) for value in np.unique(body[np.isfinite(body)]))
 
 
 def body_id_menu(kwargs):
@@ -1419,22 +1448,6 @@ def sync_available_options(kwargs):
                            and not any(_requirements(frame[selected_block])[
                                "deformation_gradient"] for frame in frames)):
             node.parm("add_glyphs").set(0)
-    if fiber_attribs and not requirements["deformation_gradient"] \
-            and _menu_token(node, "fiber_frame") != "reference":
-        # The deformed direction needs F; fall back rather than draw the
-        # reference direction while claiming it is deformed.
-        node.parm("fiber_frame").set("reference")
-        _message("Fibers: this run has no deformation gradient; "
-                 "showing the reference direction.")
-    # Drop visible-body selections that no longer exist (only when this block
-    # actually carries body ids, so switching to a body-less block keeps them).
-    if body_ids and node.parm("visible_bodies") is not None:
-        valid = {str(body) for body in body_ids}
-        current = node.evalParm("visible_bodies").split()
-        kept = [token for token in current if token in valid]
-        if kept != current:
-            node.parm("visible_bodies").set(" ".join(kept))
-
     renderable_count = max(0, len(color_tokens) - (1 if color_tokens == [""] else 0))
     block_label = BLOCK_LABELS.get(selected_block, selected_block or "None")
     summary = (
@@ -1442,7 +1455,10 @@ def sync_available_options(kwargs):
         f"{'s' if renderable_count != 1 else ''}; "
         f"{len(block_tokens) if block_tokens != [''] else 0} available block"
         f"{'s' if len(block_tokens) != 1 else ''}.")
-    node.parm("availability_status").set(summary)
+    if fiber_attribs and not requirements["deformation_gradient"] \
+            and _menu_token(node, "fiber_frame") != "reference":
+        summary += " Deformed fiber directions are unavailable on this block and step."
+    _set_availability_status(node, summary)
 
 
 def _autocenter_clip(node):
@@ -1597,18 +1613,37 @@ def _mesh_point_field(mesh, field):
     return None
 
 
+def _finite_matrix_rows(operation, matrices):
+    """Run LAPACK on finite rows only and retain missing tuples as NaN."""
+    finite = np.isfinite(matrices).all(axis=(1, 2))
+    if finite.all():
+        return operation(matrices)
+    result = operation(matrices[finite])
+
+    def expand(array):
+        full = np.full((len(matrices),) + array.shape[1:], np.nan)
+        full[finite] = array
+        return full
+
+    if isinstance(result, tuple):
+        return tuple(expand(array) for array in result)
+    return expand(result)
+
+
 def _reduce_array(values, reduction):
     values = np.asarray(values, dtype=np.float64)
     if values.ndim == 1:
         return values
+    if values.ndim == 2 and values.shape[1] == 1:
+        return values[:, 0]
     if values.ndim == 3 or (values.ndim == 2 and values.shape[1] == 9):
         matrices = values.reshape(-1, 3, 3)
         if reduction == "trace":
             return np.trace(matrices, axis1=1, axis2=2)
         if reduction == "determinant":
-            return np.linalg.det(matrices)
+            return _finite_matrix_rows(np.linalg.det, matrices)
         if reduction in ("principal_max", "principal_middle", "principal_min"):
-            eigenvalues = np.linalg.eigvalsh(
+            eigenvalues = _finite_matrix_rows(np.linalg.eigvalsh,
                 0.5 * (matrices + np.swapaxes(matrices, 1, 2)))[:, ::-1]
             return eigenvalues[:, {
                 "principal_max": 0, "principal_middle": 1,
@@ -1674,7 +1709,7 @@ def _mesh_field(mesh, field):
 
     @once
     def jacobian():
-        return np.linalg.det(F())
+        return _finite_matrix_rows(np.linalg.det, F())
 
     # Right/Left Cauchy-Green deformation tensors and their principal
     # (Lagrangian / Eulerian) axes, reused for the stretch and strain measures
@@ -1689,11 +1724,11 @@ def _mesh_field(mesh, field):
 
     @once
     def c_eigen():
-        return np.linalg.eigh(C())                    # ascending
+        return _finite_matrix_rows(np.linalg.eigh, C())                    # ascending
 
     @once
     def b_eigen():
-        return np.linalg.eigh(B())
+        return _finite_matrix_rows(np.linalg.eigh, B())
 
     @once
     def lam():
@@ -1715,7 +1750,7 @@ def _mesh_field(mesh, field):
     # zero it elsewhere so it matches the guarded VEX display path.
     @once
     def almansi():
-        value = 0.5 * (identity - np.linalg.pinv(B()))
+        value = 0.5 * (identity - _finite_matrix_rows(np.linalg.pinv, B()))
         value[np.abs(jacobian()) <= 1e-12] = 0.0
         return value
 
@@ -1760,17 +1795,18 @@ def _mesh_field(mesh, field):
 
     @once
     def eigen():
-        return np.linalg.eigvalsh(cauchy())[:, ::-1]
+        return _finite_matrix_rows(np.linalg.eigvalsh, cauchy())[:, ::-1]
 
     @once
     def Finv():
-        return np.linalg.pinv(F())
+        return _finite_matrix_rows(np.linalg.pinv, F())
 
     @once
     def pk1():
         jac = jacobian()
         valid = np.abs(jac) > 1e-12
         out = np.zeros_like(cauchy())
+        out[~np.isfinite(jac)] = np.nan
         if np.any(valid):
             out[valid] = jac[valid, None, None] * np.einsum(
                 "nij,njk->nik", cauchy()[valid],
@@ -1782,6 +1818,7 @@ def _mesh_field(mesh, field):
         jac = jacobian()
         valid = np.abs(jac) > 1e-12
         out = np.zeros_like(cauchy())
+        out[~np.isfinite(jac)] = np.nan
         if np.any(valid):
             out[valid] = jac[valid, None, None] * np.einsum(
                 "nij,njk,nlk->nil", Finv()[valid], cauchy()[valid],
@@ -1802,22 +1839,22 @@ def _mesh_field(mesh, field):
         "principal_stretches": lambda: lam()[:, ::-1],
         "green_lagrange_strain": green,
         "green_lagrange_eigenvalues":
-            lambda: np.linalg.eigvalsh(green())[:, ::-1],
+            lambda: _finite_matrix_rows(np.linalg.eigvalsh, green())[:, ::-1],
         "almansi_strain": almansi,
         "almansi_strain_eigenvalues":
-            lambda: np.linalg.eigvalsh(almansi())[:, ::-1],
+            lambda: _finite_matrix_rows(np.linalg.eigvalsh, almansi())[:, ::-1],
         "hencky_strain": hencky,
         "hencky_strain_eigenvalues":
-            lambda: np.linalg.eigvalsh(hencky())[:, ::-1],
+            lambda: _finite_matrix_rows(np.linalg.eigvalsh, hencky())[:, ::-1],
         "infinitesimal_strain": infinitesimal,
         "infinitesimal_strain_eigenvalues":
-            lambda: np.linalg.eigvalsh(infinitesimal())[:, ::-1],
+            lambda: _finite_matrix_rows(np.linalg.eigvalsh, infinitesimal())[:, ::-1],
     }
     stresses = {
         "cauchy_mat": cauchy, "cauchy_eigenvalues": eigen,
         "cauchy_trace": trace, "hydrostatic_stress": hydro,
         "deviatoric_stress": dev, "stress_J2": j2,
-        "stress_J3": lambda: np.linalg.det(dev()),
+        "stress_J3": lambda: _finite_matrix_rows(np.linalg.det, dev()),
         "von_mises": lambda: np.sqrt(np.maximum(0, 3 * j2())),
         "von_mises_derived": lambda: np.sqrt(np.maximum(0, 3 * j2())),
         "max_shear_stress": lambda: 0.5 * (eigen()[:, 0] - eigen()[:, 2]),
@@ -1825,7 +1862,7 @@ def _mesh_field(mesh, field):
             hydro(), np.sqrt(np.maximum(0, 3 * j2())),
             out=np.zeros_like(hydro()), where=j2() > 1e-24),
         "pk1": pk1, "pk2": pk2,
-        "pk2_eigenvalues": lambda: np.linalg.eigvalsh(
+        "pk2_eigenvalues": lambda: _finite_matrix_rows(np.linalg.eigvalsh,
             0.5 * (pk2() + np.swapaxes(pk2(), 1, 2)))[:, ::-1],
     }
     if field in kinematics:
@@ -1856,35 +1893,42 @@ def cook_reference_comparison(node):
     reference_frame = asset.evalParm("reference_frame")
     reference_step = frame_step(asset, reference_frame)
     try:
-        reference_mesh = load_block(path, reference_step, block, fallback=False)
-        reference = (_scan_reduced(asset, reference_mesh, field, reduction)
-                     if reference_mesh is not None else None)
-    except Exception as exc:
+        reference_topo, reference = _reference_reduced(
+            asset, path, block, field, reduction)
+    except (OSError, ET.ParseError, VtuParseError, ValueError) as exc:
         asset.parm("reference_status").set(f"Reference load failed: {exc}")
         return
     if reference is None:
         asset.parm("reference_status").set(
             f"Reference field '{field}' is unavailable.")
         return
-    if (reference_mesh["topo_key"] != current_mesh["topo_key"]
+    if (reference_topo != current_mesh["topo_key"]
             or len(reference) != len(current)
             or len(current) != geo.intrinsicValue("pointcount")):
         asset.parm("reference_status").set(
             "Reference comparison requires matching point topology.")
         return
     mode = _menu_token(asset, "reference_mode")
-    delta = _apply_reference(current, reference, mode)
+    note = ""
+    if mode == "percent":
+        delta, near_zero = _percent_delta(current, reference)
+        if near_zero:
+            note = (f" {near_zero:,} of {len(reference):,} points have a "
+                    "near-zero reference baseline. Changes above tolerance "
+                    "at those points are undefined.")
+    else:
+        delta = _apply_reference(current, reference, mode)
     if geo.findPointAttrib("reference_comparison") is None:
         geo.addAttrib(hou.attribType.Point, "reference_comparison", 0.0,
                       create_local_variable=False)
-    geo.setPointFloatAttribValues(
-        "reference_comparison",
-        np.ascontiguousarray(delta, dtype=np.float64).tolist())
+    _set_floats(geo.setPointFloatAttribValuesFromString,
+                "reference_comparison", delta)
     times = _pvd_times(asset)
     when = (f" (step {reference_step}, t = {times[reference_step]:.6g})"
             if reference_step < len(times) else "")
     asset.parm("reference_status").set(
-        f"Comparing {field} with frame {reference_frame}{when} using {mode}.")
+        f"Comparing {field} with frame {reference_frame}{when} using {mode}."
+        + note)
 
 
 def cook_field_smoothing(node):
@@ -1968,9 +2012,15 @@ def probe_pick(node, output_point):
             [p.position() for p in result.points()], dtype=np.float64)
     if not len(rests):
         return ""
-    scale = max(1.0, float(np.abs(rests).max()))
+    # Clipped points can carry interpolated integer point IDs. Compare in
+    # rest space at the local face scale, independent of world translation.
+    extent = 0.0
+    for prim in picked.prims():
+        local = np.asarray([p.attribValue(rest_attrib) if rest_attrib else p.position()
+                            for p in prim.points()], dtype=np.float64)
+        extent = max(extent, float(np.ptp(local, axis=0).max()))
     row = _result_row(result, candidate)
-    if row < 0 or np.abs(rests[row] - rest).max() > 1e-6 * scale:
+    if row < 0 or np.abs(rests[row] - rest).max() > 1e-6 * extent:
         # a cut point of the clip (or an id the clip interpolated)
         mask = np.ones(len(rests), dtype=bool)
         body_attrib = shown.findPointAttrib("body_ids")
@@ -1979,7 +2029,7 @@ def probe_pick(node, output_point):
             bodies = np.rint(np.frombuffer(
                 result.pointFloatAttribValuesAsString("body_ids"),
                 dtype=np.float32))
-            same = bodies == round(float(picked.attribValue(body_attrib)))
+            same = bodies == np.rint(float(picked.attribValue(body_attrib)))
             if same.any():
                 mask = same
         rows = np.flatnonzero(mask)
@@ -2075,32 +2125,63 @@ def _scan_reduced(node, mesh, field, reduction):
     return np.asarray(_reduce_array(raw, reduction), dtype=np.float64)
 
 
+_REFERENCE_CACHE = OrderedDict()
+_REFERENCE_CACHE_MAX_BYTES = 128 << 20
+_REFERENCE_CACHE_SIZE = 8
+
+
 def _reference_reduced(node, path, block, field, reduction):
     """Reference topology and reduced field, or (None, None)."""
     if not node.evalParm("reference_enable"):
         return None, None
-    try:
-        mesh = load_block(path, frame_step(
-            node, node.evalParm("reference_frame")), block, fallback=False)
-        if mesh is not None:
-            return mesh["topo_key"], _scan_reduced(node, mesh, field, reduction)
-    except Exception:
-        pass
-    return None, None
+    step = frame_step(node, node.evalParm("reference_frame"))
+    pvd_key = (_file_key(path), _frame_signature(path, step))
+    prefix = (pvd_key, step, block, field, reduction)
+    # Look up the last topology for this exact on-disk frame identity before
+    # loading a mesh. A VTU larger than the parser's LRU could evict it.
+    cached = next((key for key in reversed(_REFERENCE_CACHE)
+                   if key[:-1] == prefix), None)
+    if cached is not None:
+        _REFERENCE_CACHE.move_to_end(cached)
+        return cached[-1], _REFERENCE_CACHE[cached]
+    mesh = load_block(path, step, block, fallback=False)
+    if mesh is None:
+        return None, None
+    topology = mesh["topo_key"]
+    values = _scan_reduced(node, mesh, field, reduction)
+    if values is not None and values.nbytes <= _REFERENCE_CACHE_MAX_BYTES:
+        # Own the reduced array so a scalar view cannot pin a full field.
+        _REFERENCE_CACHE[(*prefix, topology)] = values.copy()
+        while (len(_REFERENCE_CACHE) > _REFERENCE_CACHE_SIZE
+               or sum(v.nbytes for v in _REFERENCE_CACHE.values())
+               > _REFERENCE_CACHE_MAX_BYTES):
+            _REFERENCE_CACHE.popitem(last=False)
+    return topology, values
+
+
+def _percent_delta(values, reference):
+    finite = np.isfinite(values) & np.isfinite(reference)
+    scale = max(np.max(np.abs(values), where=np.isfinite(values), initial=0.0),
+                np.max(np.abs(reference), where=np.isfinite(reference), initial=0.0))
+    tol = 1e-12 * scale
+    delta = values - reference
+    baseline = np.abs(reference)
+    near_zero = np.isfinite(reference) & (baseline <= tol)
+    percent = np.full(len(values), np.nan)
+    percent[finite & near_zero & (np.abs(delta) <= tol)] = 0.0
+    np.divide(delta, baseline, out=percent, where=finite & ~near_zero)
+    percent *= 100.0
+    return percent, int(np.count_nonzero(near_zero))
 
 
 def _apply_reference(values, reference_reduced, mode):
     """Apply the reference comparison the color VEX would (difference/abs/%)."""
     if reference_reduced is None or len(reference_reduced) != len(values):
         return values
-    delta = values - reference_reduced
-    if mode == "absolute":
-        return np.abs(delta)
     if mode == "percent":
-        return np.divide(delta * 100.0, np.abs(reference_reduced),
-                         out=np.where(delta == 0, 0.0, np.nan),
-                         where=np.abs(reference_reduced) > 1e-20)
-    return delta
+        return _percent_delta(values, reference_reduced)[0]
+    delta = values - reference_reduced
+    return np.abs(delta) if mode == "absolute" else delta
 
 
 def _coincidence_groups(points, body=None):
@@ -2153,8 +2234,7 @@ def _interior_face_bits(conn, family, inverse, body=None):
     keys = np.sort(inverse[faces].reshape(cells * n_faces, -1), axis=1)
     if body is not None and len(body) == len(inverse):
         body = np.rint(np.asarray(body, dtype=np.float64).ravel())
-        keys = np.column_stack(
-            (keys, body[faces[:, :, 0].ravel()].astype(np.int64)))
+        keys = np.column_stack((keys, body[faces[:, :, 0].ravel()]))
     order = np.lexsort(keys.T[::-1])
     ordered = keys[order]
     same = np.all(ordered[1:] == ordered[:-1], axis=1)
@@ -2188,7 +2268,11 @@ def _nodal_average(values, inverse):
 # value; a settings or file change invalidates it. Bounded so a huge sequence
 # is recomputed rather than pinned in RAM.
 _SCAN_CACHE = {}
-_SCAN_CACHE_MAX_BYTES = 2 * 1024 ** 3
+_SCAN_CACHE_MAX_BYTES = 64 << 20
+_SCAN_CACHE_MAX_SINGLE_ROW_BYTES = 96 << 20
+_SCAN_CACHE_MAX_ROWS = 32768
+_RANGE_SAMPLE_MAX_VALUES = (128 << 20) // np.dtype(np.float64).itemsize
+_RANGE_CHUNK_VALUES = 65536
 
 
 def _scan_key(node, path):
@@ -2196,7 +2280,7 @@ def _scan_key(node, path):
         file_key = _file_key(path)
     except Exception:
         file_key = path
-    return (file_key, node.evalParm("color_attrib"),
+    return (file_key, node.evalParm("data_epoch"), node.evalParm("color_attrib"),
             _menu_token(node, "color_reduction"),
             bool(node.evalParm("smooth_field")), _source_block_token(node),
             bool(node.evalParm("reference_enable")),
@@ -2205,7 +2289,7 @@ def _scan_key(node, path):
             node.evalParm("visible_bodies").strip())
 
 
-def _scan_displayed_values(node, path):
+def _scan_displayed_values(node, path, cache_rows=True):
     """Yield (frame, timestep, values) of the displayed scalar for every frame,
     reusing the cached result when the scan settings and PVD file are
     unchanged. See _scan_frames for the (uncached) computation."""
@@ -2215,17 +2299,22 @@ def _scan_displayed_values(node, path):
             yield row
         return
     _SCAN_CACHE.clear()
-    rows = []
+    rows = [] if cache_rows else None
     total = 0
     for frame, timestep, values in _scan_frames(node, path):
         if rows is not None:
-            if values is not None:
-                total += values.size * np.dtype(np.float32).itemsize
-            if total > _SCAN_CACHE_MAX_BYTES:
+            size = 0 if values is None else values.size * np.dtype(np.float64).itemsize
+            total += size
+            # Cache a single dense frame under its own hard cap. Sequences
+            # with multiple rows use the smaller aggregate budget so they
+            # leave more room for the live input frame.
+            if (size > _SCAN_CACHE_MAX_SINGLE_ROW_BYTES
+                    or (rows and total > _SCAN_CACHE_MAX_BYTES)
+                    or len(rows) >= _SCAN_CACHE_MAX_ROWS):
                 rows = None
             else:
                 rows.append((frame, timestep,
-                             None if values is None else values.astype(np.float32)))
+                             None if values is None else values.astype(np.float64)))
         yield frame, timestep, values
     if rows is not None:
         _SCAN_CACHE["key"] = key
@@ -2245,12 +2334,17 @@ def _scan_frames(node, path, frames=None):
     field = node.evalParm("color_attrib")
     reduction = _menu_token(node, "color_reduction")
     block = _source_block_token(node)
-    reference_topo, reference_reduced = _reference_reduced(
-        node, path, block, field, reduction)
+    comparing = bool(node.evalParm("reference_enable"))
+    try:
+        reference_topo, reference_reduced = _reference_reduced(
+            node, path, block, field, reduction)
+    except (OSError, ET.ParseError, VtuParseError, ValueError):
+        reference_topo, reference_reduced = None, None
     reference_mode = _menu_token(node, "reference_mode")
     smooth = bool(node.evalParm("smooth_field"))
     visible = _visible_body_set(node)
     inverse = None
+    geometry_key = None
     for frame in (range(len(entries)) if frames is None else frames):
         timestep = entries[frame][0]
         try:
@@ -2261,7 +2355,13 @@ def _scan_frames(node, path, frames=None):
         if mesh is None:
             yield frame, timestep, None
             continue
-        if reference_reduced is not None and mesh["topo_key"] == reference_topo:
+        matched = (comparing and reference_reduced is not None
+                   and mesh["topo_key"] == reference_topo
+                   and len(mesh["points"]) == len(reference_reduced))
+        if comparing and not matched and frames is None:
+            yield frame, timestep, None
+            continue
+        if matched:
             values = _scan_reduced(node, mesh, field, reduction)
             if values is not None:
                 values = _apply_reference(
@@ -2276,16 +2376,17 @@ def _scan_frames(node, path, frames=None):
                     effective = candidate
             values = _scan_reduced(node, mesh, effective, reduction)
         if values is not None and smooth:
-            if inverse is None or len(inverse) != len(values):
+            key = _rest_geometry_digest(mesh)
+            if key != geometry_key:
                 inverse = _coincidence_inverse(
                     mesh["points"], mesh["point_data"].get("body_ids"))
+                geometry_key = key
             values = _nodal_average(values, inverse)
         # Restrict the range to the bodies that are displayed.
         if values is not None and visible is not None:
             body = mesh["point_data"].get("body_ids")
             if body is not None:
-                shown = np.isin(np.asarray(body).astype(np.int64).ravel(),
-                                list(visible))
+                shown = np.isin(np.rint(np.asarray(body).ravel()), list(visible))
                 values = np.where(shown, values, np.nan)
         yield frame, timestep, values
 
@@ -2399,11 +2500,9 @@ def cook_multi_blocks(node):
             continue
         slug = block_name.lower()
         positions = np.asarray(mesh["points"], dtype=np.float64)
-        solution = mesh["point_data"].get("solution")
-        if solution is None:
-            solution = mesh["point_data"].get("displacement")
-        if asset.evalParm("show_deformed") and solution is not None:
-            positions = positions + np.asarray(solution, dtype=np.float64)
+        solution = _solution_vectors(mesh) if asset.evalParm("show_deformed") else None
+        if solution is not None:
+            positions = positions + solution
         # _build_block_geometry reads positions back from the mesh dict; keep
         # the (possibly deformed) copy local without mutating the cache.
         mesh = dict(mesh, points=positions)
@@ -2451,12 +2550,19 @@ def legend_values(node):
     return legend_tick_values(node)[::-1]
 
 
-def _percent_reference(node):
-    return (bool(node.evalParm("reference_enable"))
-            and _menu_token(node, "reference_mode") == "percent")
+def _percent_reference(node, comparison=None):
+    if not node.evalParm("reference_enable") or _menu_token(node, "reference_mode") != "percent":
+        return False
+    if comparison is not None:
+        return comparison
+    try:
+        geo = _probe_geometry(node)
+        return geo is not None and geo.findPointAttrib("reference_comparison") is not None
+    except hou.Error:
+        return False
 
 
-def legend_title_text(node):
+def legend_title_text(node, comparison=None):
     custom = node.evalParm("legend_title").strip()
     if custom:
         return custom
@@ -2465,7 +2571,7 @@ def legend_title_text(node):
     label = _field_label(field)
     if reduction not in ("", "auto"):
         label += " - " + REDUCTION_LABELS.get(reduction, reduction)
-    units = "%" if _percent_reference(node) else node.evalParm("field_units").strip()
+    units = "%" if _percent_reference(node, comparison) else node.evalParm("field_units").strip()
     if units:
         label += f" [{units}]"
     return label
@@ -2550,6 +2656,8 @@ def cook_scene_legend(node):
     """
     geo = node.geometry()
     asset = node.parent()
+    comparison = geo.findPointAttrib("reference_comparison") is not None
+    geo.clear()
     geo.addAttrib(hou.attribType.Point, "Cd", (1.0, 1.0, 1.0),
                   create_local_variable=False)
     group = geo.createPrimGroup("readpvd_legend")
@@ -2589,8 +2697,9 @@ def cook_scene_legend(node):
             0, 2, (label_x, y), tick_color)  # left, middle
         _merge_into(geo, group, label)
 
+    title_text = legend_title_text(asset, comparison)
     title = _font_geometry(
-        legend_title_text(asset), 0.075, 0, 3,  # left, bottom
+        title_text, 0.075, 0, 3,  # left, bottom
         (0.0, 1.0 + _LEGEND_TITLE_GAP), tick_color)
     _merge_into(geo, group, title)
 
@@ -2599,7 +2708,7 @@ def cook_scene_legend(node):
     geo.addAttrib(hou.attribType.Global, "legend_title", "")
     geo.setGlobalAttribValue("legend_min", low)
     geo.setGlobalAttribValue("legend_max", high)
-    geo.setGlobalAttribValue("legend_title", legend_title_text(asset))
+    geo.setGlobalAttribValue("legend_title", title_text)
 
 
 def _merge_into(geo, group, other):
@@ -2801,31 +2910,78 @@ def cook_topology(node):
 # =============================================================================
 
 
-_INITIAL_TET_NOTE = (
-    "Note: over 25% of higher-order sub-tets on step 0 appear inverted or "
-    "degenerate; this may indicate non-PolyFEM VTK Lagrange node ordering "
-    "or severe initial mesh distortion.")
+_INITIAL_ORDERING_DATA = "readpvd_initial_ordering"
+_INITIAL_ORDERING_NOTES = {
+    family: (f"Note: over 25% of higher-order sub-{family}s on step 0 appear "
+             "inverted or degenerate; this may indicate non-PolyFEM VTK "
+             "Lagrange node ordering or severe initial mesh distortion.")
+    for family in ("tet", "hex")
+}
 
 
-def _note_initial_tet_orientation(asset, mesh):
-    types = mesh["cell_types"]
-    sizes = mesh["cell_sizes"]
-    higher_order = np.isin(types, (24, 71)) & np.isin(sizes, (10, 20, 35))
-    sources = mesh["cell_sources"].get("tet")
-    if sources is None or not higher_order.any():
+def _initial_ordering_key(asset):
+    path = asset.evalParm("PVD_file")
+    block = _source_block_token(asset)
+    try:
+        files = _frame_block_paths(path, 0)
+        selected = files.get(block)
+        if not selected or not os.path.isfile(selected):
+            selected = next((f for f in files.values() if os.path.isfile(f)), None)
+        return json.dumps((_file_key(selected), block)) if selected else None
+    except (OSError, ET.ParseError, VtuParseError, ValueError):
+        return None
+
+
+def _set_availability_status(asset, summary):
+    raw = asset.userData(_INITIAL_ORDERING_DATA)
+    if raw:
+        notes = json.loads(raw).get(_initial_ordering_key(asset), [])
+        summary = " ".join((summary, *notes)).strip()
+    asset.parm("availability_status").set(summary)
+    return summary
+
+
+def _note_initial_cell_orientation(asset, mesh):
+    key = _initial_ordering_key(asset)
+    if key is None:
         return
-    invalid = count = 0
-    for start in range(0, len(sources), 16384):
-        span = slice(start, start + 16384)
-        corners = mesh["cells"]["tet"][span][higher_order[sources[span]]]
-        a, b, c, d = mesh["points"][corners].transpose(1, 0, 2)
-        invalid += np.count_nonzero(_tet_volumes(a, b, c, d) <= 0)
-        count += len(corners)
-    if invalid * 4 > count:
-        status = asset.parm("availability_status")
-        previous = status.eval()
-        if _INITIAL_TET_NOTE not in previous:
-            status.set(f"{previous} {_INITIAL_TET_NOTE}".strip())
+    saved = json.loads(asset.userData(_INITIAL_ORDERING_DATA) or "{}")
+    if key in saved:
+        return
+    points = mesh["points"]
+    types, sizes = mesh["cell_types"], mesh["cell_sizes"]
+    notes = []
+    for family, vtk_types, orders, measure in (
+            ("tet", (24, 71), (10, 20, 35),
+             lambda p: _tet_volumes(*p.transpose(1, 0, 2))),
+            ("hex", (29, 72), (27, 64), hex_volumes)):
+        sources = mesh["cell_sources"].get(family)
+        higher = np.isin(types, vtk_types) & np.isin(sizes, orders)
+        if sources is None or not higher.any():
+            continue
+        corners = 4 if family == "tet" else 8
+        conn = mesh["cell_connectivity"]
+        starts = mesh["cell_starts"]
+        display = mesh["cells"][family]
+        invalid = count = 0
+        for start in range(0, len(sources), 16384):
+            span = slice(start, start + 16384)
+            parents = sources[span]
+            selected = higher[parents]
+            parent_conn = conn[starts[parents[selected], None] + np.arange(corners)]
+            sign = np.sign(measure(points[parent_conn]))
+            subcells = measure(points[display[span][selected]])
+            invalid += np.count_nonzero(~(subcells * sign > 0))
+            count += len(subcells)
+        if invalid * 4 > count:
+            notes.append(_INITIAL_ORDERING_NOTES[family])
+    # Retain the most recent checks so switching blocks restores their notes.
+    saved[key] = notes
+    asset.setUserData(_INITIAL_ORDERING_DATA, json.dumps(dict(list(saved.items())[-8:])))
+    status = asset.evalParm("availability_status")
+    for note in _INITIAL_ORDERING_NOTES.values():
+        status = status.replace(note, "").strip()
+    _set_availability_status(asset, status)
 
 
 def cook_frame(node):
@@ -2859,7 +3015,7 @@ def cook_frame(node):
     if len(points) != n_points:
         raise hou.NodeError("Point count mismatch with topology frame")
     if step == 0:
-        _note_initial_tet_orientation(asset, mesh)
+        _note_initial_cell_orientation(asset, mesh)
 
     # rest positions + per-frame fields, all bulk binary uploads
     _set_floats(geo.setPointFloatAttribValuesFromString, "P", points)
@@ -3074,6 +3230,7 @@ def refresh(kwargs=None, force_clear_cache=False):
     if not entries:
         _message("Empty .pvd collection")
         return
+    _save_step_count(node, pvd_path, len(entries))
     stale = stale_cooked_frames(node)
     if stale:
         force_clear_cache = True
@@ -3106,10 +3263,14 @@ def _invalidate_pvd_aggregates(pvd_path):
     if not pvd_path:
         return
     path = os.path.abspath(pvd_path)
-    for cache in (_SEQUENCE_METADATA_CACHE, _FORCE_FRAME_CACHE):
+    for cache in (_SEQUENCE_METADATA_CACHE, _FORCE_FRAME_CACHE, _REFERENCE_CACHE):
         for key in list(cache):
             if _cache_path(key) == path:
                 del cache[key]
+    companion_path = _fiber_companion_path(path)
+    for key in list(_FIBER_POINT_CACHE):
+        if key[0] == companion_path:
+            del _FIBER_POINT_CACHE[key]
     for sid, memo in list(_FORCE_CURVES.items()):
         if _cache_path(memo["key"]) == path:
             del _FORCE_CURVES[sid]
@@ -3234,9 +3395,16 @@ def _follow_identity(path, manifest):
 
 
 def _follow_status(node, message):
-    node.parm("availability_status").set(message)
+    message = _set_availability_status(node, message)
     if hou.isUIAvailable():
         hou.ui.setStatusMessage(message, hou.severityType.Message)
+
+
+_STEP_COUNT_DATA = "readpvd_step_count"
+
+
+def _save_step_count(node, path, count):
+    node.setUserData(_STEP_COUNT_DATA, json.dumps((os.path.abspath(path), count)))
 
 
 def poll_running_simulation(node, force=False, jump_frame=None):
@@ -3249,10 +3417,11 @@ def poll_running_simulation(node, force=False, jump_frame=None):
     watcher = _FOLLOW_WATCHERS.setdefault(sid, {
         "last_poll": 0.0, "path": pvd_path, "last_pvd_key": None,
         "last_count": 0, "baseline": None, "run_identity": None,
+        "prior_run_pvd_key": None,
     })
     if watcher["path"] != pvd_path:
         watcher.update(path=pvd_path, last_pvd_key=None, last_count=0,
-                       baseline=None, run_identity=None)
+                       baseline=None, run_identity=None, prior_run_pvd_key=None)
     now = time.monotonic()
     interval = max(0.5, float(node.evalParm("follow_interval")))
     if not force and now - watcher["last_poll"] < interval:
@@ -3269,7 +3438,9 @@ def poll_running_simulation(node, force=False, jump_frame=None):
     previous = watcher["run_identity"]
     if identity is not None:
         if identity != previous and (baseline is not None or previous is not None):
-            watcher.update(last_pvd_key=None, last_count=0)
+            watcher.update(prior_run_pvd_key=(watcher["last_pvd_key"]
+                                              or watcher["prior_run_pvd_key"]),
+                           last_pvd_key=None, last_count=0)
             _invalidate_pvd_caches(pvd_path)
             _bump_data_epoch(node)
             clear_cache({"node": node})
@@ -3284,6 +3455,18 @@ def poll_running_simulation(node, force=False, jump_frame=None):
         watcher.update(last_pvd_key=None, last_count=0)
         steps = 0
 
+    prior = watcher["prior_run_pvd_key"]
+    completion = (manifest or {}).get("completion") or {}
+    status = str(completion.get("status") or "").strip().lower()
+    failed = (status not in ("", "completed", "success", "succeeded")
+              or completion.get("exit_status") not in (None, 0))
+    if pvd_key is not None and pvd_key == prior and (not finished or failed):
+        # This is still the previous run's collection.
+        if not finished:
+            _follow_status(node, "Waiting for the new run to write its PVD.")
+            return {"action": "noop", "steps": 0}
+        pvd_key = None
+        steps = 0
     if pvd_key is not None and (pvd_key != watcher["last_pvd_key"] or finished):
         try:
             entries = read_pvd(pvd_path)
@@ -3302,7 +3485,7 @@ def poll_running_simulation(node, force=False, jump_frame=None):
             if do_jump and (steps != previous_count or force):
                 hou.setFrame(int(entry_frame(node, steps - 1)))
             action = "refreshed"
-        watcher.update(last_pvd_key=pvd_key, last_count=steps)
+        watcher.update(last_pvd_key=pvd_key, last_count=steps, prior_run_pvd_key=None)
 
     if finished:
         node.parm("follow_running").set(0)
@@ -3335,6 +3518,10 @@ def toggle_follow_running(kwargs, restoring=False):
         count = len(read_pvd(path))
     except (OSError, ET.ParseError, VtuParseError, ValueError):
         pvd_key, count = None, 0
+    saved_path, saved_count = json.loads(node.userData(_STEP_COUNT_DATA) or "[null, 0]")
+    catch_up = restoring and count > (saved_count if saved_path == os.path.abspath(path) else 0)
+    if not catch_up and count:
+        _save_step_count(node, path, count)
 
     def tick(force=False):
         try:
@@ -3349,8 +3536,9 @@ def toggle_follow_running(kwargs, restoring=False):
             _follow_status(node, f"Follow Running Simulation stopped: {error}")
 
     _FOLLOW_WATCHERS[sid] = {
-        "last_poll": 0.0, "path": path, "last_pvd_key": pvd_key,
-        "last_count": count, "baseline": identity if finished else None,
+        "last_poll": 0.0, "path": path, "last_pvd_key": None if catch_up else pvd_key,
+        "last_count": saved_count if catch_up else count,
+        "baseline": identity if finished else None, "prior_run_pvd_key": None,
         "run_identity": None if finished else identity,
         "callback": tick if hou.isUIAvailable() else None,
     }
@@ -3633,9 +3821,10 @@ def auto_range_default(node):
     if not count:
         return False
     current = max(0, min(entry_index(node), count - 1))
+    frames = [current] if node.evalParm("reference_enable") else sorted({current, count - 1})
     try:
         collected = [values[np.isfinite(values)] for _, _, values in
-                     _scan_frames(node, path, sorted({current, count - 1}))
+                     _scan_frames(node, path, frames)
                      if values is not None]
     except Exception:
         return False
@@ -3664,19 +3853,75 @@ def autoscale_all(kwargs):
         node.setParms({"color_min": fixed[0], "color_max": fixed[1]})
         update_color_status(kwargs)
         return
+    percentiles = tuple(sorted(node.evalParmTuple("range_percentiles"))) \
+        if node.evalParm("range_percentile") else (0.0, 100.0)
+    interior = percentiles != (0.0, 100.0)
     try:
-        collected = [values[np.isfinite(values)]
-                     for _, _, values in _scan_displayed_values(node, path)
-                     if values is not None]
+        limits, sampled = _all_frame_range(
+            _scan_displayed_values(node, path, cache_rows=interior),
+            percentiles, node.evalParm("color_scale") == 1)
     except Exception as exc:
         _message(f"Could not scan PVD sequence: {exc}")
         return
-    collected = [chunk for chunk in collected if len(chunk)]
-    if collected:
-        _apply_color_range(node, np.concatenate(collected))
+    if limits is not None:
+        _set_color_range(node, *limits)
     else:
-        _message("No finite values were found for the selected color field.")
+        _message("No valid values were found for the selected color scale.")
     update_color_status(kwargs)
+    if sampled:
+        status = node.parm("color_status")
+        status.set(f"{status.eval()} Percentiles estimated from a bounded "
+                   f"sample of {sampled:,} values.")
+
+
+def _all_frame_range(rows, percentiles, positive_only):
+    """Exact extrema and exact percentiles until the bounded buffer fills.
+
+    When full, retain every other sample and double the stride. Keep the
+    stride aligned to the global valid-value index, independent of frame
+    sizes and chunk boundaries. The buffer, bounded scan cache, and small
+    filtering/compaction allocations fit within 256 MiB besides the live
+    input frame and field reduction.
+    """
+    low, high = np.inf, -np.inf
+    buffer = (np.empty(_RANGE_SAMPLE_MAX_VALUES, dtype=np.float64)
+              if percentiles != (0.0, 100.0) else None)
+    count = total = 0
+    stride = 1
+    for _, _, values in rows:
+        if values is None:
+            continue
+        for start in range(0, len(values), _RANGE_CHUNK_VALUES):
+            chunk = values[start:start + _RANGE_CHUNK_VALUES]
+            valid = np.isfinite(chunk)
+            if positive_only:
+                valid &= chunk > 0
+            low = min(low, np.min(chunk, where=valid, initial=np.inf))
+            high = max(high, np.max(chunk, where=valid, initial=-np.inf))
+            if buffer is None:
+                continue
+            chunk = chunk[valid]
+            stop = total + len(chunk)
+            while count + len(chunk[(-total % stride)::stride]) > len(buffer):
+                # Copy in bounded chunks because source and destination overlap.
+                kept = (count + 1) // 2
+                for offset in range(0, kept, _RANGE_CHUNK_VALUES):
+                    end = min(offset + _RANGE_CHUNK_VALUES, kept)
+                    buffer[offset:end] = buffer[2 * offset:2 * end:2].copy()
+                count = kept
+                stride *= 2
+            sample = chunk[(-total % stride)::stride]
+            buffer[count:count + len(sample)] = sample
+            count += len(sample)
+            total = stop
+    if low > high:
+        return None, 0
+    if buffer is None:
+        return (low, high), 0
+    estimates = np.percentile(buffer[:count], percentiles, overwrite_input=True)
+    limits = (low if percentiles[0] == 0 else estimates[0],
+              high if percentiles[1] == 100 else estimates[1])
+    return limits, count if stride > 1 else 0
 
 
 def _apply_color_range(node, values, quiet=False):
@@ -3697,11 +3942,15 @@ def _apply_color_range(node, values, quiet=False):
                      max(low_percentile, high_percentile)))
     else:
         low, high = values.min(), values.max()
+    _set_color_range(node, low, high)
+    return True
+
+
+def _set_color_range(node, low, high):
     if node.evalParm("range_symmetric") and node.evalParm("color_scale") == 0:
         extent = max(abs(float(low)), abs(float(high)))
         low, high = -extent, extent
     node.setParms({"color_min": float(low), "color_max": float(high)})
-    return True
 
 
 def set_diverging_ramp(kwargs):
@@ -4309,11 +4558,9 @@ def _force_nodes(record_key, mesh, definitions, chosen):
     body = mesh["point_data"].get("body_ids")
     if body is not None:
         body = np.rint(np.asarray(body, dtype=np.float64).reshape(
-            len(points), -1)[:, 0]).astype(np.int64)
-    digest = hashlib.blake2b(points, digest_size=12)
-    if body is not None:
-        digest.update(body)
-    key = (record_key, str(mesh.get("topo_key")), tuple(chosen), digest.digest())
+            len(points), -1)[:, 0])
+    key = (record_key, str(mesh.get("topo_key")), tuple(chosen),
+           _rest_geometry_digest(mesh))
     cached = _FORCE_NODES_CACHE.get(key)
     if cached is not None:
         _FORCE_NODES_CACHE.move_to_end(key)
@@ -4356,12 +4603,17 @@ def _point_vectors(mesh, name):
         return None
     values = np.asarray(values, dtype=np.float64)
     count = len(mesh["points"])
-    values = values.reshape(len(values), -1)[:, :3]
-    if len(values) != count:  # some fields omit obstacle rows: zero-fill
-        padded = np.zeros((count, values.shape[1]))
-        padded[:min(len(values), count)] = values[:count]
+    values = values[:, None] if values.ndim == 1 else values[:, :3]
+    if values.shape != (count, 3):  # also zero-fill omitted obstacle rows
+        padded = np.zeros((count, 3))
+        padded[:min(len(values), count), :values.shape[1]] = values[:count]
         values = padded
     return values
+
+
+_MISSING_FORCE_FIELDS = (
+    "This run has no nodal forces: turn on Output > Nodal Forces "
+    "(force curves) on the PolyFEM node and run it again.")
 
 
 def _frame_set_values(mesh, nodes):
@@ -4369,9 +4621,7 @@ def _frame_set_values(mesh, nodes):
     terms = [_point_vectors(mesh, f"{term}_forces") for term in FORCE_TERMS]
     terms = [values for values in terms if values is not None]
     if not terms:
-        raise ForceCurveError(
-            "This run has no nodal forces: turn on Output > Nodal Forces "
-            "(force curves) on the PolyFEM node and run it again.")
+        return None
     total = np.sum(terms, axis=0)
     contact = [_point_vectors(mesh, name)
                for name in ("contact_forces", "friction_forces")]
@@ -4420,6 +4670,7 @@ def force_curves(node):
     contact = np.full_like(reaction, np.nan)
     displacement = np.full_like(reaction, np.nan)
     nodes = {}
+    found_forces = False
     for step in range(len(entries)):
         try:
             mesh = _volume_block(load_frame(path, step, blocks=("Volume",)))
@@ -4429,9 +4680,14 @@ def force_curves(node):
             continue  # an unreadable step (a run still writing) stays NaN
         nodes = _force_nodes(record_key, mesh, definitions, chosen)
         values = _frame_set_values(mesh, nodes)
+        if values is None:
+            continue
+        found_forces = True
         for column, index in enumerate(chosen):
             reaction[step, column], contact[step, column], \
                 displacement[step, column] = values[index]
+    if not found_forces:
+        raise ForceCurveError(_MISSING_FORCE_FIELDS)
     memo = {"key": memo_key, "steps": np.arange(len(entries)),
             "times": np.array([entry[0] for entry in entries]),
             "sets": chosen,
@@ -4552,6 +4808,8 @@ def force_readout_text(node):
                 mesh = _volume_block(load_frame(path, step, blocks=("Volume",)))
                 nodes = _force_nodes(record_key, mesh, definitions, chosen)
                 values = _frame_set_values(mesh, nodes)
+                if values is None:
+                    return "Nodal Forces are unavailable at this step."
                 _FORCE_FRAME_CACHE[step_key] = values
                 while len(_FORCE_FRAME_CACHE) > _FORCE_FRAME_CACHE_MAX:
                     _FORCE_FRAME_CACHE.popitem(last=False)
@@ -5028,17 +5286,23 @@ def volume_mesh(pvd_path, step):
 
 # ---- elements and nodes of the output -------------------------------------
 
+def _rest_geometry_digest(mesh):
+    points = np.ascontiguousarray(mesh["points"], dtype=np.float64)
+    digest = hashlib.blake2b(len(points).to_bytes(8, "little"), digest_size=12)
+    digest.update(points)
+    body = mesh["point_data"].get("body_ids")
+    if body is not None:
+        digest.update(np.ascontiguousarray(body, dtype=np.float64))
+    return digest.digest()
+
+
 def volume_topology(mesh):
     """Elements (the volume cells, in PolyFEM's element order) and nodes
     (each element's copies of a vertex, merged per body) of a Volume block;
     cached per topology (including rest positions and body_ids)."""
-    points_arr = np.ascontiguousarray(mesh["points"], dtype=np.float64)
-    digest = hashlib.blake2b(points_arr.tobytes(), digest_size=12)
-    body_raw = mesh.get("point_data", {}).get("body_ids")
-    if body_raw is not None:
-        digest.update(np.ascontiguousarray(body_raw).tobytes())
-    key = (str(mesh.get("topo_key")), len(points_arr))
-    cache_key = (key, digest.hexdigest())
+    digest = _rest_geometry_digest(mesh)
+    key = (str(mesh.get("topo_key")), len(mesh["points"]))
+    cache_key = (key, digest)
     cached = _TOPOLOGY_CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -5066,8 +5330,8 @@ def volume_topology(mesh):
     points = np.asarray(mesh["points"], dtype=np.float64)
     body_ids = mesh["point_data"].get("body_ids")
     if body_ids is not None and len(body_ids) == len(points):
-        point_body = np.rint(np.asarray(body_ids, dtype=np.float64).reshape(
-            len(points), -1)[:, 0]).astype(np.int64)
+        ids = np.asarray(body_ids).reshape(len(points), -1)[:, 0]
+        point_body = np.where(np.isfinite(ids), np.rint(ids), -1).astype(np.int64)
     else:
         point_body = np.zeros(len(points), dtype=np.int64)
     used = np.unique(members)
@@ -5132,12 +5396,14 @@ def _p2_tet_volumes(nodes):
 
 
 def _hex_jacobian_determinants(nodes, u, v, w):
-    dN = np.empty((8, 3))
-    for k, (a, b, c) in enumerate(_HEX_REFERENCE):
-        fu, fv, fw = (u if a else 1 - u), (v if b else 1 - v), (w if c else 1 - w)
-        su, sv, sw = (1 if a else -1), (1 if b else -1), (1 if c else -1)
-        dN[k] = (su * fv * fw, fu * sv * fw, fu * fv * sw)
-    return np.linalg.det(np.einsum("nki,kj->nij", nodes, dN))
+    return np.linalg.det(np.einsum("nki,kj->nij", nodes - nodes[:, :1],
+                                   _hex_gradients(u, v, w)))
+
+
+def _hex_gradients(u, v, w):
+    sign = 2 * _HEX_REFERENCE - 1
+    a, b, c = (0.5 + sign * (np.array([u, v, w]) - 0.5)).T
+    return sign * np.column_stack((b * c, a * c, a * b))
 
 
 def hex_volumes(nodes):
@@ -5156,9 +5422,93 @@ def _inverted_hex_corners(nodes, orientation):
     return invalid
 
 
+_HEX_BERNSTEIN = np.array([[1, 0, 0], [-0.5, 2, -0.5], [0, 0, 1]])
+_HEX_BERNSTEIN_TO_SAMPLES = np.array([[1, 0, 0], [0.25, 0.5, 0.25], [0, 0, 1]])
+_HEX_BERNSTEIN_HALVES = (
+    np.array([[1, 0, 0], [0.5, 0.5, 0], [0.25, 0.5, 0.25]]),
+    np.array([[0.25, 0.5, 0.25], [0, 0.5, 0.5], [0, 0, 1]]))
+_HEX_SAMPLE_GRADIENTS = np.array([
+    _hex_gradients(u, v, w)
+    for u, v, w in itertools.product((0.0, 0.5, 1.0), repeat=3)])
+
+
+def _hex_tensor_transform(grid, a, b, c):
+    return np.einsum("ai,bj,ck,nijk->nabc", a, b, c, grid, optimize=True)
+
+
+def _hex_inversion_certificate(nodes, orientation):
+    """Masks for proven inversion/degeneracy and unresolved Q1 hexes."""
+    inverted = np.zeros(len(nodes), dtype=bool)
+    unresolved = np.zeros_like(inverted)
+    axes = (1, 2, 3)
+    for start in range(0, len(nodes), 4096):
+        span = slice(start, start + 4096)
+        local = nodes[span] - nodes[span, :1]
+        jacobian = np.einsum("nki,skj->nsij", local, _HEX_SAMPLE_GRADIENTS)
+        samples = (np.linalg.det(jacobian) * orientation[span, None]).reshape(-1, 3, 3, 3)
+        bad = np.any(samples <= 0, axis=axes)
+        coeff = _hex_tensor_transform(samples, *([_HEX_BERNSTEIN] * 3))
+        tol = 64 * np.finfo(np.float64).eps * np.max(np.abs(coeff), axis=axes)
+        positive = np.all(coeff > tol[:, None, None, None], axis=axes)
+        candidates = np.flatnonzero(~(positive | bad))
+        if len(candidates):
+            undecided = np.zeros(len(candidates), dtype=bool)
+            bounds = tol[candidates, None, None, None]
+            parent_coeff = coeff[candidates]
+            for halves in itertools.product(_HEX_BERNSTEIN_HALVES, repeat=3):
+                child = _hex_tensor_transform(parent_coeff, *halves)
+                uncertain = ~np.all(child > bounds, axis=axes)
+                if uncertain.any():
+                    inner = _hex_tensor_transform(
+                        child[uncertain], *([_HEX_BERNSTEIN_TO_SAMPLES] * 3))
+                    bad[candidates[uncertain]] |= np.any(inner <= 0, axis=axes)
+                undecided |= uncertain
+            unresolved[start + candidates] = undecided & ~bad[candidates]
+        inverted[span] = bad
+    return inverted, unresolved
+
+
+# VTK_QUADRATIC_HEXAHEDRON puts its 12 edge midpoints after the corners.
+_HEX_EDGES = np.array([(0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6),
+                       (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7)])
+
+
+def _serendipity_hex_gradients(q):
+    # Reference coordinates in [-1, 1]. Corner N = product(1+a_i*q_i)
+    # times (a.q-2)/8. An edge along i uses (1-q_i^2) times the two
+    # transverse linear factors, divided by four.
+    sign = 2 * _HEX_REFERENCE - 1
+    edge = sign[_HEX_EDGES].mean(axis=1)
+    factors = 1 + sign * q
+    a, b, c = factors.T
+    corner = sign * (
+        np.column_stack((b * c, a * c, a * b)) *
+        (np.sum(sign * q, axis=1) - 2)[:, None] + (a * b * c)[:, None]) / 8
+    linear = 1 + edge * q
+    along = edge == 0
+    factors = np.where(along, 1 - q * q, linear)
+    derivatives = np.where(along, -2 * q, edge)
+    a, b, c = factors.T
+    mid = derivatives * np.column_stack((b * c, a * c, a * b)) / 4
+    return np.vstack((corner, mid))
+
+
+def _serendipity_hex_volumes(nodes):
+    local = nodes - nodes[:, :1]
+    g = math.sqrt(3 / 5)
+    rule = ((-g, 5 / 9), (0.0, 8 / 9), (g, 5 / 9))
+    volume = np.zeros(len(nodes))
+    for (u, a), (v, b), (w, c) in itertools.product(rule, repeat=3):
+        gradients = _serendipity_hex_gradients(np.array([u, v, w]))
+        volume += a * b * c * np.linalg.det(
+            np.einsum("nki,kj->nij", local, gradients))
+    return volume
+
+
 def element_volumes(topology, positions):
     """Signed volume of every element with its output points at
-    `positions`: exact for straight and P2 tets and trilinear hexes;
+    `positions`: exact for straight and P2 tets, trilinear hexes and
+    20-node serendipity hexes;
     P3/P4 tets and Q2/Q3 Lagrange or triquadratic hexes as the sum of
     Read PVD's linear display sub-elements."""
     positions = np.asarray(positions, dtype=np.float64)
@@ -5190,7 +5540,13 @@ def element_volumes(topology, positions):
         c = corners[other, :4]
         volume[other] = _tet_volumes(*(positions[c[:, i]] for i in range(4)))
     hexes = topology["hex"]
-    linear_hexes = hexes & (sizes != 27) & (sizes != 64)
+    serendipity = hexes & (sizes == 20) & (topology["types"] == 25)
+    selected = np.flatnonzero(serendipity)
+    for start in range(0, len(selected), 4096):
+        part = selected[start:start + 4096]
+        nodes = connectivity[starts[part, None] + np.arange(20)]
+        volume[part] = _serendipity_hex_volumes(positions[nodes])
+    linear_hexes = hexes & (sizes != 27) & (sizes != 64) & ~serendipity
     if linear_hexes.any():
         volume[linear_hexes] = hex_volumes(positions[corners[linear_hexes]])
     triquadratic = topology["types"] == 29
@@ -5229,7 +5585,7 @@ def mesh_match(pvd_path, mesh, topology):
             + ", ".join(f"geometry {g['number']} ({g['path']})"
                         for g in missing)
             + ". The PolyFEM node keeps a copy in <run>/input/.")
-    key = (topology["key"], _file_key(os.path.join(
+    key = (topology["key"], _rest_geometry_digest(mesh), _file_key(os.path.join(
         run_folder(pvd_path), "input", "params.json")),
         tuple(_file_key(g["path"]) for g in geometries))
     cached = _MATCH_CACHE.get(key)
@@ -5396,11 +5752,8 @@ def export_geometry_menu(kwargs):
 def _solution_vectors(mesh):
     for name in ("solution", "displacement"):
         values = mesh["point_data"].get(name)
-        if values is not None:
-            values = np.asarray(values, dtype=np.float64).reshape(
-                len(values), -1)
-            if values.shape[1] >= 3:
-                return values[:, :3]
+        if values is not None and values.ndim == 2 and values.shape[1] >= 2:
+            return _point_vectors(mesh, name)
     return None
 
 
@@ -5469,6 +5822,7 @@ def deformed_mesh_positions(geometry, match, topology, solution, coordinates):
     is_hex = geometry["is_hex"]
     ratio = np.empty(len(corners))
     locally_inverted = np.zeros(len(corners), dtype=bool)
+    indeterminate = np.zeros_like(locally_inverted)
     for hexes in (False, True):
         local = np.flatnonzero(is_hex == hexes)
         if not len(local):
@@ -5477,13 +5831,14 @@ def deformed_mesh_positions(geometry, match, topology, solution, coordinates):
             before = hex_volumes(rest[corners[local]])
             current = deformed[corners[local]]
             after = hex_volumes(current)
-            locally_inverted[local] = _inverted_hex_corners(current, np.sign(before))
+            locally_inverted[local], indeterminate[local] = (
+                _hex_inversion_certificate(current, np.sign(before)))
         else:
             c = corners[local, :4]
             before = _tet_volumes(*(rest[c[:, i]] for i in range(4)))
             after = _tet_volumes(*(deformed[c[:, i]] for i in range(4)))
         ratio[local] = after / np.where(before == 0, np.nan, before)
-    bad = np.flatnonzero(~(ratio > 0) | locally_inverted)
+    bad = np.flatnonzero((np.isfinite(ratio) & (ratio <= 0)) | locally_inverted)
     if len(bad):
         listed = ", ".join(str(int(i) + 1) for i in bad[:10])
         more = f" and {len(bad) - 10} more" if len(bad) > 10 else ""
@@ -5492,6 +5847,14 @@ def deformed_mesh_positions(geometry, match, topology, solution, coordinates):
             f"inverted or flat in the deformed shape (elements {listed}"
             f"{more} of {os.path.basename(geometry['path'])}); PolyFEM cannot "
             "use such a mesh. Export an earlier step.")
+    ambiguous = np.flatnonzero(indeterminate | ~np.isfinite(ratio))
+    if len(ambiguous):
+        listed = ", ".join(str(int(i) + 1) for i in ambiguous[:10])
+        more = f" and {len(ambiguous) - 10} more" if len(ambiguous) > 10 else ""
+        raise ExportError(
+            f"Geometry {geometry['number']}: inversion check is indeterminate "
+            f"(possibly inverted, elements {listed}{more} of "
+            f"{os.path.basename(geometry['path'])}). Export an earlier step.")
     if coordinates == "simulation":
         positions = deformed
     else:
@@ -5506,6 +5869,46 @@ def deformed_mesh_positions(geometry, match, topology, solution, coordinates):
               "ratio_max": float(np.nanmax(ratio)),
               "ratio_max_at": int(np.nanargmax(ratio)) + 1}
     return positions, report
+
+
+def _sampled_curved_inversions(mesh, topology, geometry, deformed):
+    """Count source curved cells with a nonpositive sampled subcell orientation."""
+    start, stop = geometry["start"], geometry["stop"]
+    rows = np.arange(start, stop)
+    rows = rows[topology["sizes"][rows] > topology["corner_count"][rows]]
+    if not len(rows):
+        return None
+    bad = np.zeros(len(mesh["cell_types"]), dtype=bool)
+    for family in ("tet", "hex"):
+        parents = rows[topology["hex"][rows] == (family == "hex")]
+        if not len(parents):
+            continue
+        corners = topology["corners"][parents, :8 if family == "hex" else 4]
+        rest = mesh["points"][corners]
+        orientation = np.full(len(bad), np.nan)
+        parent_cells = topology["cells"][parents]
+        orientation[parent_cells] = np.sign(
+            hex_volumes(rest) if family == "hex"
+            else _tet_volumes(*rest.transpose(1, 0, 2)))
+        is_parent = np.zeros(len(bad), dtype=bool)
+        is_parent[parent_cells] = True
+        source = mesh["cell_sources"][family]
+        display = mesh["cells"][family]
+        for offset in range(0, len(source), 4096):
+            span = slice(offset, offset + 4096)
+            mask = is_parent[source[span]]
+            if not mask.any():
+                continue
+            ids = source[span][mask]
+            nodes = deformed[display[span][mask]]
+            sign = orientation[ids]
+            if family == "hex":
+                invalid = _inverted_hex_corners(nodes, sign)
+                invalid |= ~(_hex_jacobian_determinants(nodes, 0.5, 0.5, 0.5) * sign > 0)
+            else:
+                invalid = ~(_tet_volumes(*nodes.transpose(1, 0, 2)) * sign > 0)
+            bad[ids[invalid]] = True
+    return int(np.count_nonzero(bad))
 
 
 def export_deformed_mesh(node):
@@ -5543,12 +5946,15 @@ def export_deformed_mesh(node):
             + " has curved (higher-order) elements.")
     results = []
     points = np.asarray(mesh["points"], dtype=np.float64)
+    moved = points + solution
+    has_curved_output = np.any(topology["sizes"] > topology["corner_count"])
     for geometry in geometries:  # check everything before writing anything
         positions, report = deformed_mesh_positions(
             geometry, match, topology, solution, coordinates)
-        curvature = _p2_curvature(geometry, topology, points,
-                                  points + solution)
-        results.append((geometry, positions, report, curvature))
+        curvature = _p2_curvature(geometry, topology, points, moved)
+        sampled = (_sampled_curved_inversions(mesh, topology, geometry, moved)
+                   if has_curved_output else None)
+        results.append((geometry, positions, report, curvature, sampled))
     folder = export_folder(node)
     os.makedirs(folder, exist_ok=True)
     width = max(3, len(str(len(entries) - 1)))
@@ -5558,7 +5964,7 @@ def export_deformed_mesh(node):
              f" written to {folder}"]
     written = []
     used_names = set()
-    for (geometry, positions, report, curvature), stem in zip(results, stems):
+    for (geometry, positions, report, curvature, sampled), stem in zip(results, stems):
         if stems.count(stem) > 1:
             stem = f"{stem}_geo{geometry['number']}"
         extension = os.path.splitext(geometry["path"])[1] or ".msh"
@@ -5575,8 +5981,15 @@ def export_deformed_mesh(node):
         path = os.path.join(folder, filename)
         write_moved_nodes(geometry["path"], positions, path)
         written.append(path)
-        inversion_check = ("none inverted in the tet and hex-corner checks"
+        inversion_check = ("none inverted in the exported linear mesh "
+                           "(tet signs and Q1 hex Bernstein certificates)"
                            if report["hex_corners_checked"] else "none inverted")
+        if sampled is not None:
+            inversion_check = (
+                f"{sampled} higher-order source element(s) with suspect orientation "
+                "at sampled corner/interior points" if sampled else
+                "no inversions detected at sampled corner/interior points "
+                "of higher-order source elements")
         lines.append(
             f"Geometry {geometry['number']}: {os.path.basename(path)} -- "
             f"{report['nodes']} nodes moved, {report['elements']} elements, "
@@ -5606,9 +6019,8 @@ def export_mesh_button(kwargs):
     node = kwargs["node"]
     try:
         written, report = export_deformed_mesh(node)
-    except ExportError as exc:
-        report, written = f"Not exported: {exc}", []
-    except (OSError, MshParseError) as exc:
+    except (ExportError, OSError, MshParseError, VtuParseError,
+            ET.ParseError, ValueError) as exc:
         report, written = f"Not exported: {exc}", []
     node.parm("export_mesh_report").set(report)
     if written and hou.isUIAvailable():
@@ -6333,10 +6745,9 @@ def region_members(node, region, mesh, topology, identity, pvd_path):
                 f"Region {region['index']}: {missing} of the {looked_for} "
                 f"nodes of {entry.get('label')} are not in the result (the "
                 "mesh or the record changed since the run).")
-        nodes[point_node[members]] = True
+        selected = point_node[members]
+        nodes[selected[selected >= 0]] = True
         # elements with a whole face on the sideset
-        corner_nodes = np.zeros(n_nodes, dtype=bool)
-        corner_nodes[point_node[members]] = True
         faces = (np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]),
                  np.array([[0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4],
                            [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]]))
@@ -6346,13 +6757,13 @@ def region_members(node, region, mesh, topology, identity, pvd_path):
                 continue
             corner_node = point_node[topology["corners"][rows][:, :8 if hexes
                                                                else 4]]
-            on = corner_nodes[corner_node]                    # (n, k)
+            on = nodes[corner_node]                           # (n, k)
             elements[rows] = np.any(np.all(on[:, table], axis=2), axis=1)
         description = f"the sideset {entry.get('label')} (its nodes; the " \
                       "elements with a face on it)"
         if entry.get("kind") == "nodes":
-            elements[:] = np.isin(np.arange(n_elements),
-                                  topology["point_element"][members])
+            hits = nodes[point_node[topology["members"]]]
+            elements[topology["owner"][hits]] = True
             description = f"the point set {entry.get('label')} (its nodes; " \
                           "the elements that contain them)"
     elif kind in ("box", "sphere", "plane"):
@@ -6404,8 +6815,8 @@ def region_members(node, region, mesh, topology, identity, pvd_path):
         nodes[hit] = True  # one copy per body at an interface
         # an element quantity at one node: the mean over the elements
         # around it (the nodal average Smooth Field shows)
-        around = np.isin(point_node, hit)
-        elements[np.unique(topology["point_element"][around])] = True
+        around = nodes[point_node[topology["members"]]]
+        elements[topology["owner"][around]] = True
         label = f"Node {region['number']}"
         description = (f"node {region['number']} of geometry "
                        f"{region['geometry']}")
@@ -6648,7 +7059,7 @@ class _ForceColumns:
     """The chosen force curves (Analysis > Force Curves) as columns, read
     in the export's own pass over the steps."""
 
-    def __init__(self, node, mesh, pvd_path):
+    def __init__(self, node, pvd_path):
         self.note = None
         self.sets = []
         self.values = []  # per step: {set: (reaction, contact, displacement)}
@@ -6664,8 +7075,7 @@ class _ForceColumns:
         self.sets = [i for i in range(1, len(definitions) + 1)
                      if not chosen or i in chosen]
         self.definitions = definitions
-        self.nodes = _force_nodes(_file_key(scene_record_path(pvd_path)),
-                                  mesh, definitions, self.sets)
+        self.record_key = _file_key(scene_record_path(pvd_path))
         self.quantities = [(name, label, dimension) for name, label, dimension
                            in (("reaction", "reaction", "force"),
                                ("contact", "contact force", "force"),
@@ -6686,14 +7096,14 @@ class _ForceColumns:
         if mesh is None:
             self.values.append(None)
             return
-        try:
-            self.values.append(_frame_set_values(mesh, self.nodes))
-        except ForceCurveError as exc:
-            self.note = f"Force curves not included: {exc}"
-            self.sets = []
+        nodes = _force_nodes(self.record_key, mesh, self.definitions, self.sets)
+        self.values.append(_frame_set_values(mesh, nodes))
 
-    def columns(self, units):
+    def columns(self, units, run_has_forces):
         if not self.sets:
+            return []
+        if not any(values is not None for values in self.values) and not run_has_forces():
+            self.note = f"Force curves not included: {_MISSING_FORCE_FIELDS}"
             return []
         geometries = len({e.get("geometry") for e in self.definitions
                           if e.get("kind") != "obstacle"})
@@ -6819,7 +7229,7 @@ def export_data(node, progress=None):
     items = {}       # quantity index -> {step: [values per region]}
     records = []     # per step: {(region, quantity, key): value}
     unreadable = []
-    forces = _ForceColumns(node, mesh, pvd)
+    forces = _ForceColumns(node, pvd)
     mapping = time_mapping(node)
     rows_time = []
     # The per element / node sheet may want a step the table does not list
@@ -6862,8 +7272,8 @@ def export_data(node, progress=None):
             current_volume = current_node_volume = None
             if need_current:
                 solution = _solution_vectors(frame_mesh)
-                moved = rest_points if solution is None \
-                    else rest_points + solution
+                frame_points = np.asarray(frame_mesh["points"], dtype=np.float64)
+                moved = frame_points if solution is None else frame_points + solution
                 current_volume = element_volumes(topology, moved) * sign
                 current_node_volume = node_weights(current_volume)
             for q in quantities:
@@ -6993,7 +7403,20 @@ def export_data(node, progress=None):
                             f" ({lunit})" if lunit else ""),
                         np.where(picked >= 0, positions[np.maximum(
                             picked, 0), axis] * lfactor, np.nan)))
-    data_columns.extend(forces.columns(units))
+    def other_steps_have_forces():
+        names = {f"{term}_forces" for term in FORCE_TERMS}
+        for step in range(len(entries)):
+            if step in table_steps:
+                continue
+            try:
+                fields = frame_field_info(pvd, step).get("Volume", {})
+            except (OSError, VtuParseError, ET.ParseError, ValueError):
+                continue
+            if names.intersection(fields.get("point_data", {})):
+                return True
+        return False
+
+    data_columns.extend(forces.columns(units, other_steps_have_forces))
     force_note = forces.note
     # ---- workbook -----------------------------------------------------------
     path = node.evalParm("export_data_file").strip()
@@ -7177,11 +7600,10 @@ def export_data_button(kwargs):
     try:
         summary = export_data(node)
         status = summary["status"]
-    except ExportError as exc:
-        summary, status = None, f"Not exported: {exc}"
     except hou.OperationInterrupted:
         summary, status = None, "Cancelled."
-    except OSError as exc:
+    except (ExportError, OSError, MshParseError, VtuParseError,
+            ET.ParseError, ValueError) as exc:
         summary, status = None, f"Not exported: {exc}"
     node.parm("export_data_status").set(status)
     if summary is None and not status.startswith("Cancelled"):

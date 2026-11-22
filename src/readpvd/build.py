@@ -2841,6 +2841,7 @@ def build(out_dir):
     # in a single local space, so label spacing always matches the bar.
     legend_bar = asset.createNode("python", "legend_bar")
     legend_bar.parm("python").set(LEGEND_SOP_CODE)
+    legend_bar.setNextInput(out_result)
     legend_xform = asset.createNode("xform", "legend_scene_transform")
     legend_xform.setNextInput(legend_bar)
     for axis, index in zip("xyz", range(3)):
