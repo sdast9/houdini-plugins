@@ -107,7 +107,7 @@ def _hex_jacobians(xyz):
 
 def _rounded_damage(family, original, rounded, tet_volume):
     if family == "tet":
-        valid = tet_volume > 0.0
+        valid = np.isfinite(tet_volume) & (tet_volume > 0.0)
         signed = _tet_volume6(rounded)
     elif family == "hex":
         valid = (_hex_jacobians(original) > 0.0).all(axis=1)
@@ -138,7 +138,8 @@ def _primary_quality(points, cells, primary):
                 tet_volume = None
                 if family == "tet":
                     tet_volume = _tet_volume6(original)
-                    inverted_tets += np.count_nonzero(tet_volume <= 0.0)
+                    inverted_tets += np.count_nonzero(
+                        ~np.isfinite(tet_volume) | ~(tet_volume > 0.0))
                 rounded = rounded_points[indices].astype(np.float64)
                 if not np.array_equal(original, rounded):
                     roundoff_damage += _rounded_damage(family, original, rounded, tet_volume)

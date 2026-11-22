@@ -4,6 +4,7 @@ from contextlib import ExitStack, redirect_stderr, redirect_stdout
 import io
 import os
 from pathlib import Path
+import stat
 import struct
 import sys
 import tempfile
@@ -26,16 +27,16 @@ CUBE = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0),
         (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)]
 
 
-def section(name, body):
+def section(name, body, separator=b"\n"):
     name = name.encode()
-    return b"$" + name + b"\n" + body + b"\n$End" + name + b"\n"
+    return b"$" + name + b"\n" + body + separator + b"$End" + name + b"\n"
 
 
 def row(values):
     return " ".join(map(str, values)).encode()
 
 
-def msh22(points, elements, tags=None, names=(), binary=False):
+def msh22(points, elements, tags=None, names=(), binary=False, separator=b"\n"):
     tags = list(range(1, len(points) + 1)) if tags is None else tags
     if binary:
         fmt = b"2.2 1 8\n" + struct.pack("<i", 1)
@@ -53,14 +54,15 @@ def msh22(points, elements, tags=None, names=(), binary=False):
         elems = b"\n".join([row([len(elements)]),
                             *(row((i, etype, len(element_tags), *element_tags, *conn))
                               for i, (etype, element_tags, conn) in enumerate(elements, 1))])
-    data = section("MeshFormat", fmt)
+    data = section("MeshFormat", fmt, separator)
     if names:
         name_rows = [f'{dim} {tag} "{name}"'.encode() for dim, tag, name in names]
         data += section("PhysicalNames", b"\n".join([row([len(names)]), *name_rows]))
-    return data + section("Nodes", nodes) + section("Elements", elems)
+    return data + section("Nodes", nodes, separator) + section("Elements", elems, separator)
 
 
-def partitioned41(endian=None, size=8, tags=(10, 11, 12, 13), declared=3):
+def partitioned41(endian=None, size=8, tags=(10, 11, 12, 13), declared=3,
+                  separator=b"\n", points=(*TRI, (0, 0, 1))):
     """A tet inherits its volume's group. A face on the same parent is an
     untagged interface, and a second face explicitly has a physical tag."""
     size_code = {4: "I", 8: "Q"}[size]
@@ -79,7 +81,7 @@ def partitioned41(endian=None, size=8, tags=(10, 11, 12, 13), declared=3):
                        + (pack("i", *phys) if phys else b"") + pack("S", 0))
 
     node_payload = pack("4S3iS4S", 1, 4, min(tags), max(tags), 3, 40, 0, 4, *tags)
-    xyz = np.array([*TRI, (0, 0, 1)], dtype=float)
+    xyz = np.array(points, dtype=float)
     node_payload += pack("12d", *xyz.ravel())
     # The empty hex block must not leave a family slot. This also exercises
     # multiple blocks whose declared total is independent of the block count.
@@ -87,9 +89,9 @@ def partitioned41(endian=None, size=8, tags=(10, 11, 12, 13), declared=3):
              + pack("3iS5S", 3, 40, 4, 1, 1, *tags)
              + pack("3iS4S", 2, 30, 2, 1, 2, *tags[:3])
              + pack("3iS4S", 2, 31, 2, 1, 3, tags[0], tags[1], tags[3]))
-    return (section("MeshFormat", fmt) + section("Entities", entities)
-            + section("PartitionedEntities", partitions) + section("Nodes", node_payload)
-            + section("Elements", elems)), xyz
+    return (section("MeshFormat", fmt, separator) + section("Entities", entities, separator)
+            + section("PartitionedEntities", partitions, separator)
+            + section("Nodes", node_payload, separator) + section("Elements", elems, separator)), xyz
 
 
 class ScratchTest(unittest.TestCase):
@@ -111,6 +113,197 @@ class ScratchTest(unittest.TestCase):
 
 
 class ParserTests(ScratchTest):
+    def refused_read_and_move(self, contents, points, fragment):
+        self.refused(contents, fragment)
+        out = self.work / "moved.msh"
+        out.write_bytes(b"previous export")
+        with self.assertRaisesRegex(msh_parser.MshParseError, fragment):
+            msh_parser.write_moved_nodes(self.work / "input.msh", points, out)
+        self.assertEqual(out.read_bytes(), b"previous export")
+
+    def test_bundled_mshio_fixture(self):
+        path = (BASE.parent / "upstream-merge-work" / "20261120-candidate" /
+                "dependency-cache" / "mshio" / "d857" / "data" / "test_2.2_bin.msh")
+        data = path.read_bytes()
+        self.assertIn(b"\x01\x00\x00\x00$EndMeshFormat", data)
+        for name in (b"Nodes", b"Elements"):
+            self.assertNotIn(b"\n$End" + name, data)
+        mesh = msh_parser.read_msh(path)
+        self.assertEqual(mesh["version"], "2.2")
+        self.assertEqual(mesh["node_tags"].tolist(), [1, 2, 3, 4, 5, 6])
+        self.assertEqual(mesh["cells"]["quad"]["corners"].shape, (2, 4))
+        out = self.work / "moved.msh"
+        moved = mesh["points"] + 1
+        msh_parser.write_moved_nodes(path, moved, out)
+        np.testing.assert_array_equal(msh_parser.read_msh(out)["points"], moved)
+        self.assertEqual(data.split(b"$EndNodes")[1], out.read_bytes().split(b"$EndNodes")[1])
+
+    def test_binary_section_boundaries_follow_record_lengths(self):
+        # An end-marker-shaped byte sequence can occur inside binary floating
+        # point values. The final data byte can also be a literal LF.
+        v22_points = np.asarray(TRI, dtype="<f8")
+        v22_points[-1].view("u1")[:10] = np.frombuffer(b"$EndNodes\n", dtype="u1")
+        v22_points[-1].view("u1")[-1] = 10
+        v22 = msh22(v22_points, [(2, (7,), (1, 2, 3))], binary=True, separator=b"")
+        v41, xyz = partitioned41(">", 4, separator=b"")
+        start = v41.index(b"$Entities\n") + len(b"$Entities\n") + 5 * 4
+        v41 = v41[:start] + b"$EndEntities\n" + v41[start + len(b"$EndEntities\n"):]
+        for data, expected in ((v22, v22_points), (v41, xyz)):
+            mesh = self.parse(data)
+            np.testing.assert_array_equal(mesh["points"], expected)
+            out = self.work / "moved.msh"
+            msh_parser.write_moved_nodes(self.work / "input.msh", expected + 1, out)
+            np.testing.assert_array_equal(msh_parser.read_msh(out)["points"], expected + 1)
+        self.assertEqual(mesh["cells"]["tet"]["entity"].tolist(), [123])
+        self.assertEqual(mesh["cells"]["tri"]["entity"].tolist(), [0, 17])
+
+    def test_binary_node_lengths_for_read_and_move(self):
+        for separator in (b"", b"\n", b"\r\n"):
+            v22 = msh22(TRI, [(2, (), (1, 2, 3))], binary=True, separator=separator)
+            v41, xyz = partitioned41("<", separator=separator)
+            for data, points in ((v22, TRI), (v41, xyz)):
+                end = data.index(separator + b"$EndNodes")
+                with self.subTest(separator=separator, version=data[12:15]):
+                    np.testing.assert_array_equal(self.parse(data)["points"], points)
+                    self.refused_read_and_move(data[:end - 1] + data[end:], points, r"\$Nodes")
+                    for extra in (b"x", b"\n" + separator if separator else b"\n\n"):
+                        self.refused_read_and_move(data[:end] + extra + data[end:], points, r"\$Nodes")
+
+    def test_v22_copy_keys_use_wide_entity_ids_and_exact_node_order(self):
+        points = [*TRI, (0.5, 0, 0), (0.5, 0.5, 0), (0, 0.5, 0)]
+        first = (1, 2, 3, 4, 5, 6)
+        different_corners = (1, 2, 6, 4, 5, 3)
+        inverted = (1, 3, 2, 6, 5, 4)
+        entity = 1200000000
+        elements = [(9, (3, entity), first), (9, (2, entity), different_corners),
+                    (9, (2, entity), inverted), (9, (1, entity), first)]
+        for binary in (False, True):
+            mesh = self.parse(msh22(points, elements, binary=binary))
+            self.assertEqual(mesh["duplicate_elements"], {2: 1})
+            self.assertEqual(mesh["shared_groups"], [(2, (1, 2, 3))])
+            cell = mesh["cells"]["tri"]
+            self.assertEqual(cell["entity"].tolist(), [2, 2, 1])
+            self.assertEqual(cell["corners"].tolist(), [[0, 1, 5], [0, 2, 1], [0, 1, 2]])
+
+    def test_nonfinite_coordinates_in_all_node_formats(self):
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            points = [*TRI[:2], (0, 1, bad)]
+            for binary in (False, True):
+                with self.subTest(bad=bad, binary=binary):
+                    self.refused_read_and_move(
+                        msh22(points, [(2, (), (1, 2, 3))], binary=binary),
+                        TRI, "Non-finite coordinates")
+                    v41, _ = partitioned41("<" if binary else None, points=(*points, (0, 0, 1)))
+                    self.refused_read_and_move(v41, [*TRI, (0, 0, 1)], "Non-finite coordinates")
+
+    def test_v41_element_type_must_match_block_dimension(self):
+        for endian in (None, "<"):
+            data, _ = partitioned41(endian)
+            for count in (0, 1):
+                with self.subTest(endian=endian, count=count):
+                    if endian:
+                        body = struct.pack("<4Q3iQ", 1, count, 1, 1, 3, 40, 2, count)
+                        if count:
+                            body += struct.pack("<4Q", 1, 10, 11, 12)
+                    else:
+                        body = row((1, count, 1, 1)) + b"\n" + row((3, 40, 2, count))
+                        if count:
+                            body += b"\n1 10 11 12"
+                    self.refused(data[:data.index(b"$Elements\n")] + section("Elements", body),
+                                 "block dimension 3 disagrees with gmsh element type 2")
+
+    def test_ascii_metadata_count_and_list_validation(self):
+        data, _ = partitioned41()
+        fixtures = {
+            "Entities": (
+                b"0 0 0", b"0 0 -1 0", b"1 0 0 0\n1 0 0 0 -1",
+                b"1 0 0 0\n1 0 0 0 2 7", b"0 1 0 0\n1 0 0 0 1 1 1 0 -1",
+                b"0 1 0 0\n1 0 0 0 1 1 1 0 2 1", b"0 0 0 0 99",
+            ),
+            "PartitionedEntities": (
+                b"-1 0 0 0 0 0", b"1 -1 0 0 0 0", b"1 1 5", b"1 0 0 0 -1 0",
+                b"1 0 1 0 0 0\n1 0 1 -1", b"1 0 1 0 0 0\n1 0 1 2 1",
+                b"1 0 1 0 0 0\n1 0 1 0 0 0 0 -1", b"1 0 1 0 0 0\n1 0 1 0 0 0 0 2 7",
+                b"1 0 0 1 0 0\n1 1 1 0 0 0 0 1 1 1 0 -1",
+                b"1 0 0 1 0 0\n1 1 1 0 0 0 0 1 1 1 0 2 3", b"1 0 0 0 0 0 99",
+            ),
+            "PhysicalNames": (b"-1", b'0\n2 17 "face"', b'2\n2 17 "face"', b"1\n2 17",
+                              b'2\n2 17 "face"\n2 17 "duplicate"'),
+        }
+        for name, bodies in fixtures.items():
+            encoded = name.encode()
+            if name == "PhysicalNames":
+                before, after = data, b""
+            else:
+                before = data[:data.index(b"$" + encoded + b"\n")]
+                after = data[data.index(b"$End" + encoded + b"\n") + len(encoded) + 5:]
+            for body in bodies:
+                with self.subTest(section=name, body=body):
+                    self.refused(before + section(name, body) + after, rf"\${name}")
+
+    def test_strict_version_encoding_and_malformed_input_errors(self):
+        good = msh22(TRI, [(2, (), (1, 2, 3))])
+        for version in (b"2.0", b"2.1", b"2.20", b"4.0", b"4.2", b"nan"):
+            with self.subTest(version=version):
+                self.refused_read_and_move(good.replace(b"2.2 0 8", version + b" 0 8"),
+                                           TRI, "version .* is not supported")
+        for flag in (b"-1", b"2"):
+            self.refused_read_and_move(good.replace(b"2.2 0 8", b"2.2 " + flag + b" 8"),
+                                       TRI, "Invalid MSH file encoding")
+        for data in (good.replace(b"2.2 0 8", b"2.2"), good.replace(b"2.2 0 8", b"2.2 0 x"),
+                     good.replace(b"3\n1 0 0 0", b"bad\n1 0 0 0"),
+                     good.replace(b"3\n1 0 0 0", b"3\n1 bad 0 0")):
+            self.refused_read_and_move(data, TRI, "malformed or cut short")
+
+    def test_moved_nodes_rejects_invalid_and_duplicate_source_tags(self):
+        for binary in (False, True):
+            for tags, fragment in (((1, 2, 0), "Invalid node tag"), ((1, 2, 2), "Duplicate node tag")):
+                with self.subTest(binary=binary, tags=tags):
+                    self.refused_read_and_move(msh22(TRI, [(2, (), (1, 2, 3))], tags, binary=binary),
+                                               TRI, fragment)
+                    v41, xyz = partitioned41("<" if binary else None, tags=(*tags, 4))
+                    self.refused_read_and_move(v41, xyz, fragment)
+
+    def test_moved_nodes_atomic_replace_cleanup_and_modes(self):
+        path = self.mesh_file(msh22(TRI, [(2, (), (1, 2, 3))]))
+        out = self.work / "moved.msh"
+        old_temp = out.with_suffix(".msh.tmp")
+        old_temp.write_bytes(b"unrelated file")
+        out.write_bytes(b"previous export")
+        out.chmod(0o640)
+        seen = []
+        replace = os.replace
+
+        def fail_replace(source, dest):
+            seen.append(Path(source))
+            self.assertEqual(Path(source).parent, self.work)
+            self.assertEqual(Path(dest).read_bytes(), b"previous export")
+            raise OSError("replace interrupted")
+
+        with patch.object(msh_parser.os, "replace", side_effect=fail_replace):
+            with self.assertRaisesRegex(OSError, "replace interrupted"):
+                msh_parser.write_moved_nodes(path, TRI, out)
+        self.assertEqual(out.read_bytes(), b"previous export")
+        self.assertFalse(seen[0].exists())
+
+        def record_replace(source, dest):
+            seen.append(Path(source))
+            replace(source, dest)
+
+        with patch.object(msh_parser.os, "replace", side_effect=record_replace):
+            self.assertEqual(msh_parser.write_moved_nodes(path, TRI, out), out)
+        self.assertNotEqual(seen[0], seen[1])
+        self.assertFalse(seen[1].exists())
+        self.assertEqual(old_temp.read_bytes(), b"unrelated file")
+        self.assertEqual(stat.S_IMODE(out.stat().st_mode), 0o640)
+
+        new_out = self.work / "new.msh"
+        control = self.work / "default-mode"
+        control.touch()
+        msh_parser.write_moved_nodes(path, TRI, new_out)
+        self.assertEqual(stat.S_IMODE(new_out.stat().st_mode), stat.S_IMODE(control.stat().st_mode))
+        self.assertEqual(set(self.work.iterdir()), {path, out, old_temp, new_out, control})
+
     def test_ascii_tag_precision_and_integrity(self):
         high = 2**53 + 1
         for tags in ((high, high + 1, high + 2), (3, 1, 2), (1, 2, 2**63 - 1)):
@@ -315,6 +508,19 @@ class ReaderTests(ScratchTest):
         node.setParms({"File": str(self.mesh_file(data)), "import_surfaces": surfaces,
                        "create_groups": groups})
         return node
+
+    def test_nonfinite_tet_volumes_count_as_invalid(self):
+        unit_tet = [*TRI, (0, 0, 1)]
+        data = msh22(unit_tet, [(4, (), (1, 2, 3, 4))])
+        module = self.reader(data).hdaModule()
+        points = np.asarray([*unit_tet, (1e200, 0, 0), (0, 1e200, 0),
+                             (0, 0, 1e200), (1e200, 1e200, 0)])
+        corners = np.array([[0, 4, 5, 7], [0, 4, 5, 6], [0, 5, 4, 6], [0, 1, 2, 3]])
+        with np.errstate(over="ignore", invalid="ignore"):
+            volumes = module._tet_volume6(points[corners])
+        np.testing.assert_array_equal(volumes, [np.nan, np.inf, -np.inf, 1.0])
+        self.assertEqual(module._primary_quality(points, {"tet": {"corners": corners}}, ("tet",)),
+                         (3, 0))
 
     def test_2d_winding_boundary_attributes_and_family_order(self):
         points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (2, 0, 0)]
