@@ -1,0 +1,379 @@
+        group {
+            name    "linear"
+            label   "Linear"
+
+            parm {
+                name    "solver"
+                label   "Linear Solver"
+                type    ordinal
+                default { "0" }
+                disablewhen "{ solver_nl == BFGS }"
+                menu {
+                    "auto"                                  "Automatic (PolyFEM default)"
+                    "Eigen::SimplicialLDLT"                 "Eigen::SimplicialLDLT (direct)"
+                    "Eigen::SparseLU"                       "Eigen::SparseLU (direct)"
+                    "Eigen::CholmodSupernodalLLT"           "Eigen::CholmodSupernodalLLT (direct)"
+                    "Eigen::AccelerateLLT"                  "Eigen::AccelerateLLT (direct, macOS)"
+                    "Eigen::AccelerateLDLT"                 "Eigen::AccelerateLDLT (direct, macOS)"
+                    "Eigen::UmfPackLU"                      "Eigen::UmfPackLU (direct)"
+                    "Eigen::SuperLU"                        "Eigen::SuperLU (direct)"
+                    "Eigen::PardisoLDLT"                    "Eigen::PardisoLDLT (direct, MKL)"
+                    "Eigen::PardisoLLT"                     "Eigen::PardisoLLT (direct, MKL)"
+                    "Eigen::PardisoLU"                      "Eigen::PardisoLU (direct, MKL)"
+                    "Pardiso"                               "Pardiso (direct, MKL)"
+                    "Hypre"                                 "Hypre (iterative, multigrid)"
+                    "AMGCL"                                 "AMGCL (iterative, multigrid)"
+                    "Eigen::ConjugateGradient"              "Eigen::ConjugateGradient (iterative)"
+                    "Eigen::LeastSquaresConjugateGradient"  "Eigen::LeastSquaresConjugateGradient (iterative)"
+                    "Eigen::BiCGSTAB"                       "Eigen::BiCGSTAB (iterative)"
+                    "Eigen::GMRES"                          "Eigen::GMRES (iterative)"
+                    "Eigen::DGMRES"                         "Eigen::DGMRES (iterative)"
+                    "Eigen::MINRES"                         "Eigen::MINRES (iterative)"
+                }
+                help    "Direct or iterative method for the linear system solved at each Newton iteration. Automatic lets PolyFEM pick the best direct solver compiled into your binary (recommended). Direct solvers (LDLT/LLT/LU) are robust and exact; iterative ones (CG, GMRES, Hypre, AMGCL) use less memory on very large meshes but need a preconditioner and tolerance. Options marked MKL or macOS only exist in builds with that library: if the binary you point at was not built with the solver you pick, PolyFEM prints a warning in the log and falls back to its own default instead of stopping (the HDA sets enable_overwrite_solver for you). With the BFGS nonlinear method this choice is not used: dense BFGS needs a dense linear solver, and the HDA exports Eigen::LDLT."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "max_iter"
+                label   "Max Iterations"
+                type    intlog
+                default { "1000" }
+                disablewhen "{ solver != AMGCL solver != Eigen::ConjugateGradient solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
+                hidewhen "{ solver != AMGCL solver != Eigen::ConjugateGradient solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
+                range   { 1! 100000 }
+                help    "Maximum iterations of the iterative linear solver (Eigen or AMGCL) per Newton step. If it is reached the step is inaccurate; raise it or tighten the preconditioner."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "tolerance"
+                label   "Tolerance"
+                type    log
+                default { "1e-12" }
+                disablewhen "{ solver != Eigen::ConjugateGradient solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
+                hidewhen "{ solver != Eigen::ConjugateGradient solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
+                range   { 1e-20 1 }
+                help    "Relative residual at which the iterative Eigen solver stops (smaller = more accurate linear solves; 1e-12 keeps Newton's convergence intact)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "precond"
+                label   "Preconditioner"
+                type    ordinal
+                default { "0" }
+                disablewhen "{ solver != Eigen::ConjugateGradient solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
+                hidewhen "{ solver != Eigen::ConjugateGradient solver != Eigen::LeastSquaresConjugateGradient solver != Eigen::DGMRES solver != Eigen::BiCGSTAB solver != Eigen::GMRES solver != Eigen::MINRES }"
+                menu {
+                    "Eigen::IdentityPreconditioner"             "Eigen::IdentityPreconditioner"
+                    "Eigen::DiagonalPreconditioner"             "Eigen::DiagonalPreconditioner"
+                    "Eigen::IncompleteCholesky"                 "Eigen::IncompleteCholesky"
+                    "Eigen::LeastSquareDiagonalPreconditioner"  "Eigen::LeastSquareDiagonalPreconditioner"
+                    "Eigen::IncompleteLUT"                      "Eigen::IncompleteLUT"
+                }
+                help    "Preconditioner for the iterative Eigen solvers. Diagonal is cheap; Incomplete Cholesky (symmetric) or Incomplete LUT usually converge in far fewer iterations."
+                parmtag { "export_disable" "1" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "mtype"
+                label   "Matrix Type"
+                type    ordinal
+                default { "0" }
+                disablewhen "{ solver != Pardiso }"
+                hidewhen "{ solver != Pardiso }"
+                menu {
+                    "1"     "1"
+                    "2"     "2"
+                    "-2"    "-2"
+                    "3"     "3"
+                    "4"     "4"
+                    "-4"    "-4"
+                    "6"     "6"
+                    "11"    "11"
+                    "13"    "13"
+                }
+                help    "Pardiso matrix type code: 2 = symmetric positive definite, -2 = symmetric indefinite (safe for regularized Newton), 11 = general nonsymmetric. Only for the Pardiso solver (MKL builds)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "max_iter_hypre"
+                label   "Max Iterations"
+                type    intlog
+                default { "1000" }
+                disablewhen "{ solver != Hypre }"
+                hidewhen "{ solver != Hypre }"
+                range   { 1! 100000 }
+                help    "Maximum iterations of the Hypre algebraic-multigrid solver per Newton step."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "pre_max_iter_hypre"
+                label   "Pre Max Iterations"
+                type    integer
+                default { "1" }
+                disablewhen "{ solver != Hypre }"
+                hidewhen "{ solver != Hypre } { expert_mode == 0 }"
+                range   { 0 10 }
+                help    "Accepted for compatibility with PolySolve's Hypre settings but not used by the current Hypre wrapper, which always applies one multigrid V-cycle per iteration. Leave at 1."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "theta_hypre"
+                label   "Strength Threshold"
+                type    float
+                default { "0.5" }
+                disablewhen "{ solver != Hypre }"
+                hidewhen "{ solver != Hypre } { expert_mode == 0 }"
+                range   { 0 1 }
+                help    "Hypre's strength-of-connection threshold (theta) used to build the coarse levels: couplings weaker than this fraction of the strongest coupling in a row are ignored when grouping unknowns. 0.25 suits 2-D problems, 0.5 (default) suits 3-D elasticity; higher values give a cheaper but weaker preconditioner. Only for the Hypre solver."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "nodal_coarsening_hypre"
+                label   "Nodal Coarsening"
+                type    toggle
+                default { "1" }
+                disablewhen "{ solver != Hypre }"
+                hidewhen "{ solver != Hypre } { expert_mode == 0 }"
+                help    "Coarsen the three displacement components of each node together instead of treating every unknown separately. This is the recommended setting for elasticity and was faster and more reliable in tests; the HDA also tells Hypre the problem is 3-D (dimension = 3) so these elasticity options take effect. Turn it off only to reproduce PolySolve's plain scalar default."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "tolerance_hypre_AMGCL"
+                label   "Tolerance"
+                type    log
+                default { "1e-10" }
+                disablewhen "{ solver != Hypre solver != AMGCL }"
+                hidewhen "{ solver != Hypre solver != AMGCL }"
+                range   { 1e-20 1 }
+                help    "Relative residual at which the Hypre or AMGCL iterative solver stops."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "solver_type"
+                label   "Solver Type"
+                type    ordinal
+                default { "0" }
+                disablewhen "{ solver != AMGCL }"
+                hidewhen "{ solver != AMGCL } { expert_mode == 0 }"
+                menu {
+                    "cg"        "cg (conjugate gradient)"
+                    "bicgstab"  "bicgstab"
+                    "bicgstabl" "bicgstabl"
+                    "gmres"     "gmres"
+                    "lgmres"    "lgmres"
+                    "fgmres"    "fgmres"
+                    "idrs"      "idrs"
+                }
+                help    "Krylov method AMGCL wraps around its multigrid preconditioner. cg (conjugate gradient) is the standard choice for the symmetric positive-definite systems Newton produces; bicgstab, gmres and their variants also handle nonsymmetric systems at a higher memory cost. AMGCL only exists in binaries built with it; other builds log a warning and fall back to the default solver."
+                parmtag { "script_callback_language" "python" }
+            }
+            groupcollapsible {
+                name    "precond_settings"
+                label   "AMGCL Precond Settings"
+                hidewhentab "{ solver != AMGCL } { expert_mode == 0 }"
+                disablewhen "{ solver != AMGCL }"
+                hidewhen "{ solver != AMGCL } { expert_mode == 0 }"
+
+                parm {
+                    name    "class"
+                    label   "class"
+                    type    ordinal
+                    default { "0" }
+                    disablewhen "{ solver != AMGCL }"
+                    hidewhen "{ solver != AMGCL }"
+                    menu {
+                        "amg"   "amg"
+                    }
+                    help    "AMGCL preconditioner class (amg = algebraic multigrid)."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "max_levels"
+                    label   "Max Levels"
+                    type    integer
+                    default { "6" }
+                    disablewhen "{ solver != AMGCL }"
+                    hidewhen "{ solver != AMGCL }"
+                    range   { 0 10 }
+                    help    "Maximum number of multigrid levels AMGCL builds. More levels coarsen further and usually converge faster on large meshes."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "direct_coarse"
+                    label   "Direct Coarse Solve"
+                    type    toggle
+                    default { "0" }
+                    disablewhen "{ solver != AMGCL }"
+                    hidewhen "{ solver != AMGCL }"
+                    help    "Solve AMGCL's coarsest level exactly with a direct solver instead of more smoothing."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "ncycle"
+                    label   "Num Cycles"
+                    type    integer
+                    default { "2" }
+                    disablewhen "{ solver != AMGCL }"
+                    hidewhen "{ solver != AMGCL }"
+                    range   { 0 10 }
+                    help    "Number of multigrid cycles AMGCL performs per preconditioner application (1 = V-cycle, 2 = W-cycle)."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "sepparm3"
+                    label   "Spacer"
+                    type    separator
+                    default { "" }
+                    parmtag { "sidefx::layout_height" "small" }
+                    parmtag { "sidefx::look" "blank" }
+                }
+                group {
+                    name    "Coarsening_Parameters"
+                    label   "Coarsening Parameters"
+                    disablewhen "{ solver != AMGCL }"
+                    hidewhen "{ solver != AMGCL }"
+
+                    parm {
+                        name    "coarsening_type"
+                        label   "Coarse Type"
+                        type    ordinal
+                        default { "0" }
+                        disablewhen "{ solver != AMGCL }"
+                        hidewhen "{ solver != AMGCL }"
+                        menu {
+                            "smoothed_aggregation"  "smoothed_aggregation"
+                            "aggregation"           "aggregation"
+                            "ruge_stuben"           "ruge_stuben"
+                            "smoothed_aggr_emin"    "smoothed_aggr_emin"
+                        }
+                        help    "How AMGCL builds the coarser levels. smoothed_aggregation groups strongly connected unknowns and smooths the result (the usual choice for elasticity); aggregation skips the smoothing (cheaper setup, slower convergence); ruge_stuben is classical algebraic multigrid; smoothed_aggr_emin is an energy-minimizing variant of smoothed aggregation."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "estimate_spectral_radius"
+                        label   "Est. Spectral Radius"
+                        type    toggle
+                        default { "1" }
+                        disablewhen "{ solver != AMGCL }"
+                        hidewhen "{ solver != AMGCL }"
+                        help    "Let AMGCL estimate the matrix spectral radius for its Chebyshev smoother instead of using a fixed guess (usually better)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "eps_strong"
+                        label   "Aggr Epsilon Strong"
+                        type    float
+                        default { "0" }
+                        disablewhen "{ solver != AMGCL }"
+                        hidewhen "{ solver != AMGCL }"
+                        range   { 0 10 }
+                        help    "AMGCL aggregation strength threshold: connections weaker than this fraction are ignored when grouping unknowns. 0 = use all connections."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "coarse_relax"
+                        label   "Coarsening Relax"
+                        type    float
+                        default { "1" }
+                        range   { 0 10 }
+                        disablewhen "{ solver != AMGCL }"
+                        hidewhen "{ solver != AMGCL }"
+                        help    "Relaxation factor of AMGCL's smoothed aggregation (1 = standard)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                }
+
+                parm {
+                    name    "sepparm2"
+                    label   "Spacer"
+                    type    separator
+                    default { "" }
+                    parmtag { "sidefx::layout_height" "small" }
+                    parmtag { "sidefx::look" "blank" }
+                }
+                group {
+                    name    "relax_params"
+                    label   "Relaxation Parameters"
+                    disablewhen "{ solver != AMGCL }"
+                    hidewhen "{ solver != AMGCL }"
+
+                    parm {
+                        name    "relax_type"
+                        label   "Relax Type"
+                        type    ordinal
+                        default { "0" }
+                        disablewhen "{ solver != AMGCL }"
+                        hidewhen "{ solver != AMGCL }"
+                        menu {
+                            "chebyshev"     "chebyshev"
+                            "gauss_seidel"  "gauss_seidel"
+                            "damped_jacobi" "damped_jacobi"
+                            "spai0"         "spai0"
+                            "spai1"         "spai1"
+                            "ilu0"          "ilu0"
+                            "iluk"          "iluk"
+                            "ilut"          "ilut"
+                        }
+                        help    "Smoother applied on every multigrid level. chebyshev (polynomial smoothing, tuned by the settings below) is robust for elasticity; gauss_seidel, damped_jacobi, spai0/spai1 and the ilu variants are cheaper or stronger alternatives from AMGCL's catalog. Degree, Power Iters, Higher, Lower and Scale only apply to chebyshev and are hidden for the other smoothers."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "degree"
+                        label   "Degree"
+                        type    integer
+                        default { "16" }
+                        disablewhen "{ solver != AMGCL } { relax_type != chebyshev }"
+                        hidewhen "{ solver != AMGCL } { relax_type != chebyshev }"
+                        range   { 0 32 }
+                        help    "Polynomial degree of AMGCL's Chebyshev smoother. Higher degrees smooth more per application at more cost."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "power_iters"
+                        label   "Power Iters"
+                        type    integer
+                        default { "100" }
+                        disablewhen "{ solver != AMGCL } { relax_type != chebyshev }"
+                        hidewhen "{ solver != AMGCL } { relax_type != chebyshev }"
+                        range   { 0 10 }
+                        help    "Power iterations AMGCL uses to estimate the largest eigenvalue for the Chebyshev smoother."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "higher"
+                        label   "Higher"
+                        type    float
+                        default { "2" }
+                        disablewhen "{ solver != AMGCL } { relax_type != chebyshev }"
+                        hidewhen "{ solver != AMGCL } { relax_type != chebyshev }"
+                        range   { 0 10 }
+                        help    "Upper safety factor applied to AMGCL's estimated largest eigenvalue (2 = smooth up to twice the estimate)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "lower"
+                        label   "Lower"
+                        type    log
+                        default { "0.00833333" }
+                        disablewhen "{ solver != AMGCL } { relax_type != chebyshev }"
+                        hidewhen "{ solver != AMGCL } { relax_type != chebyshev }"
+                        range   { 1e-06 1 }
+                        help    "Lower fraction of the spectrum the Chebyshev smoother targets (as a fraction of the largest eigenvalue)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "scale_amgcl"
+                        label   "Scale"
+                        type    toggle
+                        default { "1" }
+                        disablewhen "{ solver != AMGCL } { relax_type != chebyshev }"
+                        hidewhen "{ solver != AMGCL } { relax_type != chebyshev }"
+                        range   { 0 10 }
+                        help    "Scale the matrix before building the AMGCL hierarchy (improves robustness for badly scaled systems)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                }
+
+            }
+
+        }

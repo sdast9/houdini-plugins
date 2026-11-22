@@ -1,0 +1,192 @@
+        group {
+            name    "_folder0_2"
+            label   "Line Search"
+            grouptag { "sidefx::switcher" "folder0_2" }
+
+            parm {
+                name    "use_grad_norm_tol"
+                label   "Grad Norm Tol"
+                type    log
+                default { "1e-06" }
+                range   { 1e-15 0.1 }
+                help    "When the gradient norm is already below this value (times the problem's force scale), the line search judges steps by the gradient norm instead of the energy, because energy differences near convergence are lost to floating-point roundoff. 1e-6 is standard; 0 disables the switch."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "ls_accept_energy_in_grad_mode"
+                label   "Accept Energy Decrease in Grad Mode"
+                type    toggle
+                default { "0" }
+                hidewhen "{ expert_mode == 0 }"
+                help    "When line search is judging steps by gradient norm (below Grad Norm Tol), also accept a step that decreases the energy (default off). Helps near convergence when the gradient plateaus while energy is still descending. Expert Mode only; omitted from JSON when off."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "min_step_size"
+                label   "Min Step Size"
+                type    log
+                default { "1e-10" }
+                range   { 1e-15 1e-05 }
+                help    "Smallest fraction of a Newton step the line search will try before declaring the step failed (which triggers the next fallback strategy)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "max_step_size_iter"
+                label   "Max Step Size Iter"
+                type    integer
+                default { "30" }
+                range   { 1 100 }
+                help    "Maximum number of step-halvings the line search performs in normal strategies."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "min_step_size_final"
+                label   "Min Step Size Final"
+                type    log
+                default { "1e-20" }
+                range   { 1e-30 1e-05 }
+                help    "Smallest step fraction allowed on the last-resort strategy (gradient descent), before the solve is declared failed."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "max_step_size_iter_final"
+                label   "Max Step Size Iter Final"
+                type    intlog
+                default { "100" }
+                range   { 1 1000 }
+                help    "Maximum number of step-halvings on the last-resort strategy."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "default_init_step_size"
+                label   "Default Init Step Size"
+                type    float
+                default { "1" }
+                range   { 0 1 }
+                help    "Fraction of the full Newton step the line search tries first (1 = the full step, always right for Newton)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "step_ratio"
+                label   "Step Ratio"
+                type    log
+                default { "0.5" }
+                range   { 0.01 1 }
+                help    "Factor by which the step is shrunk each time the line search rejects it (0.5 = halve it)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "method"
+                label   "Method"
+                type    ordinal
+                default { "1" }
+                menu {
+                    "Armijo"        "Armijo"
+                    "RobustArmijo"  "Robust Armijo (recommended)"
+                    "Backtracking"  "Backtracking"
+                    "None"          "None (full steps, unsafe)"
+                    "Wolfe"         "Strong Wolfe (opt-in)"
+                }
+                help    "A line search decides how far the solver moves during each iteration. Robust Armijo is the recommended choice for most simulations. Strong Wolfe is an optional choice for BFGS or L-BFGS: it may try a shorter or longer move and accepts it only when the energy has dropped enough and the energy curve has flattened. Contact safety checks still limit every move. Leave this on Robust Armijo unless you are testing quasi-Newton convergence. Armijo and Backtracking use simpler acceptance rules. None skips this protection and is unsafe except for controlled experiments."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "armijo_c"
+                label   "Armijo c"
+                type    log
+                default { "0.0001" }
+                disablewhen "{ method != Armijo method != RobustArmijo method != Wolfe }"
+                hidewhen "{ method != Armijo method != RobustArmijo method != Wolfe }"
+                range   { 0 1 }
+                help    "Controls how much the simulation energy must decrease before a trial move is accepted. Larger values demand a bigger decrease and may produce shorter moves. The default 1e-4 is standard; most users should leave it unchanged."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "delta_relative_tolerance"
+                label   "Delta Relative Tolerance"
+                type    float
+                default { "0.1" }
+                disablewhen "{ method != RobustArmijo method != Wolfe }"
+                hidewhen "{ method != RobustArmijo method != Wolfe }"
+                range   { 0 1 }
+                help    "Helps Robust Armijo and Strong Wolfe when an energy change is too tiny for reliable floating-point comparison. In that case the solver also checks the force information. The default 0.1 is intended to prevent false rejections near convergence; most users should leave it unchanged."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "armijo_roundoff_tolerance"
+                label   "Roundoff Tolerance"
+                type    log
+                default { "2.220446049250313e-16" }
+                disablewhen "{ method != Armijo method != RobustArmijo method != Wolfe }"
+                hidewhen "{ method != Armijo method != RobustArmijo method != Wolfe }"
+                range   { 0 1e-08 }
+                help    "Treats extremely small energy differences as numerical noise instead of real increases. When that happens, the solver checks whether the remaining force became smaller. The default is machine precision (2.2e-16); 0 turns this protection off. Leave the default unless you are diagnosing a near-convergence stall."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "wolfe_c2"
+                label   "Wolfe Curvature c2"
+                type    float
+                default { "0.9" }
+                disablewhen "{ method != Wolfe }"
+                hidewhen "{ method != Wolfe } { expert_mode == 0 }"
+                range   { 0 1 }
+                help    "Controls how flat the energy curve must become before Strong Wolfe accepts a move. A smaller value is stricter and can make the solver try more or longer moves; a value nearer 1 is easier to satisfy. It must stay above Armijo c and below 1. The recommended starting value is 0.9."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "wolfe_growth_factor"
+                label   "Wolfe Growth Factor"
+                type    float
+                default { "2" }
+                disablewhen "{ method != Wolfe }"
+                hidewhen "{ method != Wolfe } { expert_mode == 0 }"
+                range   { 1.01 10 }
+                help    "How much longer the next trial move becomes when Strong Wolfe decides the current move is too short. A value of 2 doubles it. The value must be greater than 1. Before trying the longer move, PolyFEM rebuilds the contact search and applies its safety limits."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "wolfe_growth_limit"
+                label   "Wolfe Growth Limit"
+                type    float
+                default { "16" }
+                disablewhen "{ method != Wolfe }"
+                hidewhen "{ method != Wolfe } { expert_mode == 0 }"
+                range   { 1 128 }
+                help    "The longest move Strong Wolfe is allowed to try, measured as a multiple of the original move. The default 16 means at most sixteen times as far. Contact, collision and mesh-validity checks can stop the move much earlier. Lower this if long trials cost too much."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "wolfe_max_evaluations"
+                label   "Wolfe Max Evaluations"
+                type    integer
+                default { "20" }
+                disablewhen "{ method != Wolfe }"
+                hidewhen "{ method != Wolfe } { expert_mode == 0 }"
+                range   { 1 100 }
+                help    "Maximum number of trial moves Strong Wolfe may examine during one solver iteration. More trials can help it find a useful move but cost more energy and force evaluations. The default is 20; the general line-search limit may stop it sooner."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "wolfe_max_objective_restarts"
+                label   "Wolfe Objective Restarts"
+                type    integer
+                default { "2" }
+                disablewhen "{ method != Wolfe }"
+                hidewhen "{ method != Wolfe } { expert_mode == 0 }"
+                range   { 0 20 }
+                help    "How many times Strong Wolfe may start its search over if the simulation energy model changes while it is testing moves. Restarting prevents it from comparing values from two different models. The default 2 is normally sufficient; 0 allows no restart."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "wolfe_approximate_epsilon"
+                label   "Approximate Wolfe Epsilon"
+                type    log
+                default { "1e-06" }
+                disablewhen "{ method != Wolfe }"
+                hidewhen "{ method != Wolfe } { expert_mode == 0 }"
+                range   { 0 0.01 }
+                help    "How much of a tiny energy change may be treated as floating-point noise. When the change is below this fraction of the current energy, Strong Wolfe uses the curve's slope to decide instead. The validated default is 1e-6. Larger values are more forgiving; 0 disables this allowance."
+                parmtag { "script_callback_language" "python" }
+            }
+        }

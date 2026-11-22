@@ -1,0 +1,265 @@
+    group {
+        name    "Main_3"
+        label   "Remeshing"
+
+        parm {
+            name    "remeshing_enabled"
+            label   "Enable Adaptive Remeshing (legacy)"
+            type    toggle
+            default { "0" }
+            help    "Legacy in-timestep adaptive remeshing is no longer supported by PolyFEM. These controls are retained so older scenes can be inspected; leaving this toggle on blocks forward export. MMG shape-optimization remeshing is separate and is not configured here."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "remesh_type"
+            label   "Type"
+            type    ordinal
+            default { "0" }
+            disablewhen "{ remeshing_enabled == 0 }"
+            hidewhen "{ remeshing_enabled == 0 }"
+            menu {
+                "0" "Physics"
+                "1" "Sizing Field"
+            }
+            help    "What drives the remeshing decisions: Physics = accept an edit only if it lowers the elastic energy; Sizing Field = follow a target element-size field."
+            parmtag { "oprelative" "/" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "sepparm8"
+            label   "Separator"
+            type    separator
+            default { "" }
+            hidewhen "{ remeshing_enabled == 0 }"
+        }
+        group {
+            name    "split"
+            label   "Splitting"
+            disablewhentab "{ remeshing_enabled == 0 }"
+            hidewhentab "{ remeshing_enabled == 0 }"
+
+            parm {
+                name    "split_enabled"
+                label   "Enable Edge Splitting"
+                type    toggle
+                default { "1" }
+                help    "Allow edges to be split (mesh refinement where the deformation is strong)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "split_acceptance_tol"
+                label   "Acceptance Tolerance"
+                type    log
+                default { "0.001" }
+                disablewhen "{ split_enabled == 0 }"
+                range   { 0! 1 }
+                help    "A split is kept only if it lowers the energy by at least this amount (relative). Smaller values accept more splits and refine more aggressively."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "split_culling_threshold"
+                label   "Culling Threshold"
+                type    log
+                default { "0.95" }
+                disablewhen "{ split_enabled == 0 }"
+                range   { 0! 1! }
+                help    "Only edges whose energy is in the top fraction (1 - threshold) of the mesh are considered for splitting. 0.95 = only the 5% most strained edges."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "split_max_depth"
+                label   "Max Split Depth per TS"
+                type    integer
+                default { "3" }
+                disablewhen "{ split_enabled == 0 }"
+                range   { 1! 10 }
+                help    "How many times an edge may be split within one time step. Limits runaway refinement."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "min_edge_length"
+                label   "Min Edge Length"
+                type    log
+                default { "1e-06" }
+                disablewhen "{ split_enabled == 0 }"
+                range   { 0! 1 }
+                help    "Edges shorter than this (length units) are never split, which stops refinement from producing tiny elements."
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "split_1"
+            label   "Collapsing"
+            disablewhentab "{ remeshing_enabled == 0 }"
+            hidewhentab "{ remeshing_enabled == 0 }"
+
+            parm {
+                name    "collapse_enabled"
+                label   "Enable Collapsing"
+                type    toggle
+                default { "1" }
+                help    "Allow edges to be collapsed (mesh coarsening where the deformation is mild)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "collapse_acceptance_tol"
+                label   "Acceptance Tolerance"
+                type    float
+                default { "-1e-08" }
+                disablewhen "{ collapse_enabled == 0 }"
+                range   { -1 0! }
+                help    "A collapse is kept only if the energy does not rise by more than this amount (negative values allow a small increase). Coarsening is a trade of accuracy for speed."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "collapse_culling_threshold"
+                label   "Culling Threshold"
+                type    log
+                default { "0.01" }
+                disablewhen "{ collapse_enabled == 0 }"
+                range   { 0! 1! }
+                help    "Only edges whose energy is in the bottom fraction of the mesh are considered for collapsing. 0.01 = only the 1% least strained edges."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "collapse_max_depth"
+                label   "Max Collapse Depth per TS"
+                type    integer
+                default { "3" }
+                disablewhen "{ collapse_enabled == 0 }"
+                range   { 1! 10 }
+                help    "How many times an edge may be collapsed within one time step."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "rel_max_edge_length"
+                label   "Rel Max Edge Length"
+                type    log
+                default { "1" }
+                disablewhen "{ collapse_enabled == 0 }"
+                range   { 0! 1 }
+                help    "Never create edges longer than this multiple of the mesh's initial shortest edge when collapsing. Keeps coarsening bounded."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "abs_max_edge_length"
+                label   "Abs Max Edge Length"
+                type    log
+                default { "1e+100" }
+                disablewhen "{ collapse_enabled == 0 }"
+                range   { 0! 1e+09 }
+                help    "Never create edges longer than this absolute length when collapsing. Leave very large to disable this limit."
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "split_3"
+            label   "Swap"
+            disablewhentab "{ remeshing_enabled == 0 }"
+            hidewhentab "{ remeshing_enabled == 0 }"
+
+            parm {
+                name    "swap_enabled2"
+                label   "Enable Edge/Face Swap"
+                type    toggle
+                default { "0" }
+                help    "Allow edge/face swaps (flips) that improve element shape without changing the element count."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "swap_acceptance_tol2"
+                label   "Acceptance Tolerance"
+                type    float
+                default { "-1e-08" }
+                disablewhen "{ swap_enabled2 == 0 }"
+                range   { -1 0! }
+                help    "A swap is kept only if the energy does not rise by more than this amount (negative values allow a small increase)."
+                parmtag { "export_disable" "1" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "swap_max_depth2"
+                label   "Max Depth"
+                type    integer
+                default { "3" }
+                disablewhen "{ swap_enabled2 == 0 }"
+                range   { 1! 10 }
+                help    "How many swap passes may run within one time step."
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "split_4"
+            label   "Smoothing"
+            disablewhentab "{ remeshing_enabled == 0 }"
+            hidewhentab "{ remeshing_enabled == 0 }"
+
+            parm {
+                name    "smooth_enabled"
+                label   "Enable Vertex Smoothing"
+                type    toggle
+                default { "0" }
+                help    "Allow vertex smoothing (moving interior vertices to improve element quality)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "smooth_acceptance_tol"
+                label   "Acceptance Tolerance"
+                type    float
+                default { "-1e-08" }
+                disablewhen "{ smooth_enabled == 0 }"
+                range   { -1 0! }
+                help    "A smoothing move is kept only if the energy does not rise by more than this amount (negative values allow a small increase)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "smooth_max_iters"
+                label   "Max Iterations"
+                type    integer
+                default { "1" }
+                disablewhen "{ smooth_enabled == 0 }"
+                range   { 1! 10 }
+                help    "How many smoothing iterations may run within one time step."
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "split_5"
+            label   "Local Relaxation"
+            disablewhentab "{ remeshing_enabled == 0 }"
+            hidewhentab "{ remeshing_enabled == 0 }"
+
+            parm {
+                name    "local_mesh_n_ring"
+                label   "Size of n-ring"
+                type    integer
+                default { "2" }
+                range   { 0 10 }
+                help    "Size of the neighborhood (number of element rings around an edit) that is re-solved locally to judge whether a mesh edit is accepted. Larger is more accurate but slower."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "local_mesh_rel_area"
+                label   "Min area"
+                type    log
+                default { "0.01" }
+                range   { 0! 1 }
+                help    "Minimum area (relative to the whole mesh) of that local neighborhood."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "max_nl_iterations"
+                label   "Max NL Solver iters"
+                type    integer
+                default { "1" }
+                range   { 1! 10 }
+                help    "Newton iterations spent on each local re-solve before the accept/reject check. 1 is usually enough."
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+    }

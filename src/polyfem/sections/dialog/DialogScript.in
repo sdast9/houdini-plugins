@@ -1,0 +1,43 @@
+# Dialog script for stevenabramowitch::dev::PolyFEM::1.2 automatically generated
+
+{
+    name	stevenabramowitch::dev::PolyFEM::1.2
+    script	stevenabramowitch::dev::box_maker::1.0
+    label	"PolyFEM (Dev)"
+
+    help {
+	""
+    }
+
+    inputlabel	1	parent
+
+    @INCLUDE transform.ds@
+
+    @INCLUDE render.ds@
+
+    @INCLUDE misc.ds@
+
+    parm {
+        name    "renderable"
+        baseparm
+        label   "Renderable"
+        invisible
+        export  none
+    }
+    @INCLUDE main.ds@
+
+    @INCLUDE geometry/main.ds@
+
+    @INCLUDE time.ds@
+
+    @INCLUDE contact.ds@
+
+    @INCLUDE solver/main.ds@
+
+    @INCLUDE output.ds@
+
+    @INCLUDE global.ds@
+
+    @INCLUDE remeshing.ds@
+
+}

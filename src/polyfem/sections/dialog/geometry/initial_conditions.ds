@@ -1,0 +1,61 @@
+                groupcollapsible {
+                    name    "folder2_#_#"
+                    label   "Initial Conditions"
+                    disablewhentab "{ is_obstacle# != 0 }"
+                    disablewhen "{ is_obstacle# != 0 }"
+                    hidewhentab "{ is_obstacle# != 0 }"
+                    hidewhen "{ is_obstacle# != 0 }"
+
+                    multiparm {
+                        name    "initial_conditions#_#"
+                        label    "Number of Conditions"
+                        disablewhen "{ is_obstacle# != 0 }"
+                        hidewhen "{ is_obstacle# != 0 }"
+                        parmtag { "script_callback" "" }
+                        parmtag { "script_callback_language" "python" }
+
+                        parm {
+                            name    "conditiontype#_#_#"
+                            label   "Condition Type"
+                            type    ordinal
+                            default { "0" }
+                            menu {
+                                "solution"  "Solution"
+                                "vel"       "Velocity"
+                                "accel"     "Acceleration"
+                            }
+                            help    "Which initial field this condition sets for the subdomain at the start time: the displacement (solution), the velocity, or the acceleration. Velocity is the usual one for a moving body in a dynamic run."
+                            parmtag { "autoscope" "0000000000000000" }
+                            parmtag { "autoselect" "0000000000000000" }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "ic_vec#_#_#"
+                            label   "Value [x, y, z]"
+                            type    string
+                            size    3
+                            default { "0" "0" "0" }
+                            help    "Initial value for X, Y, Z. Enter plain numbers or PolyFEM TinyExpr expressions of x, y, z without quotes (quotes are also accepted): e.g. 0, -1.5, 0.1*sin(pi*x)."
+                            parmtag { "script_callback" "hou.pwd().hm().sync_expr_vector(kwargs)" }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "condition_vector_#_#_#"
+                            label   "Value [x, y, z] (legacy)"
+                            type    string
+                            invisible
+                            default { "[0,0,0]" }
+                            help    "Legacy JSON-list storage kept hidden for compatibility with older scenes."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "geo_sep7_#_#_#"
+                            label   "Spacer"
+                            type    separator
+                            default { "" }
+                            parmtag { "sidefx::layout_height" "large" }
+                            parmtag { "sidefx::look" "blank" }
+                        }
+                    }
+
+                }

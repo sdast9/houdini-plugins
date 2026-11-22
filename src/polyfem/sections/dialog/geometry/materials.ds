@@ -1,0 +1,488 @@
+                groupcollapsible {
+                    name    "material#_#"
+                    label   "Material"
+                    disablewhentab "{ is_obstacle# != 0 }"
+                    disablewhen "{ is_obstacle# != 0 }"
+                    hidewhentab "{ is_obstacle# != 0 }"
+                    hidewhen "{ is_obstacle# != 0 }"
+
+                    parm {
+                        name    "units_hint#_#"
+                        label   ""
+                        type    label
+                        default { "Units: PolyFEM uses the units of your mesh; keep them consistent. SI (m, kg, s): moduli and pressures in Pa, density in kg/m3 (water 1000), gravity 9.81. Millimetres (mm, g, s): also Pa, density in g/mm3 (water 0.001), gravity 9810." }
+                        parmtag { "sidefx::look" "block" }
+                    }
+                    parm {
+                        name    "materials#_#"
+                        label   "Material"
+                        type    ordinal
+                        joinnext
+                        default { "3" }
+                        menu {
+                            "LinearElasticity" "Linear Elastic (small strains only)"
+                            "HookeLinearElasticity" "Anisotropic Linear Elastic (Hooke)"
+                            "IncompressibleLinearElasticity" "Incompressible Linear Elastic"
+                            "NeoHookean" "Neo-Hookean (recommended)"
+                            "IncompressibleOgden" "Ogden, Incompressible"
+                            "UnconstrainedOgden" "Ogden, Compressible"
+                            "MooneyRivlin" "Mooney-Rivlin, 2 Parameters"
+                            "MooneyRivlin3Param" "Mooney-Rivlin, 3 Parameters"
+                            "MooneyRivlin3ParamSymbolic" "Mooney-Rivlin, 3 Parameters (Symbolic)"
+                            "SaintVenant" "Saint Venant-Kirchhoff (Anisotropic)"
+                            "FixedCorotational" "Fixed Corotational"
+                            "IsochoricNeoHookean" "Isochoric Neo-Hookean"
+                            "HGOFiber" "HGO Fiber (aligned)"
+                            "HGODispersion" "HGO Dispersion (GOH)"
+                            "ActiveFiber" "Active Fiber (muscle)"
+                            "MaterialSum" "Composite (Matrix + Fiber Families)"
+                            "GrowthNeoHookean" "Growth Neo-Hookean (3D)"
+                            "InversionBarrier" "Inversion Barrier"
+                            "AMIPS" "AMIPS (Distortion Energy)"
+                        }
+                        help    "Constitutive model of this subdomain, i.e. how the material resists deformation. NeoHookean is the usual choice for soft, rubber-like or biological tissue; LinearElasticity is only valid for very small strains. The HGO / Active Fiber models add a stiff fiber direction; Composite lets you sum a matrix model with several fiber families, a volume penalty, and/or an inversion barrier. Growth Neo-Hookean adds a 3x3 natural-configuration tensor G; Inversion Barrier prevents element inversion below a J threshold; AMIPS penalizes element distortion."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "matrix_model#_#"
+                        label   "Matrix Model"
+                        type    ordinal
+                        default { "3" }
+                        disablewhen "{ materials#_# != MaterialSum }"
+                        hidewhen "{ materials#_# != MaterialSum }"
+                        menu {
+                            "LinearElasticity" "Linear Elastic (small strains only)"
+                            "HookeLinearElasticity" "Anisotropic Linear Elastic (Hooke)"
+                            "IncompressibleLinearElasticity" "Incompressible Linear Elastic"
+                            "NeoHookean" "Neo-Hookean (recommended)"
+                            "IncompressibleOgden" "Ogden, Incompressible"
+                            "UnconstrainedOgden" "Ogden, Compressible"
+                            "MooneyRivlin" "Mooney-Rivlin, 2 Parameters"
+                            "MooneyRivlin3Param" "Mooney-Rivlin, 3 Parameters"
+                            "MooneyRivlin3ParamSymbolic" "Mooney-Rivlin, 3 Parameters (Symbolic)"
+                            "SaintVenant" "Saint Venant-Kirchhoff (Anisotropic)"
+                            "FixedCorotational" "Fixed Corotational"
+                            "IsochoricNeoHookean" "Isochoric Neo-Hookean"
+                            "None"                              "None (fiber only)"
+                            "GrowthNeoHookean" "Growth Neo-Hookean (3D)"
+                            "AMIPS" "AMIPS (Distortion Energy)"
+                        }
+                        help    "Isotropic base material of a Composite (the 'ground substance' the fibers are embedded in). Choose None to have only the fiber families and a volume penalty."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "damping#_#"
+                        label   "Damping"
+                        type    toggle
+                        default { "0" }
+                        disablewhen "@SHOW_FOR_DIRECT(NeoHookean LinearElasticity SaintVenant FixedCorotational IsochoricNeoHookean)@"
+                        hidewhen "@SHOW_FOR_DIRECT(NeoHookean LinearElasticity SaintVenant FixedCorotational IsochoricNeoHookean)@"
+                        help    "Add viscous (rate-dependent) damping to this material, controlled by phi and psi. Only meaningful in dynamic (non-quasistatic) runs; it dissipates energy so vibrations die out. Not supported on Composite (MaterialSum) materials (use Rayleigh damping on Solver > Advanced instead)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "E#_#"
+                        label   "Young's Modulus E"
+                        type    float
+                        default { "100000" }
+                        disablewhen "@SHOW_FOR(NeoHookean LinearElasticity IncompressibleLinearElasticity FixedCorotational IsochoricNeoHookean GrowthNeoHookean InversionBarrier)@"
+                        hidewhen "@SHOW_FOR(NeoHookean LinearElasticity IncompressibleLinearElasticity FixedCorotational IsochoricNeoHookean GrowthNeoHookean InversionBarrier)@"
+                        range   { 0 1e+07 }
+                        help    "Young's modulus: the material's stiffness (stress per unit strain), in your force/area units (Pa if you use SI). Soft tissue is roughly 1e3-1e6 Pa, rubber ~1e6, steel ~2e11. Larger values make the body harder to deform and the solve stiffer."
+                        parmtag { "script_callback_language" "python" }
+                        parmtag { "units" "" }
+                    }
+                    parm {
+                        name    "nu#_#"
+                        label   "Poisson's Ratio"
+                        type    float
+                        default { "0.45" }
+                        disablewhen "@SHOW_FOR(NeoHookean LinearElasticity IncompressibleLinearElasticity FixedCorotational IsochoricNeoHookean GrowthNeoHookean InversionBarrier)@"
+                        hidewhen "@SHOW_FOR(NeoHookean LinearElasticity IncompressibleLinearElasticity FixedCorotational IsochoricNeoHookean GrowthNeoHookean InversionBarrier)@"
+                        range   { -1 0.5 }
+                        help    "Poisson's ratio: how much the material contracts sideways when stretched. 0 = no coupling, 0.5 = perfectly incompressible (volume preserving). Rubber and soft tissue are close to 0.45-0.49; values very near 0.5 make the solve harder."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "growth_diag#_#"
+                        label   "Growth Diagonal [g11, g22, g33]"
+                        type    string
+                        size    3
+                        default { "1" "1" "1" }
+                        disablewhen "@SHOW_FOR(GrowthNeoHookean)@"
+                        hidewhen "@SHOW_FOR(GrowthNeoHookean)@"
+                        help    "Diagonal entries (g11, g22, g33) of the symmetric positive-definite 3x3 natural-configuration (growth) tensor G in F_e = F G^{-1}. Enter a number or a PolyFEM TinyExpr formula of x, y, z, t (quotes optional), e.g. 1 + 0.1*t. Default [1, 1, 1] is no growth."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "growth_offdiag#_#"
+                        label   "Growth Off-Diag [g12, g13, g23]"
+                        type    string
+                        size    3
+                        default { "0" "0" "0" }
+                        disablewhen "@SHOW_FOR(GrowthNeoHookean)@"
+                        hidewhen "@SHOW_FOR(GrowthNeoHookean)@"
+                        help    "Off-diagonal entries (g12, g13, g23) of the symmetric 3x3 natural-configuration tensor G (g21=g12, g31=g13, g32=g23). Enter a number or a PolyFEM TinyExpr formula of x, y, z, t (quotes optional). G must remain positive definite."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "inv_barrier_thresh#_#"
+                        label   "J Barrier Threshold"
+                        type    float
+                        default { "0.5" }
+                        disablewhen "@SHOW_FOR_DIRECT(InversionBarrier)@"
+                        hidewhen "@SHOW_FOR_DIRECT(InversionBarrier)@"
+                        range   { 1e-06! 10 }
+                        help    "Jacobian determinant threshold below which the inversion barrier activates (inactive for J >= threshold, blows up as J -> 0+). Default 0.5."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "amips_weight#_#"
+                        label   "AMIPS Weight"
+                        type    float
+                        default { "1" }
+                        disablewhen "@SHOW_FOR(AMIPS)@"
+                        hidewhen "@SHOW_FOR(AMIPS)@"
+                        range   { 1e-09! 1e+06 }
+                        help    "Positive scalar weight multiplying the AMIPS distortion energy density. Default 1."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "amips_use_rest_pose#_#"
+                        label   "AMIPS Use Rest Pose"
+                        type    toggle
+                        default { "0" }
+                        disablewhen "@SHOW_FOR(AMIPS)@"
+                        hidewhen "@SHOW_FOR(AMIPS)@"
+                        help    "Off (default): penalize distortion relative to an ideal regular element. On: penalize distortion relative to the input mesh's rest shape."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "amips_power#_#"
+                        label   "AMIPS Power"
+                        type    float
+                        default { "1" }
+                        disablewhen "@SHOW_FOR(AMIPS)@"
+                        hidewhen "@SHOW_FOR(AMIPS)@"
+                        range   { 1e-06! 100 }
+                        help    "Power exponent applied to the AMIPS distortion energy before weighting (default 1). Values above 1 penalize severe element distortion more strongly; omitted from JSON when 1."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "amips_normalized#_#"
+                        label   "AMIPS Normalized"
+                        type    toggle
+                        default { "0" }
+                        disablewhen "@SHOW_FOR(AMIPS)@"
+                        hidewhen "@SHOW_FOR(AMIPS)@"
+                        help    "Divide the AMIPS distortion measure by the spatial dimension before raising it to Power (default off). Omitted from JSON when off."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "c1#_#"
+                        label   "Mooney-Rivlin C1"
+                        type    float
+                        default { "0" }
+                        disablewhen "@SHOW_FOR(MooneyRivlin MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
+                        hidewhen "@SHOW_FOR(MooneyRivlin MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
+                        range   { -10000 10000 }
+                        help    "Mooney-Rivlin coefficient C1 (stress units). Together with C2 it sets the shear stiffness; for small strains the shear modulus is about 2(C1 + C2)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "c2#_#"
+                        label   "Mooney-Rivlin C2"
+                        type    float
+                        default { "0" }
+                        disablewhen "@SHOW_FOR(MooneyRivlin MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
+                        hidewhen "@SHOW_FOR(MooneyRivlin MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
+                        range   { -10000 10000 }
+                        help    "Mooney-Rivlin coefficient C2 (stress units). Controls the second-invariant part of the response; 0 reduces the model to Neo-Hookean-like behavior."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "c3#_#"
+                        label   "Mooney-Rivlin C3"
+                        type    float
+                        default { "0" }
+                        disablewhen "@SHOW_FOR(MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
+                        hidewhen "@SHOW_FOR(MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
+                        range   { -10000 10000 }
+                        help    "Third Mooney-Rivlin coefficient (stress units) of the 3-parameter model, adding a coupled invariant term."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "d1#_#"
+                        label   "Volumetric Coefficient d1"
+                        type    float
+                        default { "0" }
+                        disablewhen "@SHOW_FOR(MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
+                        hidewhen "@SHOW_FOR(MooneyRivlin3Param MooneyRivlin3ParamSymbolic)@"
+                        range   { -10000 10000 }
+                        help    "Volumetric (bulk) coefficient d1 of the 3-parameter Mooney-Rivlin model; larger values resist volume change more strongly."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "ogdenC#_#"
+                        label   "Ogden Coefficients c (list)"
+                        type    string
+                        default { "[0.0329e6]" }
+                        disablewhen "@SHOW_FOR(IncompressibleOgden)@"
+                        hidewhen "@SHOW_FOR(IncompressibleOgden)@"
+                        range   { -10000 10000 }
+                        help    "List of Ogden coefficients c_i (stress units) for the incompressible Ogden model, e.g. [0.0329e6]. One entry per term; must have the same length as m."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "ogdenM#_#"
+                        label   "Ogden Exponents m (list)"
+                        type    string
+                        default { "[6.82]" }
+                        disablewhen "@SHOW_FOR(IncompressibleOgden)@"
+                        hidewhen "@SHOW_FOR(IncompressibleOgden)@"
+                        range   { -10000 10000 }
+                        help    "List of Ogden exponents m_i (dimensionless), e.g. [6.82]. Same length as C. Larger exponents give stronger strain-stiffening."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "ogden_alphas#_#"
+                        label   "Ogden Exponents alpha (list)"
+                        type    string
+                        default { "[2]" }
+                        disablewhen "@SHOW_FOR(UnconstrainedOgden)@"
+                        hidewhen "@SHOW_FOR(UnconstrainedOgden)@"
+                        range   { -10000 10000 }
+                        help    "List of exponents alpha_i for the unconstrained (compressible) Ogden model, e.g. [2]. Same length as Mus (must be non-zero)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "ogden_mus#_#"
+                        label   "Ogden Moduli mu (list)"
+                        type    string
+                        default { "[0.0329e6]" }
+                        disablewhen "@SHOW_FOR(UnconstrainedOgden)@"
+                        hidewhen "@SHOW_FOR(UnconstrainedOgden)@"
+                        range   { -10000 10000 }
+                        help    "List of shear-like coefficients mu_i (stress units) for the unconstrained Ogden model, e.g. [0.0329e6]. Same length as alphas."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "ogden_ds#_#"
+                        label   "Ogden Volumetric D (list)"
+                        type    string
+                        default { "[1e-7]" }
+                        disablewhen "@SHOW_FOR(UnconstrainedOgden)@"
+                        hidewhen "@SHOW_FOR(UnconstrainedOgden)@"
+                        range   { -10000 10000 }
+                        help    "List of volumetric coefficients D_i (1/stress units; smaller = less compressible) for the unconstrained Ogden model, e.g. [1e-7]. At least one non-zero entry."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "bulk#_#"
+                        label   "Bulk Modulus"
+                        type    float
+                        default { "1e+08" }
+                        disablewhen "@SHOW_FOR(MooneyRivlin IncompressibleOgden)@"
+                        hidewhen "@SHOW_FOR(MooneyRivlin IncompressibleOgden)@"
+                        range   { -10000 10000 }
+                        help    "Bulk modulus k (stress units): resistance to volume change for Mooney-Rivlin and incompressible Ogden. Use a value much larger than the shear stiffness (100x or more) to approximate incompressibility."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "elast_mode#_#"
+                        label   "Elasticity Input Mode"
+                        type    ordinal
+                        default { "0" }
+                        disablewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@"
+                        hidewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@"
+                        menu {
+                            "orthotropic" "Orthotropic (E1..E3, nu, G)"
+                            "raw"         "Raw Tensor List (5, 9, or 21 numbers)"
+                        }
+                        help    "Choose how to enter Hooke / Saint Venant stiffness constants: Orthotropic provides structured engineering constants (E1..E3, nu12/13/23, G23/31/12); Raw Tensor List accepts a 5-, 9-, or 21-number JSON list for transversely isotropic or general anisotropic materials."
+                        parmtag { "script_callback" "hou.pwd().hm().sync_ortho_tensor(kwargs)" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "ortho_E#_#"
+                        label   "Young's Moduli (E1, E2, E3)"
+                        type    float
+                        size    3
+                        default { "100000" "100000" "100000" }
+                        disablewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@ { elast_mode#_# != orthotropic }"
+                        hidewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@ { elast_mode#_# != orthotropic }"
+                        range   { 1e-12! 1e+12 }
+                        help    "Orthotropic Young's moduli E1, E2, E3 along the three material axes (stress units, all > 0)."
+                        parmtag { "script_callback" "hou.pwd().hm().sync_ortho_tensor(kwargs)" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "ortho_nu#_#"
+                        label   "Poisson's Ratios (nu12, nu13, nu23)"
+                        type    float
+                        size    3
+                        default { "0.3" "0.3" "0.3" }
+                        disablewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@ { elast_mode#_# != orthotropic }"
+                        hidewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@ { elast_mode#_# != orthotropic }"
+                        range   { -0.99 0.499 }
+                        help    "Orthotropic Poisson's ratios nu12, nu13, nu23 (dimensionless; must keep the compliance matrix positive definite)."
+                        parmtag { "script_callback" "hou.pwd().hm().sync_ortho_tensor(kwargs)" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "ortho_G#_#"
+                        label   "Shear Moduli (G23, G31, G12)"
+                        type    float
+                        size    3
+                        default { "38461.53846153846" "38461.53846153846" "38461.53846153846" }
+                        disablewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@ { elast_mode#_# != orthotropic }"
+                        hidewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@ { elast_mode#_# != orthotropic }"
+                        range   { 1e-12! 1e+12 }
+                        help    "Orthotropic shear moduli G23, G31, G12 (stress units, all > 0; default matches isotropic E / (2*(1 + nu)))."
+                        parmtag { "script_callback" "hou.pwd().hm().sync_ortho_tensor(kwargs)" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "elast_tensor#_#"
+                        label   "Elasticity Constants"
+                        type    string
+                        default { "[E11,E22,E33,nu12,nu13,nu23,mu23,mu31,mu12]" }
+                        disablewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@ { elast_mode#_# != raw }"
+                        hidewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@ { elast_mode#_# != raw }"
+                        help    "Raw elasticity constants list for Hooke / Saint Venant materials: 9 numbers [E11, E22, E33, nu12, nu13, nu23, G23, G31, G12] (orthotropic), 5 (transversely isotropic), or 21 (full symmetric 6x6 stiffness)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "material_axes_identity#_#"
+                        label   "Material Axes Are Identity"
+                        type    toggle
+                        invisible
+                        default { [ "hou.pwd().hm()._material_axes_are_identity(hou.pwd().evalParm('material_coord' + hou.evaluatingParm().name().removeprefix('material_axes_identity')))" python ] }
+                    }
+                    parm {
+                        name    "material_coord#_#"
+                        label   "Material Axes (3x3)"
+                        type    string
+                        default { "[1,0,0,0,1,0,0,0,1]" }
+                        disablewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@ { materials#_# == SaintVenant material_axes_identity#_# == 1 } { materials#_# == MaterialSum matrix_model#_# == SaintVenant material_axes_identity#_# == 1 }"
+                        hidewhen "@SHOW_FOR(SaintVenant HookeLinearElasticity)@"
+                        help    "Material coordinate frame for HookeLinearElasticity. Enter a rotation matrix row by row as 9 numbers. Identity [1,0,0,0,1,0,0,0,1] aligns the material axes with x, y, z. SaintVenant always uses global coordinates. An older SaintVenant scene with different axes keeps this field editable so you can reset it to identity."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    @INCLUDE fibers.ds@
+                    parm {
+                        name    "volume_penalty#_#"
+                        label   "Add Volume Penalty"
+                        type    toggle
+                        default { "0" }
+                        disablewhen "{ materials#_# != MaterialSum }"
+                        hidewhen "{ materials#_# != MaterialSum }"
+                        help    "Add a volume-preservation penalty to the composite (a VolumePenalty model). Use it when the matrix model is None or too soft to prevent the fibers from collapsing the volume."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "vp_k#_#"
+                        label   "Volume Penalty k"
+                        type    float
+                        default { "1e+08" }
+                        disablewhen "{ materials#_# != MaterialSum } { volume_penalty#_# != 1 }"
+                        hidewhen "{ materials#_# != MaterialSum } { volume_penalty#_# != 1 }"
+                        range   { 0 1e+10 }
+                        help    "Stiffness k of the volume penalty (stress units): the penalty energy grows with the squared deviation of the local volume ratio J from 1. Larger values enforce volume preservation more strictly."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "add_inv_barrier#_#"
+                        label   "Add Inversion Barrier"
+                        type    toggle
+                        default { "0" }
+                        disablewhen "{ materials#_# != MaterialSum }"
+                        hidewhen "{ materials#_# != MaterialSum }"
+                        help    "Add an InversionBarrier term to the composite to prevent element inversion (J -> 0+) without altering the response when J >= threshold."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "comp_inv_E#_#"
+                        label   "Inversion Barrier E"
+                        type    float
+                        default { "100000" }
+                        disablewhen "{ materials#_# != MaterialSum } { add_inv_barrier#_# != 1 }"
+                        hidewhen "{ materials#_# != MaterialSum } { add_inv_barrier#_# != 1 }"
+                        range   { 0 1e+07 }
+                        help    "Young's modulus scaling the composite's InversionBarrier term (stress units)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "comp_inv_nu#_#"
+                        label   "Inversion Barrier nu"
+                        type    float
+                        default { "0.45" }
+                        disablewhen "{ materials#_# != MaterialSum } { add_inv_barrier#_# != 1 }"
+                        hidewhen "{ materials#_# != MaterialSum } { add_inv_barrier#_# != 1 }"
+                        range   { -1 0.5 }
+                        help    "Poisson's ratio for the composite's InversionBarrier term (-1 < nu < 0.5)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "comp_inv_thresh#_#"
+                        label   "Inversion Barrier J Threshold"
+                        type    float
+                        default { "0.5" }
+                        disablewhen "{ materials#_# != MaterialSum } { add_inv_barrier#_# != 1 }"
+                        hidewhen "{ materials#_# != MaterialSum } { add_inv_barrier#_# != 1 }"
+                        range   { 1e-06! 10 }
+                        help    "Jacobian determinant threshold below which the composite's InversionBarrier activates (inactive for J >= threshold). Default 0.5."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "extra_models_json#_#"
+                        label   "Extra Models (JSON)"
+                        type    string
+                        default { "" }
+                        disablewhen "{ materials#_# != MaterialSum }"
+                        hidewhen "{ materials#_# != MaterialSum }"
+                        help    "Optional advanced field: a JSON list of additional PolyFEM model objects appended verbatim to this composite's models, e.g. [{\"type\": \"NeoHookean\", \"E\": 1e5, \"nu\": 0.4}]. Leave empty unless you need a model the UI does not offer."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "refresh_material_data#_#"
+                        label   "Refresh Per-Element Data"
+                        type    button
+                        default { "0" }
+                        hidewhen "@SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber MaterialSum)@"
+                        help    "Re-read the per-element fiber/dispersion sources (SOP attributes, files, presets) and update the viewport preview. The exporter uses exactly the data shown."
+                        parmtag { "script_callback" "hou.phm().refresh_material_data(kwargs)" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "rho#_#"
+                        label   "Density"
+                        type    float
+                        default { "1000" }
+                        range   { 0 5000 }
+                        help    "Mass density of this subdomain in mass per volume (kg/m^3 in SI; water and soft tissue ~1000). Only matters in dynamic runs (inertia) and for gravity via the Right-Hand-Side."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "phi#_#"
+                        label   "Volume-Rate Damping phi"
+                        type    float
+                        default { "0" }
+                        disablewhen "{ damping#_# != 1 } @SHOW_FOR_DIRECT(NeoHookean LinearElasticity SaintVenant FixedCorotational IsochoricNeoHookean)@"
+                        hidewhen "{ damping#_# != 1 } @SHOW_FOR_DIRECT(NeoHookean LinearElasticity SaintVenant FixedCorotational IsochoricNeoHookean)@"
+                        range   { -10000 10000 }
+                        help    "Viscous damping coefficient phi (multiplies the rate of the first strain invariant). Larger values dissipate energy faster. Only used when Damping is on and the run is dynamic."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "psi#_#"
+                        label   "Strain-Rate Damping psi"
+                        type    float
+                        default { "0" }
+                        disablewhen "{ damping#_# != 1 } @SHOW_FOR_DIRECT(NeoHookean LinearElasticity SaintVenant FixedCorotational IsochoricNeoHookean)@"
+                        hidewhen "{ damping#_# != 1 } @SHOW_FOR_DIRECT(NeoHookean LinearElasticity SaintVenant FixedCorotational IsochoricNeoHookean)@"
+                        range   { -10000 10000 }
+                        help    "Viscous damping coefficient psi (multiplies the rate of the second strain invariant). Only used when Damping is on and the run is dynamic."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                }

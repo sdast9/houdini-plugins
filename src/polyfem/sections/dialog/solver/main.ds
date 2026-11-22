@@ -1,0 +1,19 @@
+    group {
+        name    "Main_6"
+        label   "Solver"
+
+        @INCLUDE linear.ds@
+
+        @INCLUDE nonlinear_solver.ds@
+        @INCLUDE line_search.ds@
+
+
+        @INCLUDE nonlinear_settings.ds@
+
+        @INCLUDE augmented_lagrangian.ds@
+
+        @INCLUDE rayleigh_damping.ds@
+
+        @INCLUDE advanced.ds@
+
+    }

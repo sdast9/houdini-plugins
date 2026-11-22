@@ -1,0 +1,146 @@
+        group {
+            name    "_folder0_2_3"
+            label   "Augmented Lagrangian"
+            hidewhentab "{ expert_mode == 0 }"
+
+            parm {
+                name    "al_hessian_scaled"
+                label   "Hessian-Scaled Initial Weight"
+                type    toggle
+                default { "1" }
+                help    "Set the initial penalty weight of the boundary-condition (augmented Lagrangian) phase from the elastic stiffness: multiplier times the largest Hessian entry, so the penalty dominates the problem curvature regardless of units. Recommended; otherwise a fixed Initial Weight is used."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_weight_multiplier"
+                label   "Weight Multiplier"
+                type    log
+                default { "10" }
+                disablewhen "{ al_hessian_scaled == 0 }"
+                range   { 0.1 1e+06 }
+                help    "Multiplier applied to the largest elastic Hessian entry to get the initial penalty weight when Hessian-Scaled is on. 10 is a good default; raise it if boundary conditions are not being met."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_initial_weight"
+                label   "Initial Weight"
+                type    log
+                default { "1e6" }
+                disablewhen "{ al_hessian_scaled == 1 }"
+                range   { 1 1e+20 }
+                help    "Fixed initial penalty weight of the boundary-condition phase (stress-like units) when Hessian-Scaled is off."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_scaling"
+                label   "Scaling"
+                type    float
+                default { "2" }
+                range   { 0 10 }
+                help    "Factor by which the penalty weight grows each time the boundary conditions are still not satisfied (2 = doubling)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_max_weight"
+                label   "Max Weight"
+                type    log
+                default { "1e+30" }
+                range   { 1 1e+30 }
+                help    "Ceiling for the penalty weight growth; if it is reached the boundary conditions cannot be enforced more strictly."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_eta"
+                label   "Eta"
+                type    float
+                default { "0.99" }
+                range   { 0 1 }
+                help    "Progress ratio: if the boundary-condition error shrinks by less than this fraction between rounds, the weight is increased instead of the Lagrange multipliers. 0.99 favors updating the multipliers."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_error"
+                label   "Error Tolerance"
+                type    log
+                default { "0.01" }
+                range   { 0 1 }
+                help    "Augmented Lagrangian stopping error threshold: AL does not stop unless the Dirichlet constraint error is smaller than this number (default 1e-2). Omitted from JSON when at default."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_lumping"
+                label   "Mass Lumping"
+                type    ordinal
+                default { "0" }
+                menu {
+                    "row_sum"   "row_sum (default)"
+                    "hrz"       "hrz (diagonal scaling)"
+                }
+                help    "How the mass matrix behind the boundary-condition penalty is reduced to a diagonal (lumped) matrix. row_sum adds up each row (standard); hrz (Hinton-Rock-Zienkiewicz) scales the diagonal to preserve the total mass and stays well conditioned for higher-order elements. PolyFEM switches to hrz by itself when row_sum turns out ill-conditioned, so this rarely needs changing."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_max_iterations"
+                label   "Max Iterations (AL Phase)"
+                type    integer
+                default { "500" }
+                range   { 1 1000 }
+                help    "Newton iteration limit used during the boundary-condition (augmented Lagrangian) phase. Same as Max Iterations unless you change it."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_budget_heading"
+                label   "AL Phase Budget (RB-07)"
+                type    label
+                default { "AL Phase Budget (RB-07)" }
+                parmtag { "sidefx::look" "heading" }
+            }
+            parm {
+                name    "al_max_passes"
+                label   "Max AL Passes"
+                type    integer
+                default { "0" }
+                range   { 0 100 }
+                help    "Maximum number of augmented Lagrangian passes before declaring the AL phase failed. 0 = unlimited (PolyFEM default)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_stagnation_window"
+                label   "Stagnation Window"
+                type    integer
+                default { "0" }
+                range   { 0 20 }
+                help    "Number of consecutive AL passes at the max-weight ceiling without sufficient error reduction before stopping the stage. 0 = disabled (PolyFEM default)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_progress_tol"
+                label   "Progress Tolerance"
+                type    float
+                default { "0.01" }
+                disablewhen "{ al_stagnation_window == 0 }"
+                range   { 0 1 }
+                help    "Minimum relative AL error reduction over the stagnation window to count as making progress (default 0.01 = 1%)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_snap_tol"
+                label   "Snap Tolerance"
+                type    float
+                default { "0.01" }
+                disablewhen "{ al_stagnation_window == 0 }"
+                range   { 0 1 }
+                help    "Maximum AL error considered close enough to snap-converge when stagnated at the weight ceiling (default 0.01)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "al_drift_tol"
+                label   "Drift Tolerance"
+                type    float
+                default { "0.01" }
+                disablewhen "{ al_stagnation_window == 0 }"
+                range   { 0 1 }
+                help    "Maximum relative displacement drift over the stagnation window used to detect plateaued AL passes (default 0.01)."
+                parmtag { "script_callback_language" "python" }
+            }
+        }

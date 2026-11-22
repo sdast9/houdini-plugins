@@ -1,0 +1,126 @@
+// One line per physical node per family. PolyFEM exports the unchanged
+// simulation/world reference direction a0; geometry[].transformation never
+// rotates it. Fibers are LINE fields (a0 and -a0 are the same fiber), so
+// colour by |direction| and never by sign.
+if (chi("../show_fibers") == 0) return;
+if (haspointattrib(0, "coincident_rep")
+    && float(point(0, "coincident_rep", @ptnum)) < 0.5)
+    return;
+int sample_id = @ptnum;
+if (haspointattrib(0, "coincident_id")) {
+    float cid = point(0, "coincident_id", @ptnum);
+    sample_id = (int)rint(cid);
+}
+if (sample_id % max(1, chi("../fiber_stride")) != 0) return;
+
+string wanted = chs("../fiber_family");
+string names[] = split(chs("../fiber_attribs"));
+string frame = chs("../fiber_frame");
+float scale = chf("../fiber_scale");
+int mode = chi("../fiber_color_mode");
+
+// PolyFEM flattens tensors column-major: F_1..F_3 are the COLUMNS, while
+// set(a, b, c) fills rows -- transpose to recover the true matrix (same
+// convention as the derived-fields wrangle).
+matrix3 F = ident();
+int has_f = 0;
+if (haspointattrib(0, "F_mat")) {
+    F = matrix3(point(0, "F_mat", @ptnum));
+    has_f = 1;
+} else if (haspointattrib(0, "F_1") && haspointattrib(0, "F_2") && haspointattrib(0, "F_3")) {
+    F = transpose(set(point(0, "F_1", @ptnum), point(0, "F_2", @ptnum),
+                      point(0, "F_3", @ptnum)));
+    has_f = 1;
+}
+
+int family = 0;
+foreach (string name; names) {
+    family++;
+    if (wanted != "all" && wanted != name) continue;
+    if (!haspointattrib(0, name)) continue;
+    vector a0 = point(0, name, @ptnum);
+    if (length(a0) < 1e-12) continue;
+    a0 = normalize(a0);
+
+    // Fiber kinematics used by PolyFEM's constitutive invariants:
+    //   current direction = normalize(F a0)
+    //   I4 = a0^T C a0 = |F a0|^2
+    // HGOFiber/ActiveFiber use isochoric I4bar; HGODispersion uses full I4.
+    vector current = a0;
+    float stretch = 1.0;
+    float isochoric_stretch = 1.0;
+    float direction_change = 0.0;
+    if (has_f) {
+        // F * a0 in column convention; VEX multiplies row-vectors, so the
+        // matching product is a0 * transpose(F).
+        vector pushed = a0 * transpose(F);
+        stretch = length(pushed);
+        if (stretch > 1e-12) {
+            current = pushed / stretch;
+            float J = max(abs(determinant(F)), 1e-12);
+            isochoric_stretch = stretch / pow(J, 1.0 / 3.0);
+            // Fibers are unoriented lines: compare a0 with +/-current.
+            direction_change = degrees(acos(
+                clamp(abs(dot(a0, current)), 0.0, 1.0)));
+        }
+    }
+
+    vector dirs[] = {};
+    float dims[] = {};
+    string frames[] = {};
+    if (frame == "reference" || frame == "both") {
+        append(dirs, a0);
+        append(dims, frame == "both" ? 0.45 : 1.0);
+        append(frames, "reference_a0");
+    }
+    if ((frame == "deformed" || frame == "both") && has_f) {
+        if (stretch > 1e-12) {
+            append(dirs, current);
+            append(dims, 1.0);
+            append(frames, "current_normalized_Fa0");
+        }
+    }
+
+    int index = 0;
+    foreach (vector d; dirs) {
+        vector colour;
+        if (mode == 0)
+            colour = abs(d);
+        else if (mode == 1)
+            colour = set(float(family % 3 == 1), float(family % 3 == 2),
+                         float(family % 3 == 0));
+        else if (mode == 3)
+            // Blue contraction -> white unchanged -> red extension.
+            colour = stretch < 1.0
+                ? lerp(set(0.0, 0.2, 1.0), set(1.0, 1.0, 1.0),
+                       clamp(stretch, 0.0, 1.0))
+                : lerp(set(1.0, 1.0, 1.0), set(1.0, 0.1, 0.0),
+                       clamp(stretch - 1.0, 0.0, 1.0));
+        else if (mode == 4)
+            // Blue=no reorientation, red=90 degrees (line-sign invariant).
+            colour = lerp(set(0.0, 0.2, 1.0), set(1.0, 0.0, 0.0),
+                          clamp(direction_change / 90.0, 0.0, 1.0));
+        else
+            colour = chv("../fiber_color");
+        colour *= dims[index];
+        int a = addpoint(0, @P - 0.5 * scale * d);
+        int b = addpoint(0, @P + 0.5 * scale * d);
+        int line = addprim(0, "polyline", a, b);
+        setpointattrib(0, "Cd", a, colour, "set");
+        setpointattrib(0, "Cd", b, colour, "set");
+        setprimattrib(0, "fiber_family", line, name, "set");
+        setprimattrib(0, "fiber_drawn_frame", line, frames[index], "set");
+        setprimattrib(0, "fiber_reference_direction", line, a0, "set");
+        setprimattrib(0, "fiber_current_direction", line, current, "set");
+        setprimattrib(0, "fiber_stretch", line, stretch, "set");
+        setprimattrib(0, "fiber_isochoric_stretch", line,
+                      isochoric_stretch, "set");
+        setprimattrib(0, "fiber_I4", line, stretch * stretch, "set");
+        setprimattrib(0, "fiber_I4bar", line,
+                      isochoric_stretch * isochoric_stretch, "set");
+        setprimattrib(0, "fiber_direction_change_degrees", line,
+                      direction_change, "set");
+        setprimgroup(0, "readpvd_fibers", line, 1, "set");
+        index++;
+    }
+}

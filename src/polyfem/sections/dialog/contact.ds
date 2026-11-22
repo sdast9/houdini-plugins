@@ -1,0 +1,681 @@
+    group {
+        name    "Main_5"
+        label   "Contact"
+
+        parm {
+            name    "enable"
+            label   "Enable Contact"
+            type    toggle
+            default { "1" }
+            help    "Detect and resolve collisions between bodies (and self-collisions) with the IPC barrier method: surfaces are kept a small gap apart and can never pass through each other. Turn off if nothing can touch, to save the collision-detection cost."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "sepparm11"
+            label   "Spacer"
+            type    separator
+            default { "" }
+            parmtag { "sidefx::layout_height" "small" }
+            parmtag { "sidefx::look" "blank" }
+        }
+        group {
+            name    "barrier_tab"
+            label   "Barrier (IPC)"
+            disablewhentab "{ enable == 0 }"
+            hidewhentab "{ enable == 0 }"
+
+            parm {
+                name    "dhat"
+                label   "Contact Distance (dhat)"
+                type    log
+                default { "0.001" }
+                disablewhen "{ enable == 0 }"
+                range   { 1e-12! 10 }
+                help    "Barrier activation distance (length units): surfaces closer than dhat start repelling each other, so they always stay at least a fraction of dhat apart. Use about 1e-3 of your model size (Calc Min Edge shows the smallest mesh edge as a guide); much smaller values make contact harder to solve, much larger ones leave a visible gap."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "sepparm15"
+                label   "Spacer"
+                type    separator
+                default { "" }
+                parmtag { "sidefx::layout_height" "small" }
+                parmtag { "sidefx::look" "blank" }
+            }
+            parm {
+                name    "min_edge_button"
+                label   "Calc Min Edge Length"
+                type    button
+                joinnext
+                default { "0" }
+                disablewhen "{ enable == 0 }"
+                help    "Measure the shortest edge of all loaded meshes and show it in Min Edge Length, to help choose dhat (dhat should be well below the smallest edge)."
+                parmtag { "script_callback" "hou.pwd().hm().deter_min_edge(kwargs)" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "min_edge"
+                label   "Min Edge Length"
+                type    string
+                nolabel
+                joinnext
+                default { "-1" }
+                disablewhen "{ working_dir != __polyfem_report_edit_sentinel__ }"
+                help    "Shortest mesh edge found by Calc Min Edge (length units). Read-only reference; -1 means not computed yet."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "suggest_dhat_button"
+                label   "Set dhat (0.001 × Diag)"
+                type    button
+                default { "0" }
+                disablewhen "{ enable == 0 }"
+                help    "Set dhat to 0.001 times the bounding-box diagonal of the loaded enabled geometries (a typical starting point matching Check Setup's guidance)."
+                parmtag { "script_callback" "hou.pwd().hm().suggest_dhat(kwargs)" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "sepparm12"
+                label   "Spacer"
+                type    separator
+                default { "" }
+                parmtag { "sidefx::layout_height" "small" }
+                parmtag { "sidefx::look" "blank" }
+            }
+            parm {
+                name    "barrier_mode"
+                label   "Barrier Stiffness Mode"
+                type    ordinal
+                default { "0" }
+                disablewhen "{ enable == 0 }"
+                menu {
+                    "semi_implicit" "Semi-Implicit (per-contact, recommended)"
+                    "adaptive"      "Adaptive (classic IPC)"
+                    "fixed"         "Fixed Value"
+                }
+                help    "How the strength of the contact barrier is chosen. Semi-Implicit (recommended): each contact gets its own stiffness from the local material stiffness, kept in a healthy gap band by a global trim controller with stall recovery, and carried over between steps (force continuation) -- the robust choice for stiff or quasistatic contact. Adaptive: classic IPC heuristic that grows the stiffness when surfaces get too close. Fixed: one value you set."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "barrier_stiffness"
+                label   "Fixed Barrier Stiffness"
+                type    log
+                default { "1e8" }
+                disablewhen "{ enable == 0 } { barrier_mode != fixed }"
+                range   { 1000 1e+30 }
+                help    "The single barrier stiffness used in Fixed mode (stress-like units). Rule of thumb: 10-100 times your largest Young's modulus. Too low lets surfaces get very close; too high makes the solve ill-conditioned."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "initial_barrier_stiffness"
+                label   "Initial Barrier Stiffness"
+                type    log
+                default { "1" }
+                disablewhen "{ enable == 0 } { barrier_mode != adaptive }"
+                range   { 1 1e+30 }
+                help    "Starting stiffness for the classic Adaptive heuristic; PolyFEM then raises it automatically when the gap gets too small."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "dhat_epsilon_scale"
+                label   "Adaptive Distance Scale"
+                type    log
+                default { "1e-09" }
+                disablewhen "{ enable == 0 } { barrier_mode != adaptive }"
+                hidewhen "{ expert_mode == 0 }"
+                range   { 0 1 }
+                help    "Passed to ipc::update_barrier_stiffness in transient Adaptive mode (default 1e-9): stiffness is doubled only while the minimum distance is below dhat_epsilon_scale * bbox_diagonal and still decreasing. Expert Mode only; omitted from JSON when at default."
+                parmtag { "script_callback_language" "python" }
+            }
+            groupcollapsible {
+                name    "semi_implicit_folder"
+                label   "Semi-Implicit Options"
+                hidewhen "{ expert_mode == 0 }"
+                hidewhentab "{ expert_mode == 0 }"
+                disablewhentab "{ barrier_mode != semi_implicit }"
+
+                parm {
+                    name    "si_trim_lower"
+                    label   "Trim Band Lower"
+                    type    log
+                    default { "0.5" }
+                    range   { 1e-08 1 }
+                    help    "Lower edge of the gap band, as a fraction of dhat^2. When the average active gap drops below it the global stiffness trim is raised, keeping contacts from being crushed. 0.5 actively centers the gap high in the band and stiffens the barrier as the load grows (essential for obstacle-driven contact); lower values turn the controller into a collapse-only safety net."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_trim_upper"
+                    label   "Trim Band Upper"
+                    type    float
+                    default { "0.9" }
+                    range   { 0.01 1 }
+                    help    "Upper edge of the gap band, as a fraction of dhat^2. When the average active gap sits above it the global trim is lowered so the barrier stops dominating the elasticity."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_trim_factor"
+                    label   "Trim Factor"
+                    type    float
+                    default { "2" }
+                    range   { 1.1 16 }
+                    help    "Multiplier by which the global trim moves at each controller step (up when the gap collapses, down when it is pinned above the band). 2 doubles/halves; larger values react faster but less smoothly."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_band_statistic"
+                    label   "Band Statistic"
+                    type    ordinal
+                    default { "0" }
+                    menu {
+                        "rms"            "RMS (production, recommended)"
+                        "force_weighted" "Force-Weighted (experimental)"
+                    }
+                    help    "Gap statistic the global trim band compares with its edges. RMS (production, recommended) is the root-mean-square gap of the active contacts, each weighted by its contact weight, so a contact the solver records once or splits in two gives the same value. Force-Weighted (experimental) weights normalized gaps by each contact's local barrier force; it is cheaper on some scenes but loops on contact-dense ones unless its downward guard is evaluated on each contact's own gap, so it is always exported with collapse_guard_basis: pair (EF-07). It first needs an agreed accuracy standard for trajectory-sensitive scenes, and repeat evidence on dynamic scenes not used for tuning, before it can be considered for adoption. It does not change the coefficient law."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_band_statistic_warning"
+                    label   "Warning"
+                    type    label
+                    default { "Experimental: Production (RMS) is recommended. Exported with collapse_guard_basis: pair. Needs an agreed accuracy standard for trajectory-sensitive scenes and repeat evidence on untuned dynamic scenes before adoption." }
+                    hidewhen "{ si_band_statistic == rms }"
+                    parmtag { "sidefx::look" "block" }
+                }
+                parm {
+                    name    "si_initial_trim_estimate"
+                    label   "Initial Trim Estimate"
+                    type    toggle
+                    default { "0" }
+                    help    "Experimental: estimate the first trim from the off-equilibrium elastic/barrier gradient balance. Disabled by default; the collapse guard remains active."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_kappa_spread"
+                    label   "Stiffness Spread Cap"
+                    type    log
+                    default { "10000" }
+                    range   { 10 1e+08 }
+                    help    "Allowed spread of the per-contact stiffnesses within one refresh: each is capped at this multiple of the batch median and floored at the median divided by it. Guards against crushed-element Hessian blow-ups. For thin structures under extreme stretch, larger values (1e8) let taut-membrane hotspots keep their full local stiffness."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_conditioning_cap"
+                    label   "Conditioning Cap"
+                    type    log
+                    default { "1000" }
+                    range   { 10 1e+06 }
+                    help    "When contact first appears unloaded (no force balance to calibrate against), cap the barrier's effective stiffness at this multiple of the largest system-Hessian entry. Bounds the dynamic range of the linear system until the load provides a calibration signal. Dimensionless; raise to loosen."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_controller_interval"
+                    label   "Controller Interval"
+                    type    integer
+                    default { "30" }
+                    range   { 0 200 }
+                    help    "How many Newton iterations between downward trim steps while the gap stays pinned above the band inside a solve. 0 disables the in-solve downward step."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_refresh_interval"
+                    label   "Refresh Interval"
+                    type    integer
+                    default { "0" }
+                    range   { 0 50 }
+                    help    "0 (recommended) = re-estimate per-contact stiffness only at the start of each solve and on stall restarts, keeping the objective fixed within a solve. N > 0 additionally refreshes every N Newton iterations (experimental)."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_restart_enabled"
+                    label   "Stall Restart"
+                    type    toggle
+                    default { "1" }
+                    help    "Detect a stalled line search (tiny steps for several iterations) and restart the solve with the barrier stiffness retuned. Leave on; it rescues solves that would otherwise grind to a halt."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_alpha_threshold"
+                    label   "Stall Alpha Threshold"
+                    type    log
+                    default { "0.01" }
+                    disablewhen "{ si_restart_enabled == 0 }"
+                    range   { 1e-08 0.1 }
+                    help    "A Newton iteration counts as stalled when its line-search step is smaller than this fraction of a full step (0.01 = 1%)."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_patience"
+                    label   "Stall Patience"
+                    type    integer
+                    default { "5" }
+                    disablewhen "{ si_restart_enabled == 0 }"
+                    range   { 1 50 }
+                    help    "Number of consecutive stalled iterations before a restart is triggered."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_soft_iteration_limit"
+                    label   "Soft Iteration Limit"
+                    type    integer
+                    default { "100" }
+                    disablewhen "{ si_restart_enabled == 0 }"
+                    range   { -1 500 }
+                    help    "Restart with retuned stiffness after this many Newton iterations even without a detected stall (-1 disables). Keep it below the solver's hard Max Iterations."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_max_restarts"
+                    label   "Max Restarts"
+                    type    integer
+                    default { "200" }
+                    disablewhen "{ si_restart_enabled == 0 }"
+                    range   { 0 500 }
+                    help    "Maximum number of stall restarts per solve. If nothing changes between two restarts the solver stops early instead of repeating identical attempts. A snap-through past a structural limit (for example an inflation passing its pressure maximum) can need well over 100."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_min_iterations"
+                    label   "Stall Min Iterations"
+                    type    integer
+                    default { "5" }
+                    disablewhen "{ si_restart_enabled == 0 }"
+                    range   { 0 100 }
+                    help    "Newton iterations that must have run before a stall may trigger a restart, so a slow start is not mistaken for a stall."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_stall_trim_factor"
+                    label   "Stall Trim Factor"
+                    type    float
+                    default { "2" }
+                    disablewhen "{ si_restart_enabled == 0 }"
+                    range   { 1.1 16 }
+                    help    "Multiplier applied to the global trim at a stall restart (up when the gap is collapsed, down when the barrier is too stiff)."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_sep_continuation"
+                    label   "Spacer"
+                    type    separator
+                    default { "" }
+                    parmtag { "sidefx::layout_height" "small" }
+                    parmtag { "sidefx::look" "blank" }
+                }
+                parm {
+                    name    "si_force_continuation"
+                    label   "Force Continuation"
+                    type    toggle
+                    default { "1" }
+                    help    "Carry each contact's stiffness over from the end of the previous step instead of re-estimating it (on, recommended). This keeps the contact forces exactly continuous across steps -- the published result of a step is a true equilibrium of the state the next step starts from -- and removes the 5-50% force jumps re-estimation caused. New contacts still get the local-stiffness estimate when they first appear. Off restores the older re-estimating behavior."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_continuation_max_ratio"
+                    label   "Continuation Max Ratio"
+                    type    float
+                    default { "0" }
+                    disablewhen "{ si_force_continuation == 0 }"
+                    range   { 0 16 }
+                    help    "With Force Continuation: 0 = pure continuation (a contact's stiffness never changes once set). A value r > 1 lets the fresh local-stiffness estimate pull a carried-over stiffness by at most a factor r per step, e.g. 2 allows halving or doubling. Rarely needed."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_coefficient_identity"
+                    label   "Coefficient Identity"
+                    type    ordinal
+                    default { "0" }
+                    menu {
+                        "parent"    "Parent Candidate (recommended)"
+                        "stencil"   "Built Stencil (historical)"
+                    }
+                    help    "What a contact stiffness is attached to. Parent Candidate (recommended): the pair of mesh features (point/edge in 2D, point/triangle or edge/edge in 3D) that generated the contact, so the stiffness follows the contact when the closest sub-feature switches and the contact energy stays continuous. Built Stencil: the historical keying on the exact sub-feature, kept only for comparison."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_friction_lag"
+                    label   "Friction Lag"
+                    type    ordinal
+                    default { "0" }
+                    menu {
+                        "realized_force"    "Realized Force (recommended)"
+                        "follow_stiffness"  "Follow Stiffness (historical)"
+                    }
+                    help    "Which contact pressure the friction of a step is based on. Friction is lagged: it uses the pressures from the end of the previous step. Realized Force (recommended): exactly the pressures that acted there. Follow Stiffness (historical): those pressures rescaled whenever the solver's barrier-stiffness controller changes its trim during the step -- but a trim change moves the contact gap, not the equilibrium pressure, so this can double the friction capacity for the rest of a step and make a sliding contact stick for one step. Kept for comparison with results computed before the RB-10 friction study."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_trial_displacement_cap"
+                    label   "Trial Displacement Cap"
+                    type    float
+                    default { "50" }
+                    range   { 1 1000 }
+                    help    "Largest surface displacement a single Newton trial step may propose, in multiples of dhat. Caps the collision-detection sweep so a wild step cannot cost enormous broad-phase time or memory. 50 is a safe default; the cap never affects converged results."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_kappa_min"
+                    label   "Minimum Contact Stiffness"
+                    type    log
+                    default { "0" }
+                    range   { 0 1e+12 }
+                    help    "Absolute lower bound on every per-contact stiffness coefficient (in the units the log reports for the refresh batch), applied after the batch cap and floor. 0 = no user floor; the relative floor from Stiffness Spread Cap usually makes this unnecessary."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_clamped_contacts"
+                    label   "Clamped Contacts Handling"
+                    type    ordinal
+                    default { "0" }
+                    menu {
+                        "exclude_statistics"    "Exclude from Statistics (default)"
+                        "keep"                  "Keep (historical)"
+                        "exclude_collisions"    "Exclude Collisions"
+                    }
+                    help    "How fully-clamped (all-Dirichlet) contact pairs are handled by the semi-implicit controller. Exclude from Statistics (default): keep the barrier active but omit clamped pairs from controller gap statistics. Keep: include them in statistics (historical). Exclude Collisions: drop fully-clamped collision candidates altogether."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "si_gradient_balance_dofs"
+                    label   "Gradient Balance DOFs"
+                    type    ordinal
+                    default { "0" }
+                    menu {
+                        "all"   "All DOFs (default)"
+                        "free"  "Free DOFs Only"
+                    }
+                    help    "Which degrees of freedom are included when estimating semi-implicit contact stiffness by gradient balance. All DOFs (default): full system gradient. Free DOFs Only: zero out Dirichlet rows so clamped boundaries do not skew the stiffness estimate."
+                    parmtag { "script_callback_language" "python" }
+                }
+            }
+            parm {
+                name    "sepparm13"
+                label   "Spacer"
+                type    separator
+                default { "" }
+                parmtag { "sidefx::layout_height" "small" }
+                parmtag { "sidefx::look" "blank" }
+            }
+            parm {
+                name    "area_weighted"
+                label   "Use Convergent Formulation (Area Weighted)"
+                type    toggle
+                default { "0" }
+                disablewhen "{ enable == 0 }"
+                help    "Use the convergent (area-weighted) IPC formulation, where each contact is weighted by the surface area it represents so results converge under mesh refinement. Required for remeshing (turned on automatically then). Adaptive and Fixed modes get the full convergent formulation (area weighting, duplicate removal and the physical barrier). Semi-Implicit mode gets area weighting only (it does not support the physical barrier; duplicate removal is the separate toggle below); the semi-implicit mode has been validated with this off."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "improved_max"
+                label   "Remove Duplicate Contacts (Improved Max)"
+                type    toggle
+                default { "0" }
+                disablewhen "{ enable == 0 } { barrier_mode != semi_implicit } { gcp_enable == 1 }"
+                help    "Semi-Implicit mode only, experimental. Standard IPC counts a point that sits on (or within dhat of) a vertex of the other surface twice: once against each neighbouring edge or face, plus a vertex-vertex term whose push has a sideways part. On meshes whose surface nodes line up across an interface (matching or regularly refined meshes) that duplicate term pushes the node pairs apart tangentially and shows up as spurious sliding. This toggle turns on IPC's improved max operator, which subtracts the duplicate, with each term keeping its own per-contact stiffness (the signed parent law; needs Coefficient Identity = Parent Candidate). Verified in 2D frictionless tests; 3D seams and friction are not yet validated, so it is off by default. In Adaptive and Fixed modes the operator is already part of the convergent formulation above."
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "barrier_tab_1"
+            label   "Geometric Contact (GCP)"
+            disablewhentab "{ enable == 0 }"
+            hidewhentab "{ enable == 0 }"
+
+            parm {
+                name    "gcp_enable"
+                label   "Enable"
+                type    toggle
+                default { "0" }
+                disablewhen "{ enable == 0 } { barrier_mode == semi_implicit }"
+                help    "Use the Geometric Contact Potential (smooth, orientation-aware contact) instead of the standard IPC barrier. Experimental; not supported together with the semi-implicit barrier mode (switch Barrier Stiffness Mode to Adaptive or Fixed first)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adapt_dhat"
+                label   "Adaptive dhat"
+                type    toggle
+                joinnext
+                default { "0" }
+                disablewhen "{ enable == 0 } { gcp_enable == 0 }"
+                help    "GCP only: computed once from the rest shape, every surface vertex, edge and face gets its own barrier activation distance, the smaller of dhat and Min dist ratio times its distance to the nearest other surface at rest. Surfaces that start close together (thin gaps, self-contact) are then not pushed apart by the barrier. Off = one global dhat everywhere. The standard IPC barrier has no adaptive dhat, so this is ignored and not exported when GCP is off."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "min_dist_ratio"
+                label   "Min dist ratio"
+                type    log
+                default { "0.5" }
+                disablewhen "{ enable == 0 } { gcp_enable == 0 } { adapt_dhat == 0 }"
+                range   { 0! 1 }
+                help    "With Adaptive dhat (GCP only): fraction of each surface element's rest-pose distance to the nearest other surface that becomes its local activation distance (never larger than dhat). Smaller values let surfaces get closer before the barrier acts; 0.5 is the reference value."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "alpha_t"
+                label   "Tangent Angle Control"
+                type    float
+                default { "0.5" }
+                disablewhen "{ enable == 0 } { gcp_enable == 0 }"
+                range   { -1! 1! }
+                help    "GCP: smoothness of the tangent-angle test that decides which surface pairs interact. Between -1 and 1; 0.5 is the reference value."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "alpha_n"
+                label   "Normal Angle Control"
+                type    float
+                default { "0.5" }
+                disablewhen "{ enable == 0 } { gcp_enable == 0 }"
+                range   { -1! 1! }
+                help    "GCP: smoothness of the normal-angle test that decides which surface pairs interact. Between -1 and 1; 0.5 is the reference value."
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "barrier_tab_2"
+            label   "Friction"
+            disablewhentab "{ enable == 0 }"
+            hidewhentab "{ enable == 0 }"
+
+            parm {
+                name    "cof"
+                label   "Friction Coefficient (mu)"
+                type    float
+                default { "0" }
+                disablewhen "{ enable == 0 }"
+                range   { 0! 1 }
+                help    "Coefficient of friction between all surfaces (0 = frictionless, 0.3-0.5 typical for dry contact, ~1 for rubber). The same value applies to every contact pair."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "epsv"
+                label   "Static Friction Velocity (epsv)"
+                type    log
+                default { "0.001" }
+                disablewhen "{ enable == 0 }"
+                range   { 1e-06 1 }
+                help    "Friction smoothing velocity (length per time): sliding slower than this is treated as sticking with a smooth transition. Smaller values are closer to true stick/slip but harder to solve; a few percent of the typical sliding speed works well."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "friction_iterations"
+                label   "Friction Iterations"
+                type    integer
+                default { "2" }
+                disablewhen "{ enable == 0 }"
+                range   { 0 10 }
+                help    "Number of times per step the friction forces are updated with the new sliding state (lagged friction, as in the IPC paper). The first solve of a step uses the contact pressures of the previous step; each further iteration rebuilds them from the new result and re-solves. 2 (recommended, the default since the RB-10 friction study) corrects the lag once: with 1 the friction of a contact whose pressure grows during the step is understated -- a few percent on steady sliding, up to half the friction work when the load doubles each step -- at roughly 25% more solver iterations. Use 1 for the classic single-solve IPC behavior, -1 to iterate until the friction converges, 0 to disable friction."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "friction_convergence_tol"
+                label   "Friction Convergence Tolerance"
+                type    log
+                default { "0.01" }
+                disablewhen "{ enable == 0 }"
+                range   { 0 1 }
+                help    "Stop the friction update iterations early when the solution changes by less than this relative amount."
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "barrier_tab_3"
+            label   "Adhesion"
+            disablewhentab "{ enable == 0 }"
+            hidewhentab "{ enable == 0 }"
+
+            parm {
+                name    "adhesion_enable"
+                label   "Enable"
+                type    toggle
+                default { "0" }
+                help    "Add adhesion (sticking) between surfaces that come within dhat active of each other, e.g. for wet or tacky contact. Off = contact only repels."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "dhat_p"
+                label   "Adhesion Peak Distance (dhat_p)"
+                type    log
+                default { "0.001" }
+                disablewhen "{ adhesion_enable == 0 }"
+                range   { 0! 1 }
+                help    "Distance (length units) at which the normal adhesion force is strongest. Must be smaller than dhat active."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "dhat_a"
+                label   "Adhesion Range (dhat_a)"
+                type    log
+                default { "0.01" }
+                disablewhen "{ adhesion_enable == 0 }"
+                range   { 0! 1 }
+                help    "Distance (length units) at which adhesion starts to act; beyond it surfaces do not attract each other."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adhesion_strength"
+                label   "Adhesion Strength"
+                type    log
+                default { "0.001" }
+                disablewhen "{ adhesion_enable == 0 }"
+                range   { 0 1 }
+                help    "Strength of the normal (pull-together) adhesion force, in stress-like units."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "tangent_coeff"
+                label   "Tangential Adhesion Coefficient"
+                type    log
+                default { "0" }
+                disablewhen "{ adhesion_enable == 0 }"
+                range   { 0! 1 }
+                help    "Coefficient of tangential adhesion: resistance to sliding while adhered, analogous to a friction coefficient. 0 = no tangential adhesion."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adhesion_epsa"
+                label   "Adhesion Slip Velocity (epsa)"
+                type    log
+                default { "0.001" }
+                disablewhen "{ adhesion_enable == 0 }"
+                range   { 1e-06! 1 }
+                help    "Smoothing velocity for tangential adhesion (length per time), like epsv for friction: slower sliding is treated as stuck with a smooth transition. Default 0.001, PolyFEM's own default and the same as epsv."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "tangent_iter"
+                label   "Tangential Iterations"
+                type    integer
+                default { "1" }
+                disablewhen "{ adhesion_enable == 0 }"
+                range   { 0! 10 }
+                help    "Number of lagged updates per step of the tangential adhesion forces (like Friction Iterations)."
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "barrier_tab_4"
+            label   "CCD Parameters"
+            tabbreak
+            disablewhentab "{ enable == 0 }"
+            hidewhentab "{ enable == 0 }"
+
+            parm {
+                name    "broad_phase"
+                label   "Broad Phase"
+                type    ordinal
+                default { "3" }
+                disablewhen "{ enable == 0 }"
+                menu {
+                    "hash_grid"                     "Hash Grid"
+                    "brute_force"                   "Brute Force"
+                    "spatial_hash"                  "Spatial Hash"
+                    "BVH"                           "BVH"
+                    "sweep_and_prune"               "Sweep and Prune"
+                    "sweep_and_tiniest_queue_gpu"   "Sweep and Tiniest Queue (GPU)"
+                }
+                help    "Method used to quickly find candidate pairs of nearby surface elements before exact collision detection. BVH (the default) and Hash Grid are fast general choices; Brute Force checks everything (only for tiny meshes); GPU variants need a CUDA build. Memory: BVH and Sweep and Prune only ever store the pairs that really overlap, while Hash Grid (and Spatial Hash) first spread every element over the grid cells it sweeps through in a trial step -- when a few points fly very far in one solver step that can suddenly need gigabytes. Resource Limits below guard the Hash Grid and Brute Force cases."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "CCD_tolerance"
+                label   "CCD Tolerance"
+                type    float
+                default { "1e-06" }
+                disablewhen "{ enable == 0 }"
+                range   { 1e-12! 10 }
+                help    "Accuracy of continuous collision detection when computing how far a step may move before surfaces would touch. Smaller = more accurate but slower; 1e-6 is standard. Must be greater than 0 (at 0 the collision check never finishes)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "ccd_max_iterations"
+                label   "CCD Max Iterations"
+                type    intlog
+                default { "1e+06" }
+                disablewhen "{ enable == 0 }"
+                range   { 1000 1e+12 }
+                help    "Iteration cap for the continuous collision detection root finder. The default is large enough for all practical cases."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "resource_limits"
+                label   "Resource Limits"
+                type    ordinal
+                default { "0" }
+                disablewhen "{ enable == 0 }"
+                menu {
+                    "automatic" "Automatic (recommended)"
+                    "off"       "Off"
+                    "custom"    "Custom"
+                }
+                help    "Safety stop for the memory the contact search may use in one solver step. Before every trial step the solver lists the pairs of surface elements that might touch. With the Hash Grid or Brute Force broad phase that list can suddenly need gigabytes when a few points move very far in one trial step (a wild Newton step) -- and without a limit the operating system simply kills the run, with no message. Automatic (recommended) uses PolyFEM's built-in ceilings (100 million grid items, about 2.4 GB, and 50 million candidate pairs per pass, about 1.75 GB); real scenes stay thousands of times below them (the example scenes use a few thousand items). The ceilings only apply with Hash Grid or Brute Force; with BVH (the default here), Spatial Hash or Sweep and Prune they are skipped with a note in the log, and BVH does not have this memory problem. Off removes the ceilings: an oversized step can then exhaust memory and be killed. Custom lets you set both ceilings yourself. When a ceiling is reached the run stops cleanly with exit status 3 and an explanation at the end of the log; every step already written to the output folder is kept. To get past it: reduce the time step or the load increment, switch the broad phase to BVH, or raise the ceiling."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "resource_max_cell_items"
+                label   "Max Grid Items"
+                type    integer
+                default { "100000000" }
+                disablewhen "{ enable == 0 } { resource_limits != custom }"
+                hidewhen "{ resource_limits != custom }"
+                range   { 0! 1000000000 }
+                help    "Custom ceiling on the (element, grid cell) entries the Hash Grid may create while listing candidate pairs for one trial step; each entry costs about 24 bytes of scratch memory. A few points sweeping a long way cover (distance / cell size) cubed cells each, which is what makes this number explode. 100 million is about 2.4 GB. 0 = no ceiling on this quantity. Only the Hash Grid counts these (Brute Force has no grid)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "resource_max_candidate_emissions"
+                label   "Max Candidate Pairs"
+                type    integer
+                default { "50000000" }
+                disablewhen "{ enable == 0 } { resource_limits != custom }"
+                hidewhen "{ resource_limits != custom }"
+                range   { 0! 1000000000 }
+                help    "Custom ceiling on the candidate element pairs one search pass may produce before they are filtered down to the pairs that really overlap; each costs about 35 bytes of scratch memory. This number grows when everything moves a long way at once. 50 million is about 1.75 GB. 0 = no ceiling on this quantity. Counted by Hash Grid and Brute Force."
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+    }

@@ -1,0 +1,130 @@
+    group {
+        name    "Main_2"
+        label   "Global"
+
+        parm {
+            name    "rhs_vec"
+            label   "Body Load (rhs = minus acceleration)"
+            type    string
+            size    3
+            default { "0" "0" "0" }
+            help    "Body force per unit mass applied everywhere, for X, Y, Z; PolyFEM multiplies by each material's density. Sign convention: rhs is the NEGATIVE of acceleration, so gravity pulling down along -Y is entered as 0, 9.81, 0. Plain numbers or PolyFEM TinyExpr formulas of x, y, z, t without quotes (quotes are also accepted). Leave at 0, 0, 0 for no body force."
+            parmtag { "script_callback" "hou.pwd().hm().sync_expr_vector(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "set_gravity_y"
+            label   "Set Gravity (-Y)"
+            type    button
+            joinnext
+            default { "0" }
+            help    "Fill Body Load with standard downward gravity along -Y using PolyFEM's rhs = -acceleration sign convention (0, +9.81, 0 in m/s^2, automatically scaled to the active Global > Units)."
+            parmtag { "script_callback" "hou.pwd().hm().set_gravity_y(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "clear_body_load"
+            label   "Clear Body Load"
+            type    button
+            default { "0" }
+            help    "Reset Body Load to 0, 0, 0 (no body force / gravity off)."
+            parmtag { "script_callback" "hou.pwd().hm().clear_body_load(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "RHS"
+            label   "Body Load (legacy)"
+            type    string
+            invisible
+            default { "[0, 0, 0]" }
+            help    "Legacy JSON-list storage kept hidden for compatibility with older scenes."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "sepparm7"
+            label   "Separator"
+            type    separator
+            default { "" }
+        }
+        parm {
+            name    "units"
+            label   "Units (optional)"
+            type    toggle
+            default { "0" }
+            help    "Tell PolyFEM which physical units your mesh and material values use, so that tolerances and logs are scaled consistently. Optional: when off, everything is treated as dimensionless but self-consistent (e.g. all SI)."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "length"
+            label   "Length"
+            type    string
+            default { "m" }
+            disablewhen "{ units == 0 }"
+            menureplace {
+                "m"     "m (meters)"
+                "cm"    "cm (centimeters)"
+                "mm"    "mm (millimeters)"
+                "um"    "um (micrometers)"
+            }
+            help    "Length unit of the mesh coordinates and displacements (pick a preset or type any unit, e.g. m, mm, cm)."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "mass"
+            label   "Mass"
+            type    string
+            default { "kg" }
+            disablewhen "{ units == 0 }"
+            menureplace {
+                "kg"    "kg (kilograms)"
+                "g"     "g (grams)"
+                "tonne" "tonne (metric tons, mm-tonne-s -> MPa/N)"
+            }
+            help    "Mass unit used by densities and forces (pick a preset or type any unit, e.g. kg, g, tonne)."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "time"
+            label   "Time"
+            type    string
+            default { "s" }
+            disablewhen "{ units == 0 }"
+            menureplace {
+                "s"     "s (seconds)"
+                "ms"    "ms (milliseconds)"
+            }
+            help    "Time unit of dt, t and time expressions (pick a preset or type any unit, e.g. s, ms)."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "char_length"
+            label   "Characteristic Length"
+            type    log
+            default { "1" }
+            disablewhen "{ units == 0 }"
+            range   { 1e-09 1e+09 }
+            help    "A typical size of your model in the chosen length unit (roughly the diameter of the largest body). PolyFEM uses it to scale solver tolerances so the same settings work for a millimeter part and a meter part."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "sepparm9"
+            label   "Separator"
+            type    separator
+            default { "" }
+        }
+        groupcollapsible {
+            name    "extra_params_folder"
+            label   "Extra JSON Overrides (Advanced)"
+
+            parm {
+                name    "extra_params_json"
+                label   "Extra params.json"
+                type    string
+                default { "" }
+                help    "Optional JSON object deep-merged into params.json at export time so you can test or override any PolyFEM key (for example {\"solver\": {\"advanced\": {\"stall_restart\": {\"enabled\": true}}}}). Leave blank for none."
+                parmtag { "editor" "1" }
+                parmtag { "editorlines" "4-12" }
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+    }

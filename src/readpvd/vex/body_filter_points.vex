@@ -1,0 +1,10 @@
+if (nprimitives(0) > 0) return;
+if (chs("../visible_bodies") == "") return;
+if (!haspointattrib(0, "body_ids")) return;
+string tokens[] = split(re_replace(",", " ", chs("../visible_bodies")));
+if (len(tokens) == 0) return;
+float body_value = point(0, "body_ids", @ptnum);
+int body = (int)rint(body_value);
+foreach (string token; tokens)
+    if (atoi(token) == body) return;
+removepoint(0, @ptnum);

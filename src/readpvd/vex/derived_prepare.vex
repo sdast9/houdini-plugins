@@ -1,0 +1,123 @@
+// Detail wrangle: allocate only the derived point attributes needed by the
+// current display, glyphs, fibers, and probe (or every derived field when
+// Derived Fields Scope is set to 'All Mechanics Fields'). Static @attrib
+// references in a point wrangle would pre-allocate every attribute even inside
+// untaken branches (~780 B/pt); dynamic creation here keeps on-demand mode
+// near zero memory overhead.
+int all_fields = chs("../derived_mode") == "all";
+string color = chs("../color_attrib");
+int glyphs = chi("../add_glyphs");
+string gtensor = glyphs ? chs("../glyph_tensor") : "";
+int probe = chi("../probe_enabled") || chi("../probe_point") >= 0;
+int fibers = chi("../show_fibers");
+matrix3 zero_m = 0;
+vector zero_v = {0, 0, 0};
+
+setdetailattrib(0, "__derived_fill_von_mises", 0, "set");
+
+if (haspointattrib(0, "solution") && (all_fields || color == "solution_mag"))
+    addpointattrib(0, "solution_mag", 0.0);
+
+int have_F = haspointattrib(0, "F_1") && haspointattrib(0, "F_2")
+    && haspointattrib(0, "F_3");
+if (!have_F)
+    return;
+
+if (all_fields || fibers || color == "F_mat")
+    addpointattrib(0, "F_mat", zero_m);
+if (all_fields || color == "J")
+    addpointattrib(0, "J", 0.0);
+
+if (all_fields || probe || color == "principal_stretches")
+    addpointattrib(0, "principal_stretches", zero_v);
+if (all_fields || gtensor == "right_cauchy_green"
+    || color == "right_cauchy_green")
+    addpointattrib(0, "right_cauchy_green", zero_m);
+if (all_fields || gtensor == "right_cauchy_green"
+    || color == "right_cauchy_green_eigenvalues")
+    addpointattrib(0, "right_cauchy_green_eigenvalues", zero_v);
+if (all_fields || gtensor == "right_cauchy_green"
+    || color == "right_cauchy_green_eigenvectors")
+    addpointattrib(0, "right_cauchy_green_eigenvectors", zero_m);
+if (all_fields || color == "right_stretch")
+    addpointattrib(0, "right_stretch", zero_m);
+if (all_fields || color == "hencky_strain")
+    addpointattrib(0, "hencky_strain", zero_m);
+if (all_fields || color == "hencky_strain_eigenvalues")
+    addpointattrib(0, "hencky_strain_eigenvalues", zero_v);
+if (all_fields || gtensor == "green_lagrange"
+    || color == "green_lagrange_strain")
+    addpointattrib(0, "green_lagrange_strain", zero_m);
+if (all_fields || gtensor == "green_lagrange"
+    || color == "green_lagrange_eigenvalues")
+    addpointattrib(0, "green_lagrange_eigenvalues", zero_v);
+if (all_fields || gtensor == "green_lagrange"
+    || color == "green_lagrange_eigenvectors")
+    addpointattrib(0, "green_lagrange_eigenvectors", zero_m);
+
+if (all_fields || gtensor == "left_cauchy_green"
+    || color == "left_cauchy_green")
+    addpointattrib(0, "left_cauchy_green", zero_m);
+if (all_fields || gtensor == "left_cauchy_green"
+    || color == "left_cauchy_green_eigenvalues")
+    addpointattrib(0, "left_cauchy_green_eigenvalues", zero_v);
+if (all_fields || gtensor == "left_cauchy_green"
+    || color == "left_cauchy_green_eigenvectors")
+    addpointattrib(0, "left_cauchy_green_eigenvectors", zero_m);
+if (all_fields || color == "left_stretch")
+    addpointattrib(0, "left_stretch", zero_m);
+if (all_fields || color == "almansi_strain")
+    addpointattrib(0, "almansi_strain", zero_m);
+if (all_fields || color == "almansi_strain_eigenvalues")
+    addpointattrib(0, "almansi_strain_eigenvalues", zero_v);
+
+if (all_fields || color == "infinitesimal_strain")
+    addpointattrib(0, "infinitesimal_strain", zero_m);
+if (all_fields || color == "infinitesimal_strain_eigenvalues")
+    addpointattrib(0, "infinitesimal_strain_eigenvalues", zero_v);
+if (all_fields || color == "infinitesimal_strain_eigenvectors")
+    addpointattrib(0, "infinitesimal_strain_eigenvectors", zero_m);
+
+int have_cauchy = haspointattrib(0, "cauchy_stress_1")
+    && haspointattrib(0, "cauchy_stress_2")
+    && haspointattrib(0, "cauchy_stress_3");
+int have_pk1 = haspointattrib(0, "pk1_stress_1")
+    && haspointattrib(0, "pk1_stress_2")
+    && haspointattrib(0, "pk1_stress_3");
+if (!(have_cauchy || have_pk1))
+    return;
+
+if (all_fields || gtensor == "cauchy" || color == "cauchy_mat")
+    addpointattrib(0, "cauchy_mat", zero_m);
+if (all_fields || probe || gtensor == "cauchy" || color == "cauchy_eigenvalues")
+    addpointattrib(0, "cauchy_eigenvalues", zero_v);
+if (all_fields || gtensor == "cauchy" || color == "cauchy_eigenvectors")
+    addpointattrib(0, "cauchy_eigenvectors", zero_m);
+if (all_fields || color == "cauchy_trace")
+    addpointattrib(0, "cauchy_trace", 0.0);
+if (all_fields || color == "hydrostatic_stress")
+    addpointattrib(0, "hydrostatic_stress", 0.0);
+if (all_fields || color == "deviatoric_stress")
+    addpointattrib(0, "deviatoric_stress", zero_m);
+if (all_fields || color == "stress_J2")
+    addpointattrib(0, "stress_J2", 0.0);
+if (all_fields || color == "stress_J3")
+    addpointattrib(0, "stress_J3", 0.0);
+if (all_fields || color == "von_mises_derived")
+    addpointattrib(0, "von_mises_derived", 0.0);
+if (all_fields || color == "max_shear_stress")
+    addpointattrib(0, "max_shear_stress", 0.0);
+if (all_fields || color == "stress_triaxiality")
+    addpointattrib(0, "stress_triaxiality", 0.0);
+if (!haspointattrib(0, "von_mises") && (all_fields || color == "von_mises")) {
+    addpointattrib(0, "von_mises", 0.0);
+    setdetailattrib(0, "__derived_fill_von_mises", 1, "set");
+}
+if (all_fields || color == "pk1")
+    addpointattrib(0, "pk1", zero_m);
+if (all_fields || gtensor == "pk2" || color == "pk2")
+    addpointattrib(0, "pk2", zero_m);
+if (all_fields || probe || gtensor == "pk2" || color == "pk2_eigenvalues")
+    addpointattrib(0, "pk2_eigenvalues", zero_v);
+if (all_fields || gtensor == "pk2" || color == "pk2_eigenvectors")
+    addpointattrib(0, "pk2_eigenvectors", zero_m);

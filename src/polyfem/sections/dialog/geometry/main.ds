@@ -1,0 +1,510 @@
+    group {
+        name    "Main_1"
+        label   "Geometry"
+
+        parm {
+            name    "geo_int"
+            label   "Number of Geometries"
+            type    integer
+            joinnext
+            default { "1" }
+            range   { 1 20 }
+            help    "How many separate meshes (bodies) take part in the simulation. Each geometry gets its own tab below with its mesh file, transform, materials, boundary conditions and initial conditions. Obstacles (rigid, prescribed motion) also count as geometries."
+            parmtag { "script_callback" "hou.pwd().hm().clear_geos(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "clear"
+            label   "Clear All"
+            type    button
+            default { "0" }
+            help    "Remove every geometry and reset this node's internal network. Cannot be undone."
+            parmtag { "script_callback" "hou.pwd().hm().clear_all_geos(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        multiswitcher {
+            name    "num_geos"
+            label    "Number of Geometries"
+            invisible
+            default 1
+            parmtag { "script_callback" "" }
+            parmtag { "script_callback_language" "python" }
+
+            parm {
+                name    "mesh_source#"
+                label   "Mesh Source"
+                type    ordinal
+                default { "0" }
+                menu {
+                    "file" "Mesh File (.msh / .obj / .stl / .ply)"
+                    "sop"  "Houdini SOP (tets/hexes or obstacle surface)"
+                }
+                help    "Choose where this geometry comes from: a mesh file on disk (.msh for volumes; .obj/.stl/.ply/.msh for obstacles) or a live Houdini SOP node (Tet Conform / Tet Embed for volumes, or any polygon surface for a rigid obstacle)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "sop_path#"
+                label   "Source SOP"
+                type    oppath
+                default { "" }
+                disablewhen "{ mesh_source# != sop }"
+                hidewhen "{ mesh_source# != sop }"
+                help    "Path to a Houdini SOP node supplying this geometry. For simulated bodies the SOP must contain tetrahedra or hexahedra (optional prim int 'Entity' / 'subdomain' / 'class' sets subdomains); for rigid obstacles any polygon surface is triangulated and exported automatically."
+                parmtag { "opfilter" "!!SOP!!" }
+                parmtag { "script_callback" "hou.pwd().hm().load_sop_mesh(kwargs)" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "load_sop#"
+                label   "Reload SOP Mesh"
+                type    button
+                default { "0" }
+                disablewhen "{ mesh_source# != sop }"
+                hidewhen "{ mesh_source# != sop }"
+                help    "Re-read the Source SOP and update the staged mesh in <working dir>/input while preserving materials, transforms, and sidesets."
+                parmtag { "script_callback" "hou.pwd().hm().load_sop_mesh(kwargs)" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "file_location#"
+                label   "Mesh File"
+                type    geometry
+                default { "" }
+                disablewhen "{ mesh_source# == sop }"
+                hidewhen "{ mesh_source# == sop }"
+                help    "Volume mesh for this body: a Gmsh .msh file (tetrahedra or hexahedra). The file is copied into <working_dir>/input when selected; if another geometry already uses a different mesh with the same file name, the copy is renamed (part_geo2.msh) so neither replaces the other. Physical groups in the file become the subdomains you can assign materials to. Surface meshes (.obj, .stl, .ply, or 2D .msh) can be used as rigid obstacles."
+                parmtag { "filechooser_mode" "read" }
+                parmtag { "filechooser_pattern" "*.msh, *.obj, *.stl,*.ply" }
+                parmtag { "script_callback" "hou.pwd().hm().create_geo_nodes(kwargs)" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "geo_label1_#"
+                label   ""
+                type    label
+                default { "The file is copied into <working dir>/input when you pick it." }
+                hidewhen "{ mesh_source# == sop }"
+                parmtag { "sidefx::look" "block" }
+            }
+            parm {
+                name    "is_obstacle#"
+                label   "Obstacle (rigid)"
+                type    toggle
+                joinnext
+                default { "0" }
+                help    "Turn this geometry into a rigid obstacle: it is not deformed by the solver, has no material, and only pushes on other bodies through contact. Give it a motion with Obstacle Disp (leave zero for a fixed wall or floor)."
+                parmtag { "script_callback" "hou.pwd().hm().create_geo_nodes(kwargs)" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "geo_duplicate_#"
+                label   "Duplicate Geometry"
+                type    button
+                default { "0" }
+                help    "Add a copy of this geometry (same mesh file and settings) as a new geometry entry. Handy for stacking several instances of one part."
+                parmtag { "script_callback" "hou.pwd().hm().geo_duplicate(kwargs)" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "is_enabled#"
+                label   "Enabled"
+                type    toggle
+                default { "1" }
+                help    "Include this geometry in the simulation. Turn off to leave it in the scene but out of the exported params.json (useful to test setups with fewer bodies)."
+                parmtag { "script_callback_language" "python" }
+            }
+            groupcollapsible {
+                name    "fiber_display_#"
+                label   "Fiber / Material Display"
+                disablewhentab "{ is_obstacle# != 0 }"
+                hidewhentab "{ is_obstacle# != 0 }"
+
+                parm {
+                    name    "show_fibers#"
+                    label   "Show Fiber Directions"
+                    type    toggle
+                    default { "0" }
+                    help    "Draw the fiber directions that will actually be exported for this geometry (one short line per element). This is PolyFEM's reference direction a0 in simulation/world coordinates: the Geometry Transform moves the mesh but, exactly as in PolyFEM, does not rotate or scale a0. Only meaningful for fiber materials."
+                    parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "fiber_scale#"
+                    label   "Fiber Line Scale"
+                    type    float
+                    default { "0.5" }
+                    disablewhen "{ show_fibers# != 1 }"
+                    range   { 0.01 5 }
+                    help    "Length of the drawn fiber lines as a fraction of the average element size. Display only."
+                    parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "fiber_surface_alpha#"
+                    label   "Surface Opacity While Showing Fibers"
+                    type    float
+                    default { "0.2" }
+                    disablewhen "{ show_fibers# != 1 }"
+                    range   { 0 1 }
+                    help    "Transparency of the body's surface while fiber lines are shown (0 = invisible surface, 1 = opaque), so the fibers inside are visible. Display only."
+                    parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "fiber_max_lines#"
+                    label   "Max Fiber Lines"
+                    type    integer
+                    default { "20000" }
+                    disablewhen "{ show_fibers# != 1 }"
+                    range   { 100 200000 }
+                    help    "Upper limit on the number of fiber lines drawn. Larger meshes are decimated evenly down to this count to keep the viewport responsive. Display only."
+                    parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "fiber_color_mode#"
+                    label   "Fiber Color"
+                    type    ordinal
+                    default { "0" }
+                    disablewhen "{ show_fibers# != 1 }"
+                    menu {
+                        "direction_rgb" "Direction (RGB)"
+                        "family"        "Per Family"
+                        "uniform"       "Uniform"
+                    }
+                    help    "How fiber lines are colored: by their direction (x/y/z mapped to red/green/blue), by fiber family, or a single uniform color. Display only."
+                    parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "fiber_color#"
+                    label   "Uniform Fiber Color"
+                    type    color
+                    size    3
+                    default { "1" "1" "1" }
+                    disablewhen "{ show_fibers# != 1 } { fiber_color_mode# != uniform }"
+                    range   { 0 1 }
+                    help    "Color used for the fiber lines when Fiber Color is set to Uniform. Display only."
+                    parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "color_by#"
+                    label   "Surface Color By"
+                    type    ordinal
+                    default { "0" }
+                    menu {
+                        "subdomains" "Subdomain Colors"
+                        "kappa"      "Fiber Dispersion (kappa)"
+                        "fiber_rgb"  "Fiber Direction (RGB)"
+                    }
+                    help    "What the body's surface color represents in the viewport: the subdomain (material region) colors, the fiber dispersion value kappa, or the fiber direction as RGB. Display only; no effect on the simulation."
+                    parmtag { "script_callback" "hou.phm().fiber_display_changed(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+            }
+            groupcollapsible {
+                name    "Transform__#"
+                label   "Transform"
+
+                parm {
+                    name    "xform_xOrd__#"
+                    label   "Transform Order"
+                    type    ordinal
+                    invisible
+                    joinnext
+                    default { "0" }
+                    help    "Order in which scale, rotation and translation are applied when this geometry's transform is built. Leave at Scale-Rotate-Translate unless you need a specific composition."
+                    menu {
+                        "srt"   "Scale Rot Trans"
+                        "str"   "Scale Trans Rot"
+                        "rst"   "Rot Scale Trans"
+                        "rts"   "Rot Trans Scale"
+                        "tsr"   "Trans Scale Rot"
+                        "trs"   "Trans Rot Scale"
+                    }
+                    parmtag { "cook_dependent" "1" }
+                    parmtag { "spare_category" "Pre-Transform" }
+                }
+                parm {
+                    name    "xform_rOrd__#"
+                    label   "Pre-Rotate Order"
+                    type    ordinal
+                    invisible
+                    nolabel
+                    default { "0" }
+                    help    "Order of the three rotation axes. Only matters when more than one rotation component is nonzero."
+                    menu {
+                        "xyz"   "Rx Ry Rz"
+                        "xzy"   "Rx Rz Ry"
+                        "yxz"   "Ry Rx Rz"
+                        "yzx"   "Ry Rz Rx"
+                        "zxy"   "Rz Rx Ry"
+                        "zyx"   "Rz Ry Rx"
+                    }
+                    parmtag { "cook_dependent" "1" }
+                    parmtag { "spare_category" "Pre-Transform" }
+                }
+                parm {
+                    name    "xform_t__#"
+                    label   "Translate"
+                    type    vector
+                    size    3
+                    default { "0" "0" "0" }
+                    help    "Move the mesh by this offset (in mesh units) before it is exported. The transform is baked into the exported input, so PolyFEM sees the moved mesh. Fiber directions are not moved (they are simulation/world directions)."
+                    range   { -1 1 }
+                    parmtag { "cook_dependent" "1" }
+                    parmtag { "spare_category" "Pre-Transform" }
+                }
+                parm {
+                    name    "xform_r__#"
+                    label   "Rotate"
+                    type    vector
+                    size    3
+                    default { "0" "0" "0" }
+                    help    "Rotate the mesh (degrees about x, y, z) before export. The rotation moves the mesh only: PolyFEM does not apply it to material fiber directions, which remain in simulation/world coordinates."
+                    range   { -180 180 }
+                    parmtag { "cook_dependent" "1" }
+                    parmtag { "spare_category" "Pre-Transform" }
+                }
+                parm {
+                    name    "xform_s__#"
+                    label   "Scale"
+                    type    vector
+                    size    3
+                    default { "1" "1" "1" }
+                    help    "Scale the mesh before export (1 = original size). Non-uniform values stretch it. Material and fiber directions are not scaled."
+                    range   { 0.01 10 }
+                    parmtag { "cook_dependent" "1" }
+                    parmtag { "spare_category" "Pre-Transform" }
+                }
+                parm {
+                    name    "geo_sepparm2_#"
+                    label   "Separator"
+                    type    separator
+                    default { "" }
+                }
+                parm {
+                    name    "tpivot_#"
+                    label   "Pivot Translate"
+                    type    vector
+                    size    3
+                    default { "0" "0" "0" }
+                    help    "Point about which the rotation and scale are applied. Use the buttons below to snap it to the body's centroid or the origin. Adjusting the pivot after setting a transform changes where the mesh ends up."
+                    range   { -1 1 }
+                    parmtag { "cook_dependent" "1" }
+                    parmtag { "spare_category" "Transform" }
+                }
+                parm {
+                    name    "rpivot_#"
+                    label   "Pivot Rotate"
+                    type    vector
+                    size    3
+                    default { "0" "0" "0" }
+                    help    "Extra rotation of the pivot frame itself (degrees). Rarely needed; leave at zero."
+                    range   { -1 1 }
+                    parmtag { "cook_dependent" "1" }
+                    parmtag { "spare_category" "Transform" }
+                }
+                parm {
+                    name    "geo_sepparm3_#"
+                    label   "Separator"
+                    type    separator
+                    default { "" }
+                }
+                parm {
+                    name    "resett#"
+                    label   "Reset Transform"
+                    type    button
+                    joinnext
+                    default { "0" }
+                    help    "Set translate, rotate and scale back to identity so the mesh is exported exactly as in the file."
+                    parmtag { "script_callback" "hou.pwd().hm().reset_transform(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "pivot_to_centroid#"
+                    label   "Pivot to Centroid"
+                    type    button
+                    joinnext
+                    default { "0" }
+                    help    "Move the pivot to the centroid of this mesh, so rotations and scaling happen about its center."
+                    parmtag { "script_callback" "hou.pwd().hm().pivot_to_centroid(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "pivot_to_origin#"
+                    label   "Pivot to Origin"
+                    type    button
+                    joinnext
+                    default { "0" }
+                    help    "Move the pivot to the world origin (0, 0, 0)."
+                    parmtag { "script_callback" "hou.pwd().hm().pivot_to_origin(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "geoemtry_to_origin#"
+                    label   "Geometry to Origin"
+                    type    button
+                    default { "0" }
+                    help    "Translate the mesh so that its centroid sits at the world origin. A quick way to center a body before positioning it."
+                    parmtag { "script_callback" "hou.pwd().hm().geometry_to_origin(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "geo_label3_#"
+                    label   ""
+                    type    label
+                    default { "Tip: with the mouse over the viewport, press Enter for the transform handle and Esc to leave it. The pivot starts at the mesh centroid." }
+                    parmtag { "sidefx::look" "block" }
+                }
+            }
+
+            parm {
+                name    "geo_sep10_#"
+                label   "Spacer"
+                type    separator
+                default { "" }
+                parmtag { "sidefx::layout_height" "large" }
+                parmtag { "sidefx::look" "blank" }
+            }
+            groupcollapsible {
+                name    "folder0_#"
+                label   "Split into Subdomains (multi-material)"
+                hidewhentab "{ is_obstacle# != 0 }"
+                hidewhen "{ is_obstacle# != 0 }"
+
+                parm {
+                    name    "elements_#"
+                    label   "Elements to Move"
+                    type    string
+                    default { "" }
+                    help    "Element (primitive) selection, e.g. 0-99 or a group pattern, that you want to move into another subdomain. Subdomains are the regions of one mesh that can carry different materials."
+                    parmtag { "script_action" "import soputils\nparent = kwargs['node']\nparent.allowEditingOfContents(True)\ngeo_number = kwargs['script_multiparm_index']\ngroup_node = parent.node(\"elements_\"+str(geo_number))\nif group_node is not None:\n    kwargs['node'] = group_node\n    kwargs['geometrytype'] = group_node.parmTuple('grouptype')\n    kwargs['inputindex'] = 0\n    kwargs['ordered'] = group_node.parm('ordered').eval()\n    soputils.selectGroupParm(kwargs)\n" }
+                    parmtag { "script_action_help" "Select geometry from an available viewport.\nShift-click to turn on Select Groups." }
+                    parmtag { "script_action_icon" "BUTTONS_reselect" }
+                    parmtag { "script_callback" "" }
+                }
+                parm {
+                    name    "subdomain_number_#"
+                    label   "Move to Subdomain"
+                    type    integer
+                    default { "1" }
+                    range   { 1 10 }
+                    help    "The subdomain number the selected elements should belong to after Apply Changes. Numbers above the current count create a new subdomain."
+                    parmtag { "script_callback" "hou.pwd().hm().fetch_elements(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "apply_changes#"
+                    label   "Apply Subdomain Change"
+                    type    button
+                    joinnext
+                    default { "0" }
+                    help    "Reassign the selected elements to the chosen subdomain number and rebuild the subdomain list below. Use this to split a single-region mesh into several material regions from inside Houdini."
+                    parmtag { "script_callback" "hou.pwd().hm().update_entities(kwargs,0)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "revert#"
+                    label   "Restore Mesh Subdomains"
+                    type    button
+                    default { "0" }
+                    help    "Discard the element reassignments and go back to the subdomains that came with the mesh file (its physical groups)."
+                    parmtag { "script_callback" "hou.pwd().hm().revert_entities(kwargs)" }
+                    parmtag { "script_callback_language" "python" }
+                }
+            }
+
+            parm {
+                name    "geo_sep1_#"
+                label   "Spacer"
+                type    separator
+                default { "" }
+                hidewhen "{ is_obstacle# != 0 }"
+                parmtag { "sidefx::layout_height" "large" }
+                parmtag { "sidefx::look" "blank" }
+            }
+            parm {
+                name    "create_gmsh_sidesets#"
+                label   "Create Sidesets from Gmsh Surfaces"
+                type    button
+                default { "0" }
+                disablewhen "{ is_obstacle# != 0 }"
+                hidewhen "{ is_obstacle# != 0 }"
+                help    "Automatically create boundary sidesets from the 2D physical surface groups in this geometry's .msh file, matching each surface group to this mesh's boundary faces and subdomains."
+                parmtag { "script_callback" "hou.pwd().hm().create_gmsh_sidesets(kwargs)" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "geo_sep2_#"
+                label   "Spacer"
+                type    separator
+                default { "" }
+                hidewhen "{ is_obstacle# != 0 }"
+                parmtag { "sidefx::layout_height" "large" }
+                parmtag { "sidefx::look" "blank" }
+            }
+            parm {
+                name    "geo_label2_#"
+                label   ""
+                type    label
+                default { "Each subdomain below has its own material, sidesets (boundary conditions) and initial conditions." }
+                hidewhen "{ is_obstacle# != 0 }"
+                parmtag { "sidefx::look" "block" }
+            }
+            parm {
+                name    "geo_sep3_#"
+                label   "Spacer"
+                type    separator
+                default { "" }
+                hidewhen "{ is_obstacle# != 0 }"
+                parmtag { "sidefx::layout_height" "large" }
+                parmtag { "sidefx::look" "blank" }
+            }
+            parm {
+                name    "color_#"
+                label   "Obstacle Color"
+                type    color
+                nolabel
+                size    3
+                default { "1" "0" "0" }
+                hidewhen "{ is_obstacle# != 1 }"
+                range   { 0 1 }
+                help    "Display color of this obstacle in the Houdini viewport. Has no effect on the simulation."
+                parmtag { "colortype" "hide" }
+            }
+            @INCLUDE volumes.ds@
+
+            parm {
+                name    "obstacle_disp_vec#"
+                label   "Obstacle Displacement [x, y, z]"
+                type    string
+                size    3
+                default { "0" "0" "0" }
+                disablewhen "{ is_obstacle# != 1 }"
+                hidewhen "{ is_obstacle# != 1 }"
+                help    "Prescribed motion of this obstacle for X, Y, Z. Enter plain numbers or PolyFEM TinyExpr expressions of x, y, z, t without quotes (quotes are also accepted): e.g. 0, -0.1*t, 0 pushes it down along Y over time. Leave at 0, 0, 0 to hold fixed (or keyframe the Transform above for animated motion)."
+                parmtag { "script_callback" "hou.pwd().hm().sync_expr_vector(kwargs)" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "obstacle_disp#"
+                label   "Obstacle Displacement [x, y, z] (legacy)"
+                type    string
+                invisible
+                default { "[0,0,0]" }
+                disablewhen "{ is_obstacle# != 1 }"
+                hidewhen "{ is_obstacle# != 1 }"
+                help    "Legacy JSON-list storage kept hidden for compatibility with older scenes."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "geo_sep9_#"
+                label   "Separator"
+                type    separator
+                default { "" }
+            }
+        }
+
+    }

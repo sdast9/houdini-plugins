@@ -1,0 +1,136 @@
+        parm {
+            name    "solver_nl"
+            label   "Nonlinear Solver"
+            type    ordinal
+            default { "0" }
+            menu {
+                "Newton"                    "Newton (recommended)"
+                "GradientDescent"           "Gradient Descent"
+                "ADAM"                      "ADAM"
+                "StochasticADAM"            "Stochastic ADAM"
+                "StochasticGradientDescent" "Stochastic Gradient Descent"
+                "L-BFGS"                    "L-BFGS"
+                "BFGS"                      "BFGS (dense, small meshes only)"
+            }
+            help    "Method used to minimize the total energy at each step. Newton (recommended) uses second derivatives and converges in few iterations; it falls back to regularized Newton and gradient descent automatically when a step fails. The other methods are first-order or quasi-Newton alternatives that need many more iterations and are provided for experiments. With contact they are not usable: the contact barrier makes the problem so stiff (measured condition numbers above 1e13 on real scenes) that they stall far from the solution, and a step only finishes when they reach the gradient tolerance, which may never happen. Use Newton for contact scenes. BFGS keeps a dense n-by-n matrix and always runs with the dense Eigen::LDLT linear solver, so it suits small meshes only. Only methods PolyFEM's simulation can run are offered: L-BFGS-B and MMA are box-constrained optimizers (PolyFEM uses them for shape and parameter optimization, not for a simulation step), and Dense Newton needs a dense Hessian that PolyFEM's problems do not assemble."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "solver_nl_contact_warning"
+            label   "Warning"
+            type    label
+            default { "Contact is on: only Newton converges on contact scenes. This method will stall far from the solution (see the Solver tooltip)." }
+            hidewhen "{ solver_nl == Newton } { enable == 0 }"
+            parmtag { "sidefx::look" "block" }
+        }
+        parm {
+            name    "history_size"
+            label   "History Size"
+            type    integer
+            default { "6" }
+            disablewhen "{ solver_nl != L-BFGS }"
+            hidewhen "{ solver_nl != L-BFGS }"
+            range   { 1 50 }
+            help    "Number of previous steps L-BFGS keeps to approximate curvature. 6-20 is typical; more memory, better steps."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "residual_tolerance"
+            label   "Residual Tolerance"
+            type    log
+            default { "1e-05" }
+            disablewhen "{ solver_nl != Newton }"
+            hidewhen "{ solver_nl != Newton }"
+            range   { 1e-12 1 }
+            help    "Newton: accept the linear solve when its relative residual is below this value. The default 1e-5 is fine for direct solvers; loosen it only for iterative solvers."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "reg_weight_min"
+            label   "Min Reg Weight"
+            type    log
+            default { "1e-08" }
+            disablewhen "{ solver_nl != Newton }"
+            hidewhen "{ solver_nl != Newton }"
+            range   { 1e-15 1 }
+            help    "Newton: smallest regularization (identity added to the Hessian, in Hessian units) tried when a plain Newton step fails. Regularization makes steps shorter but safer."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "reg_weight_max"
+            label   "Max Reg Weight"
+            type    log
+            default { "1e+08" }
+            disablewhen "{ solver_nl != Newton }"
+            hidewhen "{ solver_nl != Newton }"
+            range   { 1 1e+15 }
+            help    "Newton: largest regularization tried before giving up on the regularized strategy and falling back to gradient descent."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "reg_weight_inc"
+            label   "Reg Weight Increment"
+            type    float
+            default { "10" }
+            disablewhen "{ solver_nl != Newton }"
+            hidewhen "{ solver_nl != Newton }"
+            range   { 1.5 100 }
+            help    "Newton: factor by which the regularization grows after each failed regularized step (10 = one decade at a time)."
+            parmtag { "export_disable" "1" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "adam_alpha"
+            label   "Alpha"
+            type    float
+            default { "0.001" }
+            disablewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
+            hidewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
+            range   { 0 1 }
+            help    "ADAM learning rate (step size). Larger moves faster but may overshoot."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "adam_beta1"
+            label   "Beta 1"
+            type    float
+            default { "0.9" }
+            disablewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
+            hidewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
+            range   { 0 1 }
+            help    "ADAM decay rate of the first-moment (gradient average) estimate; 0.9 is standard."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "adam_beta2"
+            label   "Beta 2"
+            type    float
+            default { "0.999" }
+            disablewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
+            hidewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
+            range   { 0 1 }
+            help    "ADAM decay rate of the second-moment (squared gradient) estimate; 0.999 is standard."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "adam_epsilon"
+            label   "Epsilon"
+            type    float
+            default { "1e-08" }
+            disablewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
+            hidewhen "{ solver_nl != ADAM solver_nl != StochasticADAM }"
+            range   { 0 1 }
+            help    "ADAM small constant that prevents division by zero in the update; 1e-8 is standard."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "erase_component_probability"
+            label   "Erase Component Probability"
+            type    float
+            default { "0.3" }
+            disablewhen "{ solver_nl != StochasticADAM solver_nl != StochasticGradientDescent }"
+            hidewhen "{ solver_nl != StochasticADAM solver_nl != StochasticGradientDescent }"
+            range   { 0 1 }
+            help    "Stochastic methods: probability that each unknown is left out of a given update, which randomizes the descent. 0.3 = update ~70% of the unknowns per iteration."
+            parmtag { "script_callback_language" "python" }
+        }

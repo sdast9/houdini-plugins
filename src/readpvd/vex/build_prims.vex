@@ -1,0 +1,38 @@
+int tet[] = detail(0, "tet_conn");
+int tet_bits[] = detail(0, "tet_face_bits");
+for (int i = 0; i < len(tet); i += 4) {
+    // Gmsh/VTK corners [1,2,3,0]: positive by Houdini's convention
+    int prim = addprim(0, "tet", tet[i+1], tet[i+2], tet[i+3], tet[i]);
+    setprimattrib(0, "source_cell_index", prim, i / 4);
+    setprimattrib(0, "source_cell_family", prim, "tet");
+    if (len(tet_bits))
+        setprimattrib(0, "readpvd_face_bits", prim, tet_bits[i / 4]);
+}
+int hexc[] = detail(0, "hex_conn");
+int hex_bits[] = detail(0, "hex_face_bits");
+for (int i = 0; i < len(hexc); i += 8) {
+    int prim = addprim(0, "hex", hexc[i], hexc[i+1], hexc[i+3], hexc[i+2],
+                      hexc[i+4], hexc[i+5], hexc[i+7], hexc[i+6]);
+    setprimattrib(0, "source_cell_index", prim, i / 8);
+    setprimattrib(0, "source_cell_family", prim, "hex");
+    if (len(hex_bits))
+        setprimattrib(0, "readpvd_face_bits", prim, hex_bits[i / 8]);
+}
+int tri[] = detail(0, "tri_conn");
+for (int i = 0; i < len(tri); i += 3) {
+    int prim = addprim(0, "poly", tri[i], tri[i+1], tri[i+2]);
+    setprimattrib(0, "source_cell_index", prim, i / 3);
+    setprimattrib(0, "source_cell_family", prim, "tri");
+}
+int quad[] = detail(0, "quad_conn");
+for (int i = 0; i < len(quad); i += 4) {
+    int prim = addprim(0, "poly", quad[i], quad[i+1], quad[i+2], quad[i+3]);
+    setprimattrib(0, "source_cell_index", prim, i / 4);
+    setprimattrib(0, "source_cell_family", prim, "quad");
+}
+int lin[] = detail(0, "line_conn");
+for (int i = 0; i < len(lin); i += 2) {
+    int prim = addprim(0, "polyline", lin[i], lin[i+1]);
+    setprimattrib(0, "source_cell_index", prim, i / 2);
+    setprimattrib(0, "source_cell_family", prim, "line");
+}

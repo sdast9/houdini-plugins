@@ -1,0 +1,3 @@
+v@rest = v@P;
+if (chi("../show_deformed") && haspointattrib(0, "solution"))
+    v@P += v@solution;

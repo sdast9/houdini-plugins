@@ -1,0 +1,91 @@
+float matrix_trace(matrix3 m) {
+    return getcomp(m, 0, 0) + getcomp(m, 1, 1) + getcomp(m, 2, 2);
+}
+
+float matrix_norm_squared(matrix3 m) {
+    float result = 0.0;
+    for (int row = 0; row < 3; row++)
+        for (int column = 0; column < 3; column++) {
+            float value = getcomp(m, row, column);
+            result += value * value;
+        }
+    return result;
+}
+
+void sorted_eigen(matrix3 m; export vector vals; export matrix3 vecs) {
+    vector raw_vals = {0, 0, 0};
+    matrix3 raw_vecs = diagonalizesymmetric(m, raw_vals);
+    float unsorted[] = array(raw_vals.x, raw_vals.y, raw_vals.z);
+    int order[] = argsort(unsorted);
+    for (int j = 0; j < 3; j++) {
+        int src = order[2-j];
+        setcomp(vals, getcomp(raw_vals, src), j);
+        // diagonalizesymmetric returns eigenvectors as ROWS; store eigenvector
+        // 'src' (row src of raw_vecs) as COLUMN j so that
+        // vecs * diag(vals) * transpose(vecs) reconstructs the tensor.
+        for (int r = 0; r < 3; r++)
+            setcomp(vecs, getcomp(raw_vecs, src, r), r, j);
+    }
+}
+// When smoothing is on, prefer PolyFEM's continuous nodal-averaged field
+// (e.g. von_mises -> von_mises_avg) when one exists; the generic averaging
+// pass downstream handles fields that have no _avg variant.
+string base = chs("../color_attrib");
+string field = chi("../smooth_field") && haspointattrib(0, base + "_avg")
+    ? base + "_avg" : base;
+string attr = chi("../reference_enable")
+    && haspointattrib(0, "reference_comparison")
+    ? "reference_comparison" : field;
+string reduction = chs("../color_reduction");
+int size = pointattribsize(0, attr);
+int present = haspointattrib(0, attr) && size > 0;
+float value = 0.0;
+if (present) {
+    if (size == 1) {
+        value = point(0, attr, @ptnum);
+    } else if (size >= 9) {
+        matrix3 m = point(0, attr, @ptnum);
+        if (reduction == "trace")
+            value = matrix_trace(m);
+        else if (reduction == "determinant")
+            value = determinant(m);
+        else if (reduction == "principal_max"
+                 || reduction == "principal_middle"
+                 || reduction == "principal_min") {
+            // Principal values of the symmetric part, as the numpy mirror
+            // (_reduce_array: Auto Range, export) computes them:
+            // diagonalizesymmetric reads only part of a non-symmetric F or
+            // P (review 2026-11-14, item 6).
+            vector evals = {0, 0, 0};
+            matrix3 evecs = 0;
+            sorted_eigen(0.5 * (m + transpose(m)), evals, evecs);
+            int component = reduction == "principal_max" ? 0
+                : reduction == "principal_middle" ? 1 : 2;
+            value = getcomp(evals, component);
+        } else if (reduction == "x" || reduction == "y" || reduction == "z") {
+            int component = reduction == "x" ? 0 : reduction == "y" ? 1 : 2;
+            value = getcomp(m, component, component);
+        } else if (reduction == "xy") {
+            value = getcomp(m, 0, 1);
+        } else if (reduction == "yz") {
+            value = getcomp(m, 1, 2);
+        } else if (reduction == "xz") {
+            value = getcomp(m, 0, 2);
+        }
+        else
+            value = sqrt(matrix_norm_squared(m));
+    } else {
+        vector v = point(0, attr, @ptnum);
+        if (reduction == "x" || reduction == "principal_max")
+            value = v.x;
+        else if (reduction == "y" || reduction == "principal_middle")
+            value = v.y;
+        else if (reduction == "z" || reduction == "principal_min")
+            value = v.z;
+        else
+            value = length(v);
+    }
+}
+f@for_color = value;
+if (@ptnum == 0)
+    setdetailattrib(0, "color_field_missing", present ? 0 : 1, "set");

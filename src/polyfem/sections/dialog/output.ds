@@ -1,0 +1,516 @@
+    group {
+        name    "Main_7"
+        label   "Output"
+
+        group {
+            name    "folder1"
+            label   "Log"
+
+            parm {
+                name    "log_level"
+                label   "Level"
+                type    ordinal
+                default { "1" }
+                menu {
+                    "trace"     "trace"
+                    "debug"     "debug"
+                    "info"      "info"
+                    "warning"   "warning"
+                    "error"     "error"
+                    "critical"  "critical"
+                    "off"       "off"
+                }
+                help    "How much PolyFEM prints: trace and debug show every solver iteration (large logs, useful for diagnosing contact problems); info shows per-step progress; warning/error only report problems."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "write_log"
+                label   "Save Log"
+                type    toggle
+                default { "0" }
+                help    "Also write the log to <working_dir>/output/log.txt. Run in Background writes log.txt anyway; with Save Log on, log.txt is PolyFEM's own log and the console output goes to output/console_log.txt."
+                parmtag { "filechooser_mode" "write" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "log_quiet"
+                label   "Quiet"
+                type    toggle
+                default { "0" }
+                help    "Suppress console output entirely; combine with Save Log to keep a file."
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "folder1_1"
+            label   "Optional Output Files"
+
+            parm {
+                name    "output_json"
+                label   "Output JSON"
+                type    toggle
+                default { "0" }
+                help    "Write output/output.json with per-run statistics (timings, iteration counts, errors) that other tools can parse."
+                parmtag { "filechooser_mode" "write" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "restart_json"
+                label   "Restart JSON"
+                type    toggle
+                default { "0" }
+                help    "Write a self-contained output/checkpoint_N.hdf5 after each step for exact supported continuation. The parameter name and label are retained for existing scenes. Old params.json restart settings import as checkpoint output; old restart.json state files are not supported."
+                parmtag { "filechooser_mode" "write" }
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+        group {
+            name    "folder1_2"
+            label   "Paraview"
+
+            parm {
+                name    "paraview_file_name"
+                label   "File Name"
+                type    string
+                default { "sim.pvd" }
+                help    "Name of the small ParaView collection file written in output/. It lists the result file for each saved step (.hdf by default, or .vtu when Use HDF5 is off). Choose this .pvd file in the Read PVD node to view or scrub the simulation."
+                parmtag { "filechooser_mode" "write" }
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "vismesh_rel_area"
+                label   "Upsampling Area"
+                type    log
+                default { "1e-05" }
+                range   { 1e-10 1 }
+                help    "Resolution of the visualization mesh for higher-order elements, as a relative area: smaller values subdivide curved elements more finely for display (more, larger files). Has no effect on the solve."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "skip_frame"
+                label   "Skip Frames"
+                type    integer
+                default { "1" }
+                range   { 1! 10 }
+                help    "Write every Nth time step to the ParaView output (1 = every step, 2 = every other step; at least 1). Reduces output size for long runs."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "use_hdf5"
+                label   "Use HDF5"
+                type    toggle
+                default { "1" }
+                help    "Save each result frame as a compressed HDF5 file. This is the recommended default: large meshes usually use much less disk space (about 89% less in a 612,000-tet test), and the Read PVD node loads these files directly through the .pvd collection (it bundles an HDF5 reader for macOS, Linux x86_64 and Windows x64). On a computer where Read PVD could not read them (no h5py in Houdini's Python and no bundled reader for the platform), the node writes XML .vtu files instead and Check Setup says so. Turn this off only when sending results to an older tool that requires XML .vtu files."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "minimal_fields"
+                label   "Minimal Fields (derive in readPVD)"
+                type    toggle
+                default { "1" }
+                disablewhen "{ materials_fields == 1 }"
+                help    "Export only what the Read PVD node needs to derive everything else (displacement, deformation gradient F, Cauchy stress) plus the surface/force arrays you enable. Von Mises, PK1/PK2 and the *_avg variants are skipped, making files much smaller and faster to write; Read PVD computes them on load. Turn off to write every field like upstream PolyFEM. Disabled while Material output is on."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "forces_fields"
+                label   "Nodal Forces (force curves)"
+                type    toggle
+                default { "0" }
+                help    "Export each node's force vectors, one field per term the scene has (elastic, loads, pressure, contact, friction, inertia, damping). Read PVD adds them up over a sideset or an obstacle to give force-displacement curves (Analysis > Force Curves): the reaction of a fixed or moved sideset, the contact force on an obstacle. Costs 3 numbers per output point per term (one term, the elastic force, in a quasistatic scene without loads or contact, about +14% per frame). New nodes start with it on; scenes saved before keep their setting."
+                parmtag { "export_disable" "1" }
+                parmtag { "script_callback_language" "python" }
+            }
+            groupcollapsible {
+                name    "Options"
+                label   "Options"
+
+                parm {
+                    name    "materials_fields"
+                    label   "Material"
+                    type    toggle
+                    default { "0" }
+                    help    "Export the material parameter fields (E, nu, fiber directions, dispersion ...) with the results. Turning this on disables Minimal Fields, because material array names cannot be whitelisted in advance."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "body_ids_fields"
+                    label   "Body IDs"
+                    type    toggle
+                    default { "1" }
+                    help    "Export each node's body id (one number per node; on by default). The Read PVD node needs it to show or hide individual bodies and to keep its smoothing inside one body where bodies touch. Turn off only to save a little disk space on single-body runs."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "obstacle_volume"
+                    label   "Volumetric Obstacles"
+                    type    toggle
+                    default { "1" }
+                    help    "When an obstacle is loaded from a tetrahedral .msh file, export its full volumetric tetrahedra instead of only its surface triangles in ParaView output (default on, matching PolyFEM). Turn off for lighter surface-only obstacle frames."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "paraview_async"
+                    label   "Async Output Writer"
+                    type    toggle
+                    default { "1" }
+                    hidewhen "{ expert_mode == 0 }"
+                    help    "Write timestep VTU/VTM/PVD files on a background worker thread with one pending frame (default on). Turn off to write synchronously on the solver thread (useful for debugging or single-threaded profiling). Expert Mode only; omitted from JSON when on."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "discr_fields"
+                    label   "Discretization Order"
+                    type    toggle
+                    default { "1" }
+                    help    "Export the polynomial order of each element."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "forces_HO_output"
+                    label   "Force High Order"
+                    type    toggle
+                    default { "0" }
+                    help    "Force writing of the high-order mesh even for output types where PolyFEM would normally refuse (may break the output; leave off)."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "scalar_values"
+                    label   "Scalar Values"
+                    type    toggle
+                    default { "1" }
+                    disablewhen "{ minimal_fields == 1 materials_fields == 0 }"
+                    help    "Export scalar result fields such as von Mises stress (ignored under Minimal Fields, which derives them later)."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "tensor_values"
+                    label   "Tensor Values"
+                    type    toggle
+                    default { "1" }
+                    disablewhen "{ minimal_fields == 1 materials_fields == 0 }"
+                    help    "Export tensor result fields such as the deformation gradient and Cauchy stress (always exported under Minimal Fields)."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "high_order_mesh"
+                    label   "High Order Mesh"
+                    type    toggle
+                    default { "1" }
+                    help    "Write higher-order elements as curved cells so ParaView/Read PVD can show their curvature. Only for isoparametric or linear meshes with higher-order solutions."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "paraview_wireframe"
+                    label   "Wireframe"
+                    type    toggle
+                    default { "0" }
+                    help    "Also write a wireframe (edge) block of the mesh."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "paraview_points"
+                    label   "Points"
+                    type    toggle
+                    default { "0" }
+                    help    "Also write the FEM nodes as a separate points block (turned on automatically by Jacobian Validity)."
+                    parmtag { "script_callback_language" "python" }
+                }
+                group {
+                    name    "folder2"
+                    label   "Volume Specific Data"
+
+                    parm {
+                        name    "validity_fields"
+                        label   "Jacobian Validity"
+                        type    toggle
+                        default { "0" }
+                        help    "Run a robust check of every deformed element's Jacobian and mark inverted (flipped) elements in the output. Costs extra time per saved step."
+                        parmtag { "export_disable" "1" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "velocity_fields"
+                        label   "Velocity"
+                        type    toggle
+                        default { "0" }
+                        help    "Export the nodal velocity (dynamic runs)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "nodes_field"
+                        label   "Nodes"
+                        type    toggle
+                        default { "1" }
+                        help    "Export the FEM node positions as a field."
+                        parmtag { "export_disable" "1" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "acceleration_fields"
+                        label   "Acceleration"
+                        type    toggle
+                        default { "0" }
+                        help    "Export the nodal acceleration (dynamic runs)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                }
+
+                group {
+                    name    "folder2_1"
+                    label   "Surface Specific Data"
+
+                    parm {
+                        name    "normals_fields"
+                        label   "Normals"
+                        type    toggle
+                        default { "0" }
+                        help    "Export the surface normals of the boundary mesh (both reference and displaced normals)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "displaced_normals_fields"
+                        label   "Displaced Normals"
+                        type    toggle
+                        default { "0" }
+                        help    "Export the normals of the deformed boundary surface (already included when Normals is on)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "sidesets_fields"
+                        label   "Sidesets"
+                        type    toggle
+                        default { "0" }
+                        help    "Export the sideset (boundary id) of every surface face, so Read PVD can show which faces carry boundary conditions."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "solution_grad_fields"
+                        label   "Solution Gradient"
+                        type    toggle
+                        default { "0" }
+                        help    "Export the gradient of the displacement on the surface block."
+                        parmtag { "export_disable" "1" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                }
+
+                group {
+                    name    "folder2_2"
+                    label   "Contact Surface Data"
+
+                    parm {
+                        name    "contact_forces_fields"
+                        label   "Contact Forces"
+                        type    toggle
+                        default { "1" }
+                        disablewhen "{ enable == 0 }"
+                        help    "Export the contact (barrier) force on every surface node into the Contact block -- the field to inspect when validating contact behavior. On by default; it is written only while Enable Contact (Contact tab) is on, so scenes without contact get no empty Contact block."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "adaptive_dhat"
+                        label   "Adaptive dhat"
+                        type    toggle
+                        default { "0" }
+                        disablewhen "{ enable == 0 } { gcp_enable == 0 } { adapt_dhat == 0 }"
+                        help    "Export each surface element's local barrier activation distance. Only written when Geometric Contact (GCP) with Adaptive dhat is on; otherwise PolyFEM ignores this toggle."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "friction_forces_fields"
+                        label   "Friction Forces"
+                        type    toggle
+                        default { "0" }
+                        disablewhen "{ enable == 0 }"
+                        help    "Export the friction force on every surface node into the Contact block."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "normal_adhesion_forces_fields"
+                        label   "Normal Adhesion Forces"
+                        type    toggle
+                        default { "0" }
+                        disablewhen "{ enable == 0 } { adhesion_enable == 0 }"
+                        help    "Export the normal adhesion force on every surface node."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "tangential_adhesion_forces_fields"
+                        label   "Tangential Adhesion Forces"
+                        type    toggle
+                        default { "0" }
+                        disablewhen "{ enable == 0 } { adhesion_enable == 0 }"
+                        help    "Export the tangential adhesion force on every surface node."
+                        parmtag { "export_disable" "1" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                }
+
+                group {
+                    name    "folder2_3"
+                    label   "Save txt file"
+
+                    parm {
+                        name    "solution_file"
+                        label   "Solution"
+                        type    toggle
+                        default { "0" }
+                        help    "Also write the raw displacement vector to output/solution.txt (one number per line)."
+                        parmtag { "filechooser_mode" "write" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "stress_mat_file"
+                        label   "Stress"
+                        type    toggle
+                        default { "0" }
+                        help    "Also write the stress tensors to output/stress_mat.txt."
+                        parmtag { "filechooser_mode" "write" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "state_file"
+                        label   "State"
+                        type    toggle
+                        default { "0" }
+                        help    "Write the solver state (displacement, velocity, acceleration history; HDF5 content) to output/state.txt, overwritten each step. Not needed for restarting: Checkpoints carry their own per-step history. This State output is diagnostic only, not restart input."
+                        parmtag { "filechooser_mode" "write" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "rest_mesh_file"
+                        label   "Rest Mesh (retired)"
+                        type    toggle
+                        default { "0" }
+                        hidewhen "{ rest_mesh_file == 0 }"
+                        help    "Retired: PolyFEM removed output.data.rest_mesh (strict validation rejects it). Retained only so older scenes load cleanly; no longer written to params.json. Turn off to clear Check Setup warnings."
+                        parmtag { "filechooser_mode" "write" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "mises_file"
+                        label   "von Mises"
+                        type    toggle
+                        default { "0" }
+                        help    "Also write per-node von Mises stress to output/mises.txt."
+                        parmtag { "filechooser_mode" "write" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "nodes"
+                        label   "Nodes"
+                        type    toggle
+                        default { "0" }
+                        help    "Also write the FEM node coordinates to output/nodes.txt."
+                        parmtag { "filechooser_mode" "write" }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                }
+
+            }
+
+        }
+
+        group {
+            name    "folder1_3"
+            label   "Advanced"
+            hidewhentab "{ expert_mode == 0 }"
+
+            parm {
+                name    "timestep_prefix"
+                label   "Timestep Prefix"
+                type    string
+                default { "step_" }
+                help    "Prefix of the numbered result files (for example step_0.hdf and step_1.hdf, or .vtu when HDF5 is off). Most users should leave this as step_."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "sol_on_grid"
+                label   "Sample Solution on Grid"
+                type    float
+                default { "-1" }
+                range   { -1 10 }
+                help    "Also sample the solution on a regular grid with this spacing (length units) and write it out. -1 = off."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "compute_error"
+                label   "Compute Error Norms"
+                type    toggle
+                default { "1" }
+                help    "Compute and log error norms of the solution (against an exact solution when the problem has one, otherwise reference norms). Cheap; leave on."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "sol_at_node"
+                label   "Save Solution at Node"
+                type    integer
+                default { "-1" }
+                range   { -1 1000 }
+                help    "Write the solution value at this node index into the output JSON. -1 = off."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "vis_boundary_only"
+                label   "Visualize Boundary Only"
+                type    toggle
+                default { "0" }
+                help    "Write only the elements touching the boundary to the visualization output (smaller files; interior elements are omitted)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "curved_mesh_size"
+                label   "Curved Mesh Size"
+                type    toggle
+                default { "0" }
+                help    "When computing the mesh size for curved (higher-order) meshes, upsample the curved edges for a more accurate measure."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "save_solve_sequence_debug"
+                label   "Save AL Solve Sequence (Debug)"
+                type    toggle
+                default { "0" }
+                help    "Save the intermediate states of the boundary-condition (augmented Lagrangian) phase for debugging. Produces many files."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "save_ccd_debug_meshes"
+                label   "Save CCD Debug Meshes"
+                type    toggle
+                default { "0" }
+                help    "Save the meshes handed to continuous collision detection whenever it limits a step, for debugging contact problems. Produces many files."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "save_time_sequence"
+                label   "Save Time Sequence"
+                type    toggle
+                default { "1" }
+                help    "Write a result file for every saved time step (on) or only the final state (off)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "save_nl_solve_sequence"
+                label   "Save Newton Iteration Sequence (Debug)"
+                type    toggle
+                default { "0" }
+                help    "Save the state after every Newton iteration for debugging. Produces many files and slows the run."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "spectrum"
+                label   "Compute System Spectrum"
+                type    toggle
+                default { "0" }
+                help    "Compute and record the eigenvalue spectrum of the system matrix in the output JSON (only in builds with Spectra; expensive)."
+                parmtag { "script_callback_language" "python" }
+            }
+        }
+
+
+
+    }

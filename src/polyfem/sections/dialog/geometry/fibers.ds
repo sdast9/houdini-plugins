@@ -1,0 +1,587 @@
+                    parm {
+                        name    "hgo_k1#_#"
+                        label   "Fiber Stiffness k1"
+                        type    float
+                        default { "10000" }
+                        disablewhen "@SHOW_FOR_DIRECT(HGOFiber HGODispersion)@"
+                        hidewhen "@SHOW_FOR_DIRECT(HGOFiber HGODispersion)@"
+                        range   { 0 1e+07 }
+                        help    "Fiber stiffness k1 (stress units) of the HGO fiber term: how strongly the fibers resist stretching along their direction. Fibers act only in tension."
+                        parmtag { "script_callback_language" "python" }
+                        parmtag { "units" "" }
+                    }
+                    parm {
+                        name    "hgo_k2#_#"
+                        label   "Exponential Stiffening k2"
+                        type    float
+                        default { "5" }
+                        disablewhen "@SHOW_FOR_DIRECT(HGOFiber HGODispersion)@"
+                        hidewhen "@SHOW_FOR_DIRECT(HGOFiber HGODispersion)@"
+                        range   { 0.0001 1000 }
+                        help    "Exponential stiffening k2 (dimensionless) of the HGO fiber term: how quickly the fiber stiffness grows with stretch. Must be > 0; larger values give a sharper 'locking' response typical of collagen."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "kappa_source#_#"
+                        label   "Dispersion Source"
+                        type    ordinal
+                        default { "constant" }
+                        disablewhen "@SHOW_FOR_DIRECT(HGODispersion)@"
+                        hidewhen "@SHOW_FOR_DIRECT(HGODispersion)@"
+                        menu {
+                            "constant"   "Constant"
+                            "expression" "Expression of x,y,z,t"
+                            "attribute"  "Per-Element Attribute"
+                            "file"       "Per-Element File"
+                        }
+                        help    "Where the fiber dispersion kappa comes from: one constant for the whole subdomain, an expression of position and time, a per-element attribute from a SOP, or a per-element file."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "kappa#_#"
+                        label   "Fiber Dispersion (kappa)"
+                        type    float
+                        default { "0" }
+                        disablewhen "{ kappa_source#_# != constant } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        hidewhen "{ kappa_source#_# != constant } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        range   { 0 0.3333 }
+                        help    "Fiber dispersion kappa of the HGO Dispersion (GOH) model: 0 = all fibers perfectly aligned, 1/3 = fibers spread evenly in every direction (isotropic). Typical arterial tissue is 0.1-0.3."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "kappa_expr#_#"
+                        label   "Dispersion Expression"
+                        type    string
+                        default { "0" }
+                        disablewhen "{ kappa_source#_# != expression } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        hidewhen "{ kappa_source#_# != expression } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        help    "Expression for kappa using x, y, z (position) and t (time), e.g. 0.1 + 0.05*z. Evaluated by PolyFEM at each element."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "kappa_sop#_#"
+                        label   "Dispersion SOP"
+                        type    oppath
+                        default { "" }
+                        disablewhen "{ kappa_source#_# != attribute } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        hidewhen "{ kappa_source#_# != attribute } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        help    "SOP node whose primitives carry a per-element kappa attribute. Elements are matched to this mesh by centroid, so any SOP-authored field works."
+                        parmtag { "opfilter" "!!SOP!!" }
+                        parmtag { "oprelative" "." }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "kappa_attrib#_#"
+                        label   "Dispersion Attribute"
+                        type    string
+                        default { "kappa" }
+                        disablewhen "{ kappa_source#_# != attribute } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        hidewhen "{ kappa_source#_# != attribute } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        help    "Name of the primitive attribute on the Dispersion SOP holding kappa for each element (values in [0, 1/3])."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "kappa_file#_#"
+                        label   "Dispersion File"
+                        type    file
+                        default { "" }
+                        disablewhen "{ kappa_source#_# != file } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        hidewhen "{ kappa_source#_# != file } @SHOW_FOR_DIRECT(HGODispersion)@"
+                        help    "Text/CSV file with one kappa value per element (in PolyFEM's global element order), or a legacy .vtk with CELL_DATA. Copied into the input folder."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "k_chi#_#"
+                        label   "Switch Smoothness k_chi"
+                        type    float
+                        default { "100" }
+                        disablewhen "@SHOW_FOR_DIRECT(HGODispersion)@"
+                        hidewhen "@SHOW_FOR_DIRECT(HGODispersion)@"
+                        range   { 1 10000 }
+                        help    "Smoothness of the switch that turns the fiber term off in compression (fibers cannot push). Larger values make the switch sharper; 100 is the model default and a good choice."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "Tmax#_#"
+                        label   "Max Active Tension"
+                        type    float
+                        default { "100000" }
+                        disablewhen "@SHOW_FOR_DIRECT(ActiveFiber)@"
+                        hidewhen "@SHOW_FOR_DIRECT(ActiveFiber)@"
+                        range   { 0 1e+07 }
+                        help    "Maximum active tension (stress units) the muscle fibers can generate when fully activated."
+                        parmtag { "script_callback_language" "python" }
+                        parmtag { "units" "" }
+                    }
+                    parm {
+                        name    "activation#_#"
+                        label   "Activation"
+                        type    string
+                        default { "1" }
+                        disablewhen "@SHOW_FOR_DIRECT(ActiveFiber)@"
+                        hidewhen "@SHOW_FOR_DIRECT(ActiveFiber)@"
+                        help    "Activation level of the muscle fibers between 0 (relaxed) and 1 (fully active). Type a number, or an expression of time t such as 0.5*t to ramp the contraction."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_source#_#"
+                        label   "Fiber Direction Source"
+                        type    ordinal
+                        default { "constant" }
+                        help    "Where the fiber direction comes from: one constant vector, an expression of x, y, z, t, a per-element attribute from a SOP, a per-element file, a cylindrical frame (radial/hoop/axial about an axis, e.g. a vessel wall), or the tangent of a curve (a tendon or muscle line of action). PolyFEM treats these as reference directions a0 in simulation/world coordinates; the Geometry Transform does not rotate them."
+                        disablewhen "@SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "@SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        menu {
+                            "constant"    "Constant Direction"
+                            "expression"  "Expression of x,y,z,t"
+                            "attribute"   "Per-Element Attribute"
+                            "file"        "Per-Element File"
+                            "cylindrical" "Cylindrical (radial / circumferential / axial)"
+                            "curve"       "Curve Tangent (line of action)"
+                        }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_dir#_#"
+                        label   "Fiber Direction"
+                        type    vector
+                        size    3
+                        default { "1" "0" "0" }
+                        help    "Constant fiber direction vector for the whole subdomain (it is normalized). Reference direction a0 in simulation/world coordinates: it is not rotated or scaled by this geometry's Transform parameters."
+                        disablewhen "{ fib_source#_# != constant } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "{ fib_source#_# != constant } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        range   { -1 1 }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_expr#_#"
+                        label   "Fiber Expression"
+                        type    string
+                        default { "[1, 0, 0]" }
+                        disablewhen "{ fib_source#_# != expression } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "{ fib_source#_# != expression } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        help    "Fiber direction as a 3-component expression list using x, y, z and t, e.g. [\"cos(z)\", \"sin(z)\", 0] for a helical layout. Evaluated by PolyFEM at each element."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_sop#_#"
+                        label   "Fiber SOP"
+                        type    oppath
+                        default { "" }
+                        disablewhen "{ fib_source#_# != attribute } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "{ fib_source#_# != attribute } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        help    "SOP node whose primitives carry a per-element fiber direction attribute. Elements are matched to this mesh by centroid."
+                        parmtag { "opfilter" "!!SOP!!" }
+                        parmtag { "oprelative" "." }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_attrib#_#"
+                        label   "Fiber Attribute"
+                        type    string
+                        default { "fiber1" }
+                        disablewhen "{ fib_source#_# != attribute } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "{ fib_source#_# != attribute } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        help    "Name of the vector primitive attribute on the Fiber SOP holding each element's fiber direction."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_file#_#"
+                        label   "Fiber File"
+                        type    file
+                        default { "" }
+                        disablewhen "{ fib_source#_# != file } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "{ fib_source#_# != file } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        help    "File with one fiber direction per element: a legacy .vtk with a CELL_DATA VECTORS array, or a text/CSV file with three numbers per line in PolyFEM's global element order."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_axis_origin#_#"
+                        label   "Cylinder Axis Origin"
+                        type    vector
+                        size    3
+                        default { "0" "0" "0" }
+                        disablewhen "{ fib_source#_# != cylindrical } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "{ fib_source#_# != cylindrical } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        help    "A point on the cylinder axis used for the cylindrical fiber frame (e.g. the centerline of a vessel)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_axis_dir#_#"
+                        label   "Cylinder Axis Direction"
+                        type    vector
+                        size    3
+                        default { "0" "1" "0" }
+                        disablewhen "{ fib_source#_# != cylindrical } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "{ fib_source#_# != cylindrical } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        help    "Direction of the cylinder axis for the cylindrical fiber frame (it is normalized)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_component#_#"
+                        label   "Cylinder Component"
+                        type    ordinal
+                        default { "circumferential" }
+                        disablewhen "{ fib_source#_# != cylindrical } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "{ fib_source#_# != cylindrical } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        menu {
+                            "circumferential" "Circumferential (hoop)"
+                            "radial"          "Radial (through wall)"
+                            "longitudinal"    "Longitudinal (along axis)"
+                        }
+                        help    "Which cylindrical direction the fibers follow: circumferential (around the axis, hoop direction), radial (through the wall), or longitudinal (along the axis)."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_curve#_#"
+                        label   "Line-of-Action Curve"
+                        type    oppath
+                        default { "" }
+                        disablewhen "{ fib_source#_# != curve } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "{ fib_source#_# != curve } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        help    "SOP with a curve (polyline) whose tangent gives the fiber direction of each element (nearest curve point). Use for a tendon, ligament or muscle line of action."
+                        parmtag { "opfilter" "!!SOP!!" }
+                        parmtag { "oprelative" "." }
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    parm {
+                        name    "fib_file_field#_#"
+                        label   "Fiber VTK Field"
+                        type    string
+                        default { "FIB_DIR1" }
+                        disablewhen "{ fib_source#_# != file } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        hidewhen "{ fib_source#_# != file } @SHOW_FOR_DIRECT(HGOFiber HGODispersion ActiveFiber)@"
+                        help    "Name of the VECTORS array to read from a legacy .vtk fiber file."
+                        parmtag { "script_callback_language" "python" }
+                    }
+                    multiparm {
+                        name    "num_fiber_families#_#"
+                        label    "Num of Fiber Families"
+                        default 1
+                        disablewhen "{ materials#_# != MaterialSum }"
+                        hidewhen "{ materials#_# != MaterialSum }"
+
+                        parm {
+                            name    "fam_model#_#_#"
+                            label   "Family Model"
+                            type    ordinal
+                            default { "HGODispersion" }
+                            menu {
+                                "HGOFiber"      "HGO Fiber (aligned)"
+                                "HGODispersion" "HGO Dispersion (GOH)"
+                                "ActiveFiber"   "Active Fiber (muscle)"
+                            }
+                            help    "Model of this fiber family inside the composite: HGO Fiber (perfectly aligned, exponential), HGO Dispersion (GOH, with a dispersion kappa) or Active Fiber (muscle contraction)."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_k1#_#_#"
+                            label   "Fiber Stiffness k1"
+                            type    float
+                            default { "10000" }
+                            disablewhen "{ fam_model#_#_# == ActiveFiber }"
+                            hidewhen "{ fam_model#_#_# == ActiveFiber }"
+                            range   { 0 1e+07 }
+                            help    "Fiber stiffness k1 (stress units) of this family: how strongly its fibers resist stretching. Fibers act only in tension."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_k2#_#_#"
+                            label   "Exponential Stiffening k2"
+                            type    float
+                            default { "5" }
+                            disablewhen "{ fam_model#_#_# == ActiveFiber }"
+                            hidewhen "{ fam_model#_#_# == ActiveFiber }"
+                            range   { 0.0001 1000 }
+                            help    "Exponential stiffening k2 (dimensionless) of this family. Must be > 0; larger values make the fibers lock up more sharply as they stretch."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_kappa_source#_#_#"
+                            label   "Dispersion Source"
+                            type    ordinal
+                            default { "constant" }
+                            disablewhen "{ fam_model#_#_# != HGODispersion }"
+                            hidewhen "{ fam_model#_#_# != HGODispersion }"
+                            menu {
+                                "constant"   "Constant"
+                                "expression" "Expression of x,y,z,t"
+                                "attribute"  "Per-Element Attribute"
+                                "file"       "Per-Element File"
+                            }
+                            help    "Where this family's dispersion kappa comes from: a constant, an expression of x, y, z, t, a per-element SOP attribute, or a per-element file."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_kappa#_#_#"
+                            label   "Fiber Dispersion (kappa)"
+                            type    float
+                            default { "0" }
+                            disablewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != constant }"
+                            hidewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != constant }"
+                            range   { 0 0.3333 }
+                            help    "Dispersion kappa of this family: 0 = perfectly aligned fibers, 1/3 = isotropic spread. Typical arterial collagen is 0.1-0.3."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_kappa_expr#_#_#"
+                            label   "Dispersion Expression"
+                            type    string
+                            default { "0" }
+                            disablewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != expression }"
+                            hidewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != expression }"
+                            help    "Expression for this family's kappa using x, y, z and t."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_kappa_sop#_#_#"
+                            label   "Dispersion SOP"
+                            type    oppath
+                            default { "" }
+                            disablewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != attribute }"
+                            hidewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != attribute }"
+                            help    "SOP node with a per-element kappa primitive attribute for this family (matched by element centroid)."
+                            parmtag { "opfilter" "!!SOP!!" }
+                            parmtag { "oprelative" "." }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_kappa_attrib#_#_#"
+                            label   "Dispersion Attribute"
+                            type    string
+                            default { "kappa" }
+                            disablewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != attribute }"
+                            hidewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != attribute }"
+                            help    "Name of the primitive attribute holding this family's per-element kappa."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_kappa_file#_#_#"
+                            label   "Dispersion File"
+                            type    file
+                            default { "" }
+                            disablewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != file }"
+                            hidewhen "{ fam_model#_#_# != HGODispersion } { fam_kappa_source#_#_# != file }"
+                            help    "Per-element kappa file for this family (text/CSV, one value per element, or legacy .vtk CELL_DATA)."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_k_chi#_#_#"
+                            label   "Switch Smoothness k_chi"
+                            type    float
+                            default { "100" }
+                            disablewhen "{ fam_model#_#_# != HGODispersion }"
+                            hidewhen "{ fam_model#_#_# != HGODispersion }"
+                            range   { 1 10000 }
+                            help    "Smoothness of the tension-only switch for this family; 100 is the model default."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_Tmax#_#_#"
+                            label   "Max Active Tension"
+                            type    float
+                            default { "100000" }
+                            disablewhen "{ fam_model#_#_# != ActiveFiber }"
+                            hidewhen "{ fam_model#_#_# != ActiveFiber }"
+                            range   { 0 1e+07 }
+                            help    "Maximum active tension (stress units) this muscle family generates at full activation."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_activation#_#_#"
+                            label   "Activation"
+                            type    string
+                            default { "1" }
+                            disablewhen "{ fam_model#_#_# != ActiveFiber }"
+                            hidewhen "{ fam_model#_#_# != ActiveFiber }"
+                            help    "Activation of this muscle family, 0 (relaxed) to 1 (fully active); a number or an expression of time t."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_source#_#_#"
+                            label   "Fiber Direction Source"
+                            type    ordinal
+                            default { "constant" }
+                            help    "Where this family's fiber direction comes from: constant vector, expression, per-element SOP attribute, per-element file, cylindrical frame, or curve tangent. PolyFEM interprets these as reference directions a0 in simulation/world coordinates; the Geometry Transform does not rotate them."
+                            menu {
+                                "constant"    "Constant Direction"
+                                "expression"  "Expression of x,y,z,t"
+                                "attribute"   "Per-Element Attribute"
+                                "file"        "Per-Element File"
+                                "cylindrical" "Cylindrical (radial / circumferential / axial)"
+                                "curve"       "Curve Tangent (line of action)"
+                            }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_dir#_#_#"
+                            label   "Fiber Direction"
+                            type    vector
+                            size    3
+                            default { "1" "0" "0" }
+                            help    "Constant fiber direction of this family (normalized). Reference direction a0 in simulation/world coordinates: not rotated or scaled by the geometry's Transform."
+                            disablewhen "{ fam_fib_source#_#_# != constant }"
+                            hidewhen "{ fam_fib_source#_#_# != constant }"
+                            range   { -1 1 }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_expr#_#_#"
+                            label   "Fiber Expression"
+                            type    string
+                            default { "[1, 0, 0]" }
+                            disablewhen "{ fam_fib_source#_#_# != expression }"
+                            hidewhen "{ fam_fib_source#_#_# != expression }"
+                            help    "Fiber direction of this family as a 3-component expression list of x, y, z and t."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_sop#_#_#"
+                            label   "Fiber SOP"
+                            type    oppath
+                            default { "" }
+                            disablewhen "{ fam_fib_source#_#_# != attribute fam_mirror#_#_# != 1 } { fam_fib_source#_#_# != attribute fam_axis_source#_#_# != attribute }"
+                            hidewhen "{ fam_fib_source#_#_# != attribute fam_mirror#_#_# != 1 } { fam_fib_source#_#_# != attribute fam_axis_source#_#_# != attribute }"
+                            help    "SOP node with a per-element fiber-direction or rotation-axis attribute for this family (matched by element centroid)."
+                            parmtag { "opfilter" "!!SOP!!" }
+                            parmtag { "oprelative" "." }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_attrib#_#_#"
+                            label   "Fiber Attribute"
+                            type    string
+                            default { "fiber1" }
+                            disablewhen "{ fam_fib_source#_#_# != attribute }"
+                            hidewhen "{ fam_fib_source#_#_# != attribute }"
+                            help    "Name of the vector primitive attribute holding this family's per-element fiber direction."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_file#_#_#"
+                            label   "Fiber File"
+                            type    file
+                            default { "" }
+                            disablewhen "{ fam_fib_source#_#_# != file }"
+                            hidewhen "{ fam_fib_source#_#_# != file }"
+                            help    "Per-element fiber-direction file for this family (legacy .vtk VECTORS or text/CSV with three numbers per element)."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_axis_origin#_#_#"
+                            label   "Cylinder Axis Origin"
+                            type    vector
+                            size    3
+                            default { "0" "0" "0" }
+                            disablewhen "{ fam_fib_source#_#_# != cylindrical fam_mirror#_#_# != 1 } { fam_fib_source#_#_# != cylindrical fam_axis_source#_#_# != cylindrical }"
+                            hidewhen "{ fam_fib_source#_#_# != cylindrical fam_mirror#_#_# != 1 } { fam_fib_source#_#_# != cylindrical fam_axis_source#_#_# != cylindrical }"
+                            help    "A point on the cylinder axis for this family's cylindrical fiber frame (also used when the rotation axis follows the cylinder wall normal)."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_axis_dir#_#_#"
+                            label   "Cylinder Axis Direction"
+                            type    vector
+                            size    3
+                            default { "0" "1" "0" }
+                            disablewhen "{ fam_fib_source#_#_# != cylindrical fam_mirror#_#_# != 1 } { fam_fib_source#_#_# != cylindrical fam_axis_source#_#_# != cylindrical }"
+                            hidewhen "{ fam_fib_source#_#_# != cylindrical fam_mirror#_#_# != 1 } { fam_fib_source#_#_# != cylindrical fam_axis_source#_#_# != cylindrical }"
+                            help    "Direction of the cylinder axis for this family's cylindrical frame."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_component#_#_#"
+                            label   "Cylinder Component"
+                            type    ordinal
+                            default { "circumferential" }
+                            disablewhen "{ fam_fib_source#_#_# != cylindrical }"
+                            hidewhen "{ fam_fib_source#_#_# != cylindrical }"
+                            menu {
+                                "circumferential" "Circumferential (hoop)"
+                                "radial"          "Radial (through wall)"
+                                "longitudinal"    "Longitudinal (along axis)"
+                            }
+                            help    "Cylindrical direction this family follows: circumferential (hoop), radial (through the wall) or longitudinal (along the axis)."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_curve#_#_#"
+                            label   "Line-of-Action Curve"
+                            type    oppath
+                            default { "" }
+                            disablewhen "{ fam_fib_source#_#_# != curve }"
+                            hidewhen "{ fam_fib_source#_#_# != curve }"
+                            help    "SOP curve whose tangent gives this family's fiber direction (nearest curve point per element)."
+                            parmtag { "opfilter" "!!SOP!!" }
+                            parmtag { "oprelative" "." }
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_fib_file_field#_#_#"
+                            label   "Fiber VTK Field"
+                            type    string
+                            default { "FIB_DIR1" }
+                            disablewhen "{ fam_fib_source#_#_# != file }"
+                            hidewhen "{ fam_fib_source#_#_# != file }"
+                            help    "Name of the VECTORS array to read from this family's legacy .vtk file."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_mirror#_#_#"
+                            label   "Symmetric Pair (+/- theta)"
+                            type    toggle
+                            default { "0" }
+                            disablewhen "{ fam_fib_source#_#_# == expression }"
+                            hidewhen "{ fam_fib_source#_#_# == expression }"
+                            help    "Export this family twice, rotated by +theta and -theta about the rotation axis, sharing k1, k2 and kappa. This is the standard two-family (GOH) layout of arteries and other helically reinforced tissues."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_theta#_#_#"
+                            label   "Half Angle (deg)"
+                            type    float
+                            default { "30" }
+                            disablewhen "{ fam_mirror#_#_# != 1 } { fam_fib_source#_#_# == expression }"
+                            hidewhen "{ fam_mirror#_#_# != 1 } { fam_fib_source#_#_# == expression }"
+                            range   { 0 90 }
+                            help    "Half angle in degrees between each of the two mirrored families and the base fiber direction (e.g. 30 gives fibers at +30 and -30 degrees)."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_axis_source#_#_#"
+                            label   "Rotation Axis Source"
+                            type    ordinal
+                            default { "constant" }
+                            disablewhen "{ fam_mirror#_#_# != 1 } { fam_fib_source#_#_# == expression }"
+                            hidewhen "{ fam_mirror#_#_# != 1 } { fam_fib_source#_#_# == expression }"
+                            menu {
+                                "constant"    "Constant Axis"
+                                "attribute"   "Per-Element Attribute"
+                                "cylindrical" "Cylinder Radial Direction (wall normal)"
+                            }
+                            help    "Axis about which the two mirrored families are rotated: a constant vector, a per-element attribute, or the local radial direction of the cylindrical frame (the wall normal, which keeps the fibers in the wall surface of a vessel)."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_axis#_#_#"
+                            label   "Rotation Axis"
+                            type    vector
+                            size    3
+                            default { "0" "0" "1" }
+                            disablewhen "{ fam_mirror#_#_# != 1 } { fam_fib_source#_#_# == expression } { fam_axis_source#_#_# != constant }"
+                            hidewhen "{ fam_mirror#_#_# != 1 } { fam_fib_source#_#_# == expression } { fam_axis_source#_#_# != constant }"
+                            range   { -1 1 }
+                            help    "Constant rotation axis (normalized) for the mirrored pair; should be perpendicular to the base fiber direction."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                        parm {
+                            name    "fam_axis_attrib#_#_#"
+                            label   "Rotation Axis Attribute"
+                            type    string
+                            default { "normal1" }
+                            disablewhen "{ fam_mirror#_#_# != 1 } { fam_fib_source#_#_# == expression } { fam_axis_source#_#_# != attribute }"
+                            hidewhen "{ fam_mirror#_#_# != 1 } { fam_fib_source#_#_# == expression } { fam_axis_source#_#_# != attribute }"
+                            help    "Name of the vector primitive attribute holding a per-element rotation axis for the mirrored pair (for example a surface normal)."
+                            parmtag { "script_callback_language" "python" }
+                        }
+                    }

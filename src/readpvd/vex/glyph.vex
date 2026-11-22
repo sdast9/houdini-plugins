@@ -1,0 +1,82 @@
+// With smoothing on, every physical node has one recovered tensor (the same
+// on all its duplicated copies); draw a single glyph per node, not one per
+// duplicate, so coincident glyphs do not stack up.
+if (chi("../smooth_field") && haspointattrib(0, "coincident_rep")
+    && float(point(0, "coincident_rep", @ptnum)) < 0.5)
+    return;
+int sample_id = @ptnum;
+if (chi("../smooth_field") && haspointattrib(0, "coincident_id")) {
+    float cid = point(0, "coincident_id", @ptnum);
+    sample_id = (int)rint(cid);
+}
+if (sample_id % max(1, chi("../glyph_stride")) != 0) return;
+string tensor = chs("../glyph_tensor");
+string vec_name =
+      tensor == "right_cauchy_green" ? "right_cauchy_green_eigenvectors"
+    : tensor == "left_cauchy_green" ? "left_cauchy_green_eigenvectors"
+    : tensor == "green_lagrange" ? "green_lagrange_eigenvectors"
+    : tensor == "pk2" ? "pk2_eigenvectors"
+    : tensor == "cauchy" ? "cauchy_eigenvectors" : "";
+string val_name =
+      tensor == "right_cauchy_green" ? "right_cauchy_green_eigenvalues"
+    : tensor == "left_cauchy_green" ? "left_cauchy_green_eigenvalues"
+    : tensor == "green_lagrange" ? "green_lagrange_eigenvalues"
+    : tensor == "pk2" ? "pk2_eigenvalues"
+    : tensor == "cauchy" ? "cauchy_eigenvalues" : "";
+if (!haspointattrib(0, vec_name) || !haspointattrib(0, val_name)) return;
+float scale = ch("../tensor_scale");
+matrix3 vecs = point(0, vec_name, @ptnum);
+vector vals = point(0, val_name, @ptnum);
+for (int j = 0; j < 3; j++) {
+    if ((j == 0 && !chi("../glyph_direction_first"))
+        || (j == 1 && !chi("../glyph_direction_second"))
+        || (j == 2 && !chi("../glyph_direction_third")))
+        continue;
+    vector dir = normalize(set(getcomp(vecs, 0, j), getcomp(vecs, 1, j),
+                               getcomp(vecs, 2, j)));
+    float direction_scale = j == 0 ? chf("../glyph_scale_first")
+        : j == 1 ? chf("../glyph_scale_second")
+        : chf("../glyph_scale_third");
+    float mag = chs("../glyph_length_mode") == "normalized"
+        ? scale * direction_scale
+        : abs(vals[j]) * scale * direction_scale;
+    if (chs("../glyph_length_mode") == "clamped")
+        mag = min(mag, ch("../glyph_max_length"));
+    // Color the glyph POINTS (not prims): writing a primitive Cd here would
+    // promote Cd to a prim attribute, and a prim Cd overrides the object's
+    // point-Cd color mapping in the viewport (turning the result a flat
+    // color). Point Cd keeps the field coloring intact alongside the glyphs.
+    vector color = chi("../glyph_sign_color")
+        && (tensor == "pk2" || tensor == "cauchy")
+        ? (vals[j] >= 0 ? {1.0, 0.2, 0.2} : {0.2, 0.4, 1.0})
+        : chv("../glyph_color");
+    vector pos_a = v@P - dir * mag * 0.5;
+    vector pos_b = v@P + dir * mag * 0.5;
+    int a = addpoint(0, pos_a);
+    int b = addpoint(0, pos_b);
+    setpointattrib(0, "Cd", a, color, "set");
+    setpointattrib(0, "Cd", b, color, "set");
+    int prim = addprim(0, "polyline", a, b);
+    setprimgroup(0, "readpvd_glyphs", prim, 1, "set");
+    if (chi("../glyph_arrowheads") && mag > 1e-12) {
+        vector helper = abs(dir.z) < 0.9 ? {0, 0, 1} : {0, 1, 0};
+        float arrow = ch("../glyph_arrow_size");
+        vector side = normalize(cross(dir, helper)) * mag * arrow;
+        vector step = dir * mag * arrow * 2;
+        // Arrowheads at both ends (eigenvectors are unoriented: +dir == -dir).
+        vector back_b = pos_b - step;
+        int cb = addpoint(0, back_b + side);
+        int db = addpoint(0, back_b - side);
+        setpointattrib(0, "Cd", cb, color, "set");
+        setpointattrib(0, "Cd", db, color, "set");
+        setprimgroup(0, "readpvd_glyphs", addprim(0, "polyline", b, cb), 1, "set");
+        setprimgroup(0, "readpvd_glyphs", addprim(0, "polyline", b, db), 1, "set");
+        vector back_a = pos_a + step;
+        int ca = addpoint(0, back_a + side);
+        int da = addpoint(0, back_a - side);
+        setpointattrib(0, "Cd", ca, color, "set");
+        setpointattrib(0, "Cd", da, color, "set");
+        setprimgroup(0, "readpvd_glyphs", addprim(0, "polyline", a, ca), 1, "set");
+        setprimgroup(0, "readpvd_glyphs", addprim(0, "polyline", a, da), 1, "set");
+    }
+}

@@ -1,0 +1,79 @@
+            multiparm {
+                name    "num_volumes#"
+                label    "Number of Volumes"
+                invisible
+                default 1
+                hidewhen "{ is_obstacle# != 0 }"
+
+                parm {
+                    name    "subdomain#_#"
+                    label   "Subdomain"
+                    type    label
+                    default { "Geometry #, Subdomain #" }
+                }
+                parm {
+                    name    "subdomain_info#_#"
+                    label   "Elements"
+                    type    string
+                    default { "" }
+                    disablewhen "{ working_dir != __polyfem_report_edit_sentinel__ }"
+                    help    "Which elements form this subdomain: the Gmsh physical group (its tag number and name) they come from, and how many there are. Subdomains are numbered by sorted physical-group tag, elements without a group last, so tags 1 and 100 become subdomains 1 and 2. Read-only."
+                }
+                parm {
+                    name    "color_#_#"
+                    label   "Subdomain Color"
+                    type    color
+                    nolabel
+                    joinnext
+                    size    3
+                    default { "1" "0" "0" }
+                    range   { 0 1 }
+                    help    "Viewport color of this subdomain (material region). Display only."
+                    parmtag { "colortype" "hide" }
+                }
+                parm {
+                    name    "mainOrder#_#"
+                    label   "Element Order"
+                    type    ordinal
+                    default { "0" }
+                    menu {
+                        "1" "1"
+                        "2" "2"
+                        "3" "3"
+                        "4" "4"
+                    }
+                    help    "Polynomial order of the finite elements in this subdomain. 1 = linear elements (fastest, coarsest); 2 or higher = higher-order elements that capture bending and curvature better per element but cost more. Start with 1; use 2 for accuracy studies."
+                    parmtag { "script_callback_language" "python" }
+                }
+                @INCLUDE materials.ds@
+
+                parm {
+                    name    "geo_sep4_#_#"
+                    label   "Spacer"
+                    type    separator
+                    default { "" }
+                    hidewhen "{ is_obstacle# != 0 }"
+                    parmtag { "sidefx::layout_height" "large" }
+                    parmtag { "sidefx::look" "blank" }
+                }
+                @INCLUDE bcs.ds@
+
+                parm {
+                    name    "geo_sep6_#_#"
+                    label   "Spacer"
+                    type    separator
+                    default { "" }
+                    parmtag { "sidefx::layout_height" "large" }
+                    parmtag { "sidefx::look" "blank" }
+                }
+                @INCLUDE initial_conditions.ds@
+
+                parm {
+                    name    "geo_sep8_#_#"
+                    label   "Spacer"
+                    type    separator
+                    default { "" }
+                    parmtag { "sidefx::layout_height" "large" }
+                    parmtag { "sidefx::look" "blank" }
+                }
+            }

@@ -1,0 +1,177 @@
+        group {
+            name    "_folder0_2_2"
+            label   "Nonlinear Settings"
+
+            parm {
+                name    "labelparm2"
+                label   "Stopping criteria"
+                type    label
+                default { "Stopping criteria" }
+                parmtag { "sidefx::look" "heading" }
+            }
+            parm {
+                name    "first_grad_norm_tol"
+                label   "First Gradient Norm Tolerance"
+                type    log
+                default { "1e-12" }
+                range   { 1e-20 1 }
+                help    "Skip the solve entirely when the initial gradient norm is already below this value (the state is already in equilibrium)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "x_delta"
+                label   "X Delta Tolerance"
+                type    log
+                default { "0" }
+                range   { 1e-15 1 }
+                help    "Stop when the change of the unknowns in one iteration is smaller than this (scaled by the problem size). 0 = do not use this criterion."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "rel_x_delta_tol"
+                label   "Relative X Delta Tolerance"
+                type    log
+                default { "0" }
+                range   { 0 1 }
+                help    "Stop when the change of the unknowns in one iteration has dropped to this fraction of the first iteration's change. 0 = do not use this criterion. Like X Delta, stopping this way is not proof of equilibrium, so it only counts as convergence when Allow Non-Gradient Convergence is on."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "grad_norm"
+                label   "Gradient Norm Tolerance"
+                type    log
+                default { "1e-10" }
+                range   { 1e-20 1 }
+                help    "Main convergence criterion: stop when the gradient (residual force) norm, scaled by the problem's force scale, falls below this value. Smaller = more accurate equilibrium, more iterations; 1e-10 is tight, 1e-6 is loose."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "norm_type"
+                label   "Gradient Norm Type"
+                type    ordinal
+                default { "1" }
+                menu {
+                    "Euclidean" "Euclidean (unscaled)"
+                    "L2"        "L2 (scaled, default)"
+                    "Linf"      "Linf (largest component, scaled)"
+                }
+                help    "Which norm of the gradient (residual force) is compared with Gradient Norm Tolerance, and how PolyFEM scales it to be unit-free. L2 (default) is scaled by the characteristic force and length so the tolerance means the same on any mesh or unit system; Linf uses the largest single component, scaled by the characteristic force; Euclidean is the raw, unscaled vector norm and is only meaningful if you know the units of your gradient."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "rel_grad_norm_tol"
+                label   "Relative Gradient Norm Tolerance"
+                type    log
+                default { "1e-10" }
+                range   { 0 1 }
+                help    "Also stop when the gradient norm has dropped to this fraction of its value at the start of the solve (1e-10 = ten orders of magnitude). Works alongside the absolute Gradient Norm Tolerance: whichever is met first ends the solve, and both count as genuine convergence. 0 = do not use this criterion."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "max_iterations"
+                label   "Max Iterations"
+                type    intlog
+                default { "500" }
+                range   { 1 100000 }
+                help    "Hard limit on Newton iterations per solve. If it is reached without convergence the run fails (unless Allow Out of Iterations is on)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "iterations_per_strategy"
+                label   "Iterations per Strategy"
+                type    intlog
+                default { "5" }
+                range   { 1 100000 }
+                help    "How many iterations a fallback strategy (regularized Newton, gradient descent) runs before the solver tries to return to plain Newton."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "allow_out_of_iterations"
+                label   "Allow Out of Iterations"
+                type    toggle
+                default { "0" }
+                help    "Continue the simulation with the best available state when Max Iterations is reached instead of stopping with an error. The result of such a step is not converged; the log records it."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "allow_non_grad_convergence"
+                label   "Allow Non-Gradient Convergence"
+                type    toggle
+                default { "0" }
+                help    "Count a stop on the X Delta, Relative X Delta, f Delta or Newton Decrement criteria as a successful (converged) solve. Off (default): only a small gradient norm counts as convergence; a stop on those other criteria is logged as an error and the solve is reported as interrupted (not converged)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "force_psd_projection"
+                label   "Force PSD Projection"
+                type    toggle
+                default { "0" }
+                disablewhen "{ solver_nl != Newton }"
+                hidewhen "{ solver_nl != Newton }"
+                help    "Always project element Hessians to positive semi-definite, even on the first attempt. Guarantees a descent direction at the cost of slower (linear) convergence near the solution."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "use_psd_projection"
+                label   "Use PSD Projection"
+                type    toggle
+                default { "1" }
+                disablewhen "{ solver_nl != Newton }"
+                hidewhen "{ solver_nl != Newton }"
+                help    "Allow projecting element Hessians to positive semi-definite when a plain Newton step is not a descent direction (standard IPC practice). Turning this off can make solves fail on buckling or snapping configurations."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "use_psd_projection_reg"
+                label   "Use PSD Projection in Regularized"
+                type    toggle
+                default { "1" }
+                disablewhen "{ solver_nl != Newton }"
+                hidewhen "{ solver_nl != Newton }"
+                help    "Also project element Hessians to positive semi-definite inside the regularized-Newton fallback strategy."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "labelparm"
+                label   "Advanced stopping criteria"
+                type    label
+                default { "Advanced stopping criteria" }
+                parmtag { "sidefx::look" "heading" }
+            }
+            parm {
+                name    "f_delta"
+                label   "f Delta Tolerance"
+                type    log
+                default { "0" }
+                range   { 0 0.1 }
+                help    "Stop when the energy changes by less than this over f Delta Step Count consecutive iterations. 0 = do not use this criterion."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "f_delta_step_tol"
+                label   "f Delta Step Count"
+                type    intlog
+                default { "100" }
+                range   { 1 1000 }
+                help    "Number of consecutive iterations the energy change must stay below f Delta before stopping on that criterion."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "derivative_along_delta_x_tol"
+                label   "Descent Direction Tolerance"
+                type    log
+                default { "1e-16" }
+                range   { 0 1e-15 }
+                help    "Newton only: the step counts as converged when the energy decrease the Newton step predicts (minus its directional derivative, the squared Newton decrement) is below this value (scaled by the problem's energy). Real contact scenes usually converge on this test rather than on the gradient tolerance. The other methods ignore it and stop on the gradient tolerance: their directional derivative says nothing about the distance to the solution."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "newton_decrement_tol"
+                label   "Newton Decrement Tolerance"
+                type    log
+                default { "0" }
+                range   { 0 1 }
+                help    "Stop when the Newton decrement 1/2 dx.H.dx (the energy decrease the quadratic model predicts for the next step) falls below this value. 0 = off (default); that is also why the log prints 1/2dx^THdx=nan on every solve: the quantity is simply not computed. Counts as convergence only when Allow Non-Gradient Convergence is on."
+                parmtag { "script_callback_language" "python" }
+            }
+        }

@@ -1,0 +1,57 @@
+        group {
+            name    "_folder0_2_4"
+            label   "Rayleigh Damping"
+            hidewhentab "{ expert_mode == 0 }"
+
+            multiparm {
+                name    "num_rayleigh"
+                label    "Num of Rayleigh Damping Types"
+
+                parm {
+                    name    "rayleigh_form#"
+                    label   "Form"
+                    type    ordinal
+                    default { "0" }
+                    menu {
+                        "elasticity"    "Elasticity"
+                        "contact"       "Contact"
+                        "friction"      "Friction"
+                    }
+                    help    "Which energy this damping term acts on: the elastic deformation, the contact forces, or friction."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "stiffness_ratio#"
+                    label   "Stiffness Ratio"
+                    type    float
+                    default { "0.75" }
+                    range   { 0 1 }
+                    help    "Amount of stiffness-proportional (Rayleigh) damping: the damping matrix is 0.75 * ratio * dt^3 times the stiffness matrix, which mainly damps high-frequency vibrations. 0 = none."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "rayleigh_lagging#"
+                    label   "Lagging Iterations"
+                    type    integer
+                    default { "1" }
+                    range   { 0 10 }
+                    help    "Number of lagged updates per step of the damping term (it is evaluated with the previous iteration's state)."
+                    parmtag { "script_callback_language" "python" }
+                }
+                parm {
+                    name    "sepparm4___#"
+                    label   "Spacer"
+                    type    separator
+                    default { "" }
+                    parmtag { "sidefx::layout_height" "small" }
+                    parmtag { "sidefx::look" "blank" }
+                }
+                parm {
+                    name    "sepparm6_#"
+                    label   "Separator"
+                    type    separator
+                    default { "" }
+                }
+            }
+
+        }

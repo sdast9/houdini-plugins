@@ -1,0 +1,55 @@
+    group {
+        name    "stdswitcher7_2"
+        label   "Misc"
+        invisibletab
+
+        parm {
+            name    "use_dcolor"
+            baseparm
+            label   "Set Wireframe Color"
+            export  none
+        }
+        parm {
+            name    "dcolor"
+            baseparm
+            label   "Wireframe Color"
+            export  none
+        }
+        parm {
+            name    "picking"
+            baseparm
+            label   "Viewport Selecting Enabled"
+            export  none
+        }
+        parm {
+            name    "pickscript"
+            baseparm
+            label   "Select Script"
+            export  none
+        }
+        parm {
+            name    "caching"
+            baseparm
+            label   "Cache Object Transform"
+            export  none
+        }
+        parm {
+            name    "vport_shadeopen"
+            baseparm
+            label   "Shade Open Curves In Viewport"
+            export  none
+        }
+        parm {
+            name    "vport_displayassubdiv"
+            baseparm
+            label   "Display as Subdivision in Viewport"
+            invisible
+            export  none
+        }
+        parm {
+            name    "vport_onionskin"
+            baseparm
+            label   "Onion Skinning"
+            export  none
+        }
+    }

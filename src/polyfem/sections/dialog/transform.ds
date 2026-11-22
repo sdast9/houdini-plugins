@@ -1,0 +1,169 @@
+    group {
+        name    "stdswitcher7"
+        label   "Transform"
+        invisibletab
+
+        parm {
+            name    "xOrd"
+            baseparm
+            label   "Transform Order"
+            invisible
+            joinnext
+            export  none
+        }
+        parm {
+            name    "rOrd"
+            baseparm
+            label   "Rotate Order"
+            nolabel
+            invisible
+            export  none
+        }
+        parm {
+            name    "t"
+            baseparm
+            label   "Translate"
+            invisible
+            export  none
+        }
+        parm {
+            name    "r"
+            baseparm
+            label   "Rotate"
+            invisible
+            export  none
+        }
+        parm {
+            name    "s"
+            baseparm
+            label   "Scale"
+            invisible
+            export  none
+        }
+        parm {
+            name    "p"
+            baseparm
+            label   "Pivot Translate"
+            invisible
+            export  none
+        }
+        parm {
+            name    "pr"
+            baseparm
+            label   "Pivot Rotate"
+            invisible
+            export  none
+        }
+        parm {
+            name    "scale"
+            baseparm
+            label   "Uniform Scale"
+            invisible
+            export  none
+        }
+        parm {
+            name    "pre_xform"
+            baseparm
+            label   "Modify Pre-Transform"
+            invisible
+            export  none
+        }
+        parm {
+            name    "keeppos"
+            baseparm
+            label   "Keep Position When Parenting"
+            invisible
+            export  none
+        }
+        parm {
+            name    "childcomp"
+            baseparm
+            label   "Child Compensation"
+            invisible
+            export  none
+        }
+        parm {
+            name    "constraints_on"
+            baseparm
+            label   "Enable Constraints"
+            invisible
+            export  none
+        }
+        parm {
+            name    "constraints_path"
+            baseparm
+            label   "Constraints"
+            invisible
+            export  none
+        }
+        parm {
+            name    "lookatpath"
+            baseparm
+            label   "Look At"
+            invisible
+            export  none
+        }
+        parm {
+            name    "lookupobjpath"
+            baseparm
+            label   "Look Up Object"
+            invisible
+            export  none
+        }
+        parm {
+            name    "lookup"
+            baseparm
+            label   "Look At Up Vector"
+            invisible
+            export  none
+        }
+        parm {
+            name    "pathobjpath"
+            baseparm
+            label   "Path Object"
+            invisible
+            export  none
+        }
+        parm {
+            name    "roll"
+            baseparm
+            label   "Roll"
+            invisible
+            export  none
+        }
+        parm {
+            name    "pos"
+            baseparm
+            label   "Position"
+            invisible
+            export  none
+        }
+        parm {
+            name    "uparmtype"
+            baseparm
+            label   "Parameterization"
+            invisible
+            export  none
+        }
+        parm {
+            name    "pathorient"
+            baseparm
+            label   "Orient Along Path"
+            invisible
+            export  none
+        }
+        parm {
+            name    "up"
+            baseparm
+            label   "Orient Up Vector"
+            invisible
+            export  none
+        }
+        parm {
+            name    "bank"
+            baseparm
+            label   "Auto-Bank factor"
+            invisible
+            export  none
+        }
+    }

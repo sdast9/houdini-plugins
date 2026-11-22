@@ -471,21 +471,33 @@ def _literal_strings(expr):
         yield from _literal_strings(expr.orelse)
 
 
-def _callback_references(part):
+def _callback_references(part, factories, calls):
     for match in _CALLBACK.finditer(part.text):
         yield match[1], part.text.count("\n", 0, match.start(1)) + 1
     if not part.path.endswith(".py"):
         return
 
-    # Also resolve the builder's f-string factories when the callback name
-    # comes from a literal assignment or a literal argument at a call site.
+    # Collect f-string factories and their calls across the builder sources.
+    # Callback names can also come from assignments inside a factory.
     tree = ast.parse(part.text, filename=part.path)
+    # Match sibling imports such as `from .helpers import _callback` to their
+    # defining source so unrelated functions with the same name stay distinct.
+    path = Path(part.path)
+    imports = {
+        alias.asname or alias.name: (path.with_name(f"{stmt.module}.py").as_posix(), alias.name)
+        for stmt in tree.body
+        if isinstance(stmt, ast.ImportFrom) and stmt.level == 1
+        and stmt.module and "." not in stmt.module
+        for alias in stmt.names
+    }
     for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            factory = imports.get(node.func.id, (part.path, node.func.id))
+            calls.append((part, node, factory))
         if (isinstance(node, ast.Constant) and isinstance(node.value, str)
                 and node.end_lineno == node.lineno):
             for match in _CALLBACK.finditer(node.value):
                 yield match[1], node.lineno
-    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
     for function in tree.body:
         if not isinstance(function, ast.FunctionDef):
             continue
@@ -507,14 +519,18 @@ def _callback_references(part):
                         for name in _literal_strings(assignment.value):
                             yield name, assignment.lineno
                 if variable in arguments:
-                    index = arguments.index(variable)
-                    for call in calls:
-                        if isinstance(call.func, ast.Name) and call.func.id == function.name:
-                            values = [arg.value for arg in call.keywords if arg.arg == variable]
-                            values.extend(call.args[index:index + 1])
-                            for expr in values:
-                                for name in _literal_strings(expr):
-                                    yield name, call.lineno
+                    factories.setdefault((part.path, function.name), set()).add(
+                        (arguments.index(variable), variable))
+
+
+def _callback_call_references(factories, calls):
+    for part, call, factory in calls:
+        for index, argument in sorted(factories.get(factory, ())):
+            values = [arg.value for arg in call.keywords if arg.arg == argument]
+            values.extend(call.args[index:index + 1])
+            for expr in values:
+                for name in _literal_strings(expr):
+                    yield part, name, call.lineno
 
 
 def check_sources(asset, parts, callback_sources=(), *, legacy_polyfem=False):
@@ -557,14 +573,19 @@ def check_sources(asset, parts, callback_sources=(), *, legacy_polyfem=False):
             report("load-order", read.part, read.node.lineno, name,
                    f"{name!r} is unbound when this expression runs")
 
+    factories, calls, references = {}, [], {}
     for part in callback_sources:
         try:
-            for name, line in dict.fromkeys(_callback_references(part)):
-                if name not in names.module.bound:
-                    report("missing-callback", part, line, name,
-                           f"{name!r} is absent from the runtime namespace")
+            for name, line in _callback_references(part, factories, calls):
+                references[part.path, name, line] = part
         except SyntaxError as error:
             report("syntax", part, error.lineno or 1, "", error.msg)
+    for part, name, line in _callback_call_references(factories, calls):
+        references[part.path, name, line] = part
+    for (_, name, line), part in references.items():
+        if name not in names.module.bound:
+            report("missing-callback", part, line, name,
+                   f"{name!r} is absent from the runtime namespace")
     return errors
 
 
@@ -617,10 +638,14 @@ def check_hda(src_root, asset):
 
         callbacks = []
         for path in sorted(directory.rglob("*")):
+            relative = path.relative_to(directory)
             if path.is_file() and (
-                path.name in {"build.py", "DialogScript", "scripts.py", "ViewerStateModule.py"}
+                path.name in {"build.py", "DialogScript", "network.py", "scripts.py",
+                              "Tools.shelf", "ViewerStateModule.py"}
                 or path.stem in {"OnCreated", "OnLoaded", "OnUpdated"}
-                or (path.suffix == ".py" and "parms" in path.relative_to(directory).parts[:-1])
+                or (relative.parts[0] == "parms" and path.suffix == ".py")
+                or (relative.parts[:2] == ("sections", "dialog")
+                    and path.suffix in {".ds", ".in"})
             ):
                 callbacks.append(SourcePart(path.relative_to(root).as_posix(),
                                             path.read_text(encoding="utf-8")))

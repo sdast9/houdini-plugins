@@ -1,0 +1,225 @@
+        group {
+            name    "_folder0_2_5"
+            label   "Advanced"
+            tabbreak
+
+            parm {
+                name    "max_threads"
+                label   "Max Threads"
+                type    integer
+                default { "0" }
+                range   { 0 64 }
+                help    "Number of CPU threads PolyFEM may use. 0 = all available cores. Note: with more than one thread, results can differ in the last digits between runs (floating-point summation order); use 1 for bit-reproducible logs."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "cache_size"
+                label   "Cache Size"
+                type    intlog
+                default { "900000" }
+                range   { 1 1e+16 }
+                help    "Maximum number of elements whose assembly values are cached between iterations. Larger uses more memory but avoids recomputation; the default suits most meshes."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "lump_mass_matrix"
+                label   "Lump Mass Matrix"
+                type    toggle
+                default { "0" }
+                help    "Replace the consistent mass matrix by a diagonal one (row sums). Slightly less accurate dynamics but a cheaper, better-conditioned system."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "lagged_regularization_weight"
+                label   "Lagged Regularization Weight"
+                type    float
+                default { "0" }
+                range   { 0 10 }
+                help    "Adds a small stiffness proportional to this weight to static problems that are otherwise singular (e.g. a body with no boundary conditions floating in space). 0 = off."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "lagged_regularization_iterations"
+                label   "Lagged Regularization Iterations"
+                type    integer
+                default { "1" }
+                range   { 0 10 }
+                help    "Number of lagged updates of that regularization per solve."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "inversion_method"
+                label   "Inversion Detection"
+                type    ordinal
+                default { "0" }
+                menu {
+                    "Discrete"      "Discrete (sample points)"
+                    "Conservative"  "Conservative (exact, needs MISO build)"
+                }
+                help    "How PolyFEM checks that no element turns inside-out. Discrete tests the element Jacobians at sample points and is what this build uses; Conservative uses an exact continuous check but requires a PolyFEM build with the MISO library (otherwise Discrete is used with a warning)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "jacobian_threshold"
+                label   "Jacobian Threshold"
+                type    float
+                default { "0" }
+                range   { 0 10 }
+                help    "Elements whose Jacobian determinant falls below this value are treated as inverted (0 = only truly flipped elements). Raise it to reject nearly degenerate elements earlier."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "labelparm_stall_restart"
+                label   "Stall Restart & Line-Search Recovery (D8)"
+                type    label
+                default { "Stall Restart & Line-Search Recovery (D8)" }
+                hidewhen "{ expert_mode == 0 }"
+                parmtag { "sidefx::look" "heading" }
+            }
+            parm {
+                name    "adv_stall_restart_enabled"
+                label   "Enable General Stall Restarts"
+                type    toggle
+                default { "1" }
+                hidewhen "{ expert_mode == 0 }"
+                help    "Enable generalized nonlinear stall detection and restart recovery (D8) for solves without semi-implicit contact (non-contact, adaptive, or fixed-barrier solves). On by default in PolyFEM."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adv_stall_alpha_threshold"
+                label   "Stall Step-Size Threshold"
+                type    log
+                default { "0.01" }
+                disablewhen "{ adv_stall_restart_enabled == 0 }"
+                hidewhen "{ expert_mode == 0 }"
+                range   { 1e-08 1 }
+                help    "Line-search step size below which a Newton iteration counts as stalled (default 0.01)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adv_stall_patience"
+                label   "Stall Patience"
+                type    integer
+                default { "5" }
+                disablewhen "{ adv_stall_restart_enabled == 0 }"
+                hidewhen "{ expert_mode == 0 }"
+                range   { 1 100 }
+                help    "Consecutive stalled iterations before triggering a restart (default 5)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adv_stall_min_iterations"
+                label   "Stall Min Iterations"
+                type    integer
+                default { "5" }
+                disablewhen "{ adv_stall_restart_enabled == 0 }"
+                hidewhen "{ expert_mode == 0 }"
+                range   { 0 100 }
+                help    "Minimum Newton iterations before stall detection can trigger a restart (default 5)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adv_stall_soft_limit"
+                label   "Stall Soft Iteration Limit"
+                type    integer
+                default { "-1" }
+                disablewhen "{ adv_stall_restart_enabled == 0 }"
+                hidewhen "{ expert_mode == 0 }"
+                range   { -1 1000 }
+                help    "Soft iteration cap after which a stalled subsolve restarts early (-1 = disabled, default)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adv_stall_max_restarts"
+                label   "Stall Max Restarts"
+                type    integer
+                default { "20" }
+                disablewhen "{ adv_stall_restart_enabled == 0 }"
+                hidewhen "{ expert_mode == 0 }"
+                range   { 0 200 }
+                help    "Maximum generalized stall restarts per solve (default 20)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adv_stall_alpha_basis"
+                label   "Stall Alpha Basis"
+                type    ordinal
+                default { "0" }
+                disablewhen "{ adv_stall_restart_enabled == 0 }"
+                hidewhen "{ expert_mode == 0 }"
+                menu {
+                    "feasible_bound"    "Feasible Bound (default)"
+                    "absolute"          "Absolute"
+                }
+                help    "How the line-search step size is measured against Stall Step-Size Threshold: relative to the feasible step bound (default) or absolute alpha."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adv_stall_feasible_ratio"
+                label   "Stall Feasible Ratio Threshold"
+                type    float
+                default { "0.999" }
+                disablewhen "{ adv_stall_restart_enabled == 0 } { adv_stall_alpha_basis != feasible_bound }"
+                hidewhen "{ expert_mode == 0 }"
+                range   { 0 1 }
+                help    "Ratio of alpha to the feasible bound below which a step is treated as stalled when Stall Alpha Basis is Feasible Bound (default 0.999)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "adv_stall_remedy"
+                label   "Stall Remedy"
+                type    ordinal
+                default { "0" }
+                disablewhen "{ adv_stall_restart_enabled == 0 }"
+                hidewhen "{ expert_mode == 0 }"
+                menu {
+                    "force_psd_projection"  "Force PSD Projection (default)"
+                    "none"                  "None (restart only)"
+                }
+                help    "Action applied on a generalized stall restart: Force PSD Projection (default) enables positive-definite Hessian projection on the restarted solve; None restarts without forcing PSD projection."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "ls_failure_restarts"
+                label   "Line-Search Failure Restarts"
+                type    integer
+                default { "1" }
+                hidewhen "{ expert_mode == 0 }"
+                range   { 0 20 }
+                help    "Number of recovery restarts allowed when line search fails outright while stall restarts are inactive (default 1; 0 = disabled)."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "labelparm_debug"
+                label   "Debugging"
+                type    label
+                default { "Debugging" }
+                hidewhen "{ expert_mode == 0 }"
+                parmtag { "sidefx::look" "heading" }
+            }
+            parm {
+                name    "apply_gradient_fd"
+                label   "Gradient Finite-Difference Check"
+                type    ordinal
+                default { "0" }
+                hidewhen "{ expert_mode == 0 }"
+                menu {
+                    "None"                  "None"
+                    "DirectionalDerivative" "Directional Derivative"
+                    "FullFiniteDiff"        "Full Finite Diff"
+                }
+                help    "Debugging check: compare the analytic gradient against finite differences every iteration (Directional Derivative = one direction, cheap; Full Finite Diff = every unknown, extremely slow). Leave at None for normal runs."
+                parmtag { "script_callback_language" "python" }
+            }
+            parm {
+                name    "gradient_fd_eps"
+                label   "Finite-Difference Epsilon"
+                type    log
+                default { "1e-07" }
+                disablewhen "{ apply_gradient_fd == None }"
+                hidewhen "{ apply_gradient_fd == None } { expert_mode == 0 }"
+                range   { 0 0.1 }
+                help    "Step size used by the finite-difference gradient check."
+                parmtag { "script_callback_language" "python" }
+            }
+        }

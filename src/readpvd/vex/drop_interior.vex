@@ -1,0 +1,2 @@
+if (inprimgroup(0, "readpvd_interior", @primnum))
+    removeprim(0, @primnum, 0);

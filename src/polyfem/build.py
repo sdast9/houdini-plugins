@@ -7,6 +7,7 @@ import sys
 import hou
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "common"))
+import dialogscript  # noqa: E402
 import hda_build  # noqa: E402
 
 TYPE_NAME = "stevenabramowitch::dev::PolyFEM::2.0"
@@ -95,48 +96,10 @@ def _inject_material_display_callbacks(text):
     return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
 
 
-def _expand_visibility_macros(text):
-    """Expand @SHOW_FOR(...)@ / @SHOW_FOR_DIRECT(...)@ in the DialogScript.
-
-    Houdini conditionals are written as the negative ("hide when ..."), groups
-    AND inside braces and OR between them, so "show this parameter for models
-    A or B" already needs one !=-per-model. Composite materials double that:
-    an isotropic parameter must also show when the volume is a MaterialSum
-    whose MATRIX is one of those models, i.e. hide = A and (B or C), which
-    expands to two groups. Writing that by hand for every parameter is where
-    conditional bugs come from, so the source carries the model list and this
-    generates the condition.
-
-        @SHOW_FOR(NeoHookean LinearElasticity)@
-            -> visible for those models directly, or as a composite matrix
-        @SHOW_FOR_DIRECT(HGOFiber HGODispersion)@
-            -> visible only when the volume itself is one of those models
-               (fiber families inside a composite have their own parameters)
-    """
-    def group(parm, tokens):
-        return " ".join(f"{parm} != {token}" for token in tokens)
-
-    def direct(match):
-        return "{ " + group("materials#_#", match.group(1).split()) + " }"
-
-    def composite(match):
-        tokens = match.group(1).split()
-        not_listed = group("materials#_#", tokens)
-        return (f"{{ {not_listed} materials#_# != MaterialSum }} "
-                f"{{ {not_listed} {group('matrix_model#_#', tokens)} }}")
-
-    text = re.sub(r"@SHOW_FOR_DIRECT\(([^)]*)\)@", direct, text)
-    text = re.sub(r"@SHOW_FOR\(([^)]*)\)@", composite, text)
-    leftover = re.search(r"@SHOW_FOR[A-Z_]*\(", text)
-    if leftover:
-        raise RuntimeError(
-            f"unexpanded visibility macro at offset {leftover.start()}")
-    return text
-
-
 def _patched_dialog_script():
-    text = hda_build.read_source("polyfem", "sections", "DialogScript")
-    text = _expand_visibility_macros(text)
+    text = dialogscript.expand_includes(
+        ("polyfem", "sections", "dialog", "DialogScript.in"))
+    text = dialogscript.expand_visibility_macros(text)
     text = _inject_material_display_callbacks(text)
     text = re.sub(
         r"^# Dialog script for .* automatically generated$",

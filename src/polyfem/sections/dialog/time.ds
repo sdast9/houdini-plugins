@@ -1,0 +1,181 @@
+    group {
+        name    "Main_4"
+        label   "Time"
+
+        parm {
+            name    "quasistatic"
+            label   "Quasistatic (no inertia)"
+            type    toggle
+            default { "0" }
+            help    "On = ignore inertia: each time step finds the static equilibrium for the loads at that time (good for slow loading, no vibrations, no mass needed). Off = full dynamics with inertia and the chosen integrator (needs density; bodies can move, bounce and oscillate)."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "sepparm10"
+            label   "Separator"
+            type    separator
+            default { "" }
+        }
+        parm {
+            name    "t0"
+            label   "Start Time"
+            type    float
+            default { "0" }
+            range   { 0! 10 }
+            help    "Simulation time at the first step (time units). Expressions in boundary conditions see t starting from this value."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "define_run_by"
+            label   "Define Run By"
+            type    ordinal
+            default { "0" }
+            menu {
+                "tend_dt"    "End Time & Time Increment (dt)"
+                "tend_steps" "End Time & # of Timesteps"
+                "dt_steps"   "Time Increment (dt) & # of Timesteps"
+            }
+            help    "Choose which two of End Time, Time Increment (dt), and # of Timesteps you specify; the third is computed automatically."
+            parmtag { "script_callback" "hou.pwd().hm().sync_time_mode(kwargs)" }
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "end_time_bool"
+            label   "End Time"
+            type    toggle
+            invisible
+            default { "1" }
+            help    "Legacy toggle mirrored by Define Run By (kept hidden for compatibility with saved scenes and scripts)."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "tend"
+            label   "End Time"
+            type    log
+            default { "5" }
+            disablewhen "{ end_time_bool != 1 define_run_by == tend_dt } { define_run_by == dt_steps }"
+            hidewhen "{ end_time_bool != 1 define_run_by == tend_dt } { define_run_by == dt_steps }"
+            range   { 0! 100 }
+            help    "Time at which the simulation stops (time units)."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "time_inc_bool"
+            label   "Time Increment"
+            type    toggle
+            invisible
+            default { "1" }
+            help    "Legacy toggle mirrored by Define Run By (kept hidden for compatibility with saved scenes and scripts)."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "dt"
+            label   "Time Increment (dt)"
+            type    log
+            default { "0.025" }
+            disablewhen "{ time_inc_bool != 1 define_run_by == tend_dt } { define_run_by == tend_steps }"
+            hidewhen "{ time_inc_bool != 1 define_run_by == tend_dt } { define_run_by == tend_steps }"
+            range   { 0! 10 }
+            help    "Size of each time step (time units). Smaller steps follow fast motion and hard contact more accurately but cost more steps; the semi-implicit contact mode tolerates larger steps than classic IPC."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "num_timesteps_bool"
+            label   "# of Timesteps"
+            type    toggle
+            invisible
+            default { "0" }
+            help    "Legacy toggle mirrored by Define Run By (kept hidden for compatibility with saved scenes and scripts)."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "num_timesteps"
+            label   "# of Timesteps"
+            type    intlog
+            default { "200" }
+            disablewhen "{ num_timesteps_bool != 1 define_run_by == tend_dt }"
+            hidewhen "{ num_timesteps_bool != 1 define_run_by == tend_dt }"
+            range   { 1! 10000 }
+            help    "Number of time steps to run (whole number)."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "sepparm6"
+            label   "Separator"
+            type    separator
+            default { "" }
+        }
+        parm {
+            name    "integrator"
+            label   "Integrator"
+            type    ordinal
+            default { "0" }
+            disablewhen "{ quasistatic == 1 }"
+            menu {
+                "ImplicitEuler"     "ImplicitEuler"
+                "BDF1"              "BDF1"
+                "BDF2"              "BDF2"
+                "BDF3"              "BDF3"
+                "BDF4"              "BDF4"
+                "BDF5"              "BDF5"
+                "BDF6"              "BDF6"
+                "ImplicitNewmark"   "ImplicitNewmark"
+            }
+            help    "Time-stepping scheme for dynamic runs (ignored when Quasistatic is on). ImplicitEuler = most stable, some numerical damping; BDF2 or higher = more accurate, less damping; ImplicitNewmark = classic structural dynamics with tunable beta/gamma."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "newmark_beta"
+            label   "Newmark Beta"
+            type    float
+            default { "0.25" }
+            disablewhen "{ integrator != ImplicitNewmark }"
+            hidewhen "{ integrator != ImplicitNewmark }"
+            range   { 0 0.5 }
+            help    "Newmark beta parameter. 0.25 (with gamma 0.5) is the standard unconditionally stable, non-dissipative average-acceleration scheme."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "newmark_gamma"
+            label   "Newmark Gamma"
+            type    float
+            default { "0.5" }
+            disablewhen "{ integrator != ImplicitNewmark }"
+            hidewhen "{ integrator != ImplicitNewmark }"
+            range   { 0 1 }
+            help    "Newmark gamma parameter. 0.5 introduces no numerical damping; larger values damp high-frequency vibrations."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "sepparm_timeline"
+            label   "Separator"
+            type    separator
+            default { "" }
+        }
+        parm {
+            name    "houdini_start_frame"
+            label   "Start Frame"
+            type    float
+            default { "1" }
+            range   { 1 240 }
+            help    "Houdini frame at which the simulation starts: there the simulation time is Start Time. Houdini time is simulation time: a frame's simulation time is Start Time + (that frame's time - this frame's time) x Time Scale, with Houdini time in seconds at the scene's frame rate. Keyframed condition multipliers and keyframed obstacle transforms are read on this timeline, and Read PVD plays the results back on it."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "time_scale"
+            label   "Time Scale"
+            type    float
+            default { "1" }
+            range   { 0.001 10 }
+            help    "Simulated time per unit of Houdini time. 1 = one simulated second per second of Houdini time (24 frames at 24 fps); 0.01 shows a 10 ms impact over one Houdini second. Changing dt or the number of time steps never moves a keyframed curve or motion in time; only Start Frame and Time Scale do."
+            parmtag { "script_callback_language" "python" }
+        }
+        parm {
+            name    "timeline_info"
+            label   "Timeline"
+            type    string
+            default { [ "hou.pwd().hdaModule().timeline_text(hou.pwd())" python ] }
+            disablewhen "{ working_dir != __polyfem_report_edit_sentinel__ }"
+            help    "Read-only: the Houdini frames the run spans (Start Time at Start Frame, End Time at the last frame) and how many time steps fall on each frame."
+        }
+    }
