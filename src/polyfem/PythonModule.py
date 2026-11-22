@@ -208,7 +208,7 @@ def _format_expr_box(value):
     return _strip_outer_quotes(str(value)) or "0"
 
 
-def _validate_tinyexpr(value, label):
+def _validate_tinyexpr(value, label, resource_dir=None):
     """Return an error message if a string expression has obvious TinyExpr
     syntax errors, or None when valid (or a numeric literal / file path)."""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -224,7 +224,7 @@ def _validate_tinyexpr(value, label):
     if (expr.startswith(("/", "./", "../", "~")) or "\\" in expr
             or re.match(r"^[A-Za-z]:/", expr)
             or expr.lower().endswith((".txt", ".csv", ".dat", ".npy", ".json"))
-            or ("/" in expr and os.path.isfile(expr))):
+            or (resource_dir and os.path.isfile(os.path.join(resource_dir, expr)))):
         return None
     if "[" in expr or "]" in expr:
         return (f"{label}: '{expr}' contains brackets — enter one scalar "
@@ -242,6 +242,9 @@ def _validate_tinyexpr(value, label):
                 return f"{label}: '{expr}' has an unmatched ')'."
     if depth != 0:
         return f"{label}: '{expr}' has an unclosed '('."
+    literals = re.findall(r"(?<![\w.])(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?", expr)
+    if any(not math.isfinite(float(number)) for number in literals):
+        return f"{label}: numeric literals must be finite in '{expr}'."
     # Strip scientific-notation exponents (e.g. 1e-5, 2.5E+3) before checking
     # identifiers so 'e' inside a numeric literal isn't misread.
     cleaned = re.sub(r"(?<![A-Za-z0-9_])(\d+\.?\d*|\.\d+)[eE][+-]?\d+",
@@ -255,6 +258,16 @@ def _validate_tinyexpr(value, label):
                 "(sin, cos, exp, pow, sqrt, abs, ...) and helpers "
                 "(min, max, smoothstep, half_smoothstep, deg2rad, "
                 "rotate_2D_x, rotate_2D_y, if, compare, smooth_abs, sign).")
+    # TinyExpr's conditional helper is named 'if', a Python keyword.
+    syntax = re.sub(r"\bif\s*(?=\()", "_if", expr).replace("^", "**")
+    try:
+        tree = ast.parse(syntax, mode="eval")
+    except SyntaxError:
+        return f"{label}: invalid TinyExpr syntax in '{expr}'."
+    if any(isinstance(node, ast.Call) and not node.args and
+           (not isinstance(node.func, ast.Name) or node.func.id not in {"e", "pi"})
+           for node in ast.walk(tree)):
+        return f"{label}: empty function call in '{expr}'."
     return None
 
 
@@ -313,7 +326,8 @@ def _read_expr_vector(parent, vec_base, legacy_name, label):
     back to the hidden legacy JSON-string parm for older scenes / tests."""
     vec_tuple = parent.parmTuple(vec_base)
     legacy = parent.parm(legacy_name)
-    if vec_tuple is not None and not vec_tuple.isAtDefault():
+    if vec_tuple is not None and (not vec_tuple.isAtDefault() or
+                                  parent.userData(f"polyfem_migrated_{vec_base}")):
         return [_parse_expr_component(p.eval(), label) for p in vec_tuple]
     if legacy is not None and not legacy.isAtDefault():
         parsed = parse_vector(legacy.eval(), label)
@@ -343,6 +357,7 @@ def _set_expr_vector(parent, vec_base, legacy_name, value):
     vec_tuple = parent.parmTuple(vec_base)
     if vec_tuple is not None:
         vec_tuple.set(tuple(_format_expr_box(v) for v in items[:3]))
+        parent.setUserData(f"polyfem_migrated_{vec_base}", "1")
     legacy = parent.parm(legacy_name)
     if legacy is not None:
         legacy.set(_format_vector(items[:3]))
@@ -377,6 +392,7 @@ def sync_expr_vector(kwargs):
     vals = [_parse_expr_component(p.eval(), vec_tuple.name())
             for p in vec_tuple]
     legacy.set(_format_vector(vals))
+    parent.setUserData(f"polyfem_migrated_{vec_tuple.name()}", "1")
 
 
 def _has_legacy_expression(parm):
@@ -399,8 +415,11 @@ def migrate_legacy_expr_vectors(parent):
     def migrate(base, legacy_name):
         visible = parent.parmTuple(base)
         legacy = parent.parm(legacy_name)
-        if visible is None or not visible.isAtDefault() \
-                or legacy is None or legacy.isAtDefault():
+        if visible is None or legacy is None or legacy.isAtDefault() \
+                or parent.userData(f"polyfem_migrated_{base}"):
+            return
+        if not visible.isAtDefault():
+            parent.setUserData(f"polyfem_migrated_{base}", "1")
             return
         if _has_legacy_expression(legacy):
             skipped.append(legacy_name)
@@ -431,6 +450,9 @@ def migrate_legacy_expr_vectors(parent):
             if mode_parm is not None and et_parm is not None \
                     and mode_parm.isAtDefault() and not et_parm.isAtDefault() \
                     and _ortho_parms_at_default(parent, geo, vol):
+                if _has_legacy_expression(et_parm):
+                    skipped.append(et_parm.name())
+                    continue
                 vals = _numbers(et_parm.eval())
                 if vals is not None and len(vals) == 9:
                     _set_ortho_parms(parent, geo, vol, vals)
@@ -439,7 +461,7 @@ def migrate_legacy_expr_vectors(parent):
     if skipped and not parent.cachedUserData("polyfem_legacy_expr_notice"):
         parent.setCachedUserData("polyfem_legacy_expr_notice", True)
         _status(f"{parent.path()}: kept animated or expression-driven legacy "
-                "vectors active (" + ", ".join(skipped) + ").")
+                "parameters active (" + ", ".join(skipped) + ").")
     migrate_legacy_time_mode(parent)
 
 
@@ -1360,10 +1382,14 @@ def material_file_changed(kwargs):
     material_display_changed(kwargs)
 
 
+def _resolved_binary(binary):
+    return os.path.abspath(shutil.which(binary) or binary) if binary else ""
+
+
 def polyfem_bin_check(kwargs):
     parent = kwargs["node"]
-    polyfem_bin = parent.evalParm("polyfem_bin")
-    if polyfem_bin and not os.path.isfile(polyfem_bin):
+    polyfem_bin = parent.evalParm("polyfem_bin").strip()
+    if polyfem_bin and not os.path.isfile(_resolved_binary(polyfem_bin)):
         _message(f"PolyFEM binary not found at: {polyfem_bin}")
 
 
@@ -1373,7 +1399,7 @@ def _write_sop_volume_msh(sop_geo, dst_path):
     Auto-orients every element to strictly positive Gmsh/PolyFEM volume
     (Houdini's TetConform creates negative-signed tets relative to Gmsh) and
     preserves integer subdomain tags from prim attribute Entity/entity/
-    subdomain/class when present.
+    subdomain when present as a scalar integer.
     """
     n_pts = sop_geo.intrinsicValue("pointcount")
     if not n_pts:
@@ -1384,9 +1410,10 @@ def _write_sop_volume_msh(sop_geo, dst_path):
         dtype=np.float64).reshape(-1, 3)
 
     entity_vals = None
-    for attr_name in ("Entity", "entity", "subdomain", "class"):
+    for attr_name in ("Entity", "entity", "subdomain"):
         attr = sop_geo.findPrimAttrib(attr_name)
-        if attr is not None and attr.dataType() == hou.attribData.Int:
+        if attr is not None and attr.dataType() == hou.attribData.Int \
+                and attr.size() == 1 and not attr.isArrayType():
             entity_vals = np.frombuffer(
                 sop_geo.primIntAttribValuesAsString(attr_name),
                 dtype=np.int32).astype(np.int64)
@@ -1576,7 +1603,21 @@ def _load_sop_mesh(kwargs):
             f"Geometry {geo_number}: loaded volume mesh from SOP "
             f"{sop_node.path()} ({stats['n_tets']} tets, "
             f"{stats['n_hexes']} hexes).")
+    if not is_obstacle:
+        for note in _sop_subdomain_notes(sop_geo, geo_number):
+            _status(note)
     return True
+
+
+def _sop_subdomain_notes(sop_geo, geo):
+    if sop_geo.findPrimAttrib("class") is not None:
+        yield (f"Geometry {geo}: ignored primitive 'class' for subdomain "
+               "assignment. Use a scalar integer Entity, entity or subdomain.")
+    for name in ("Entity", "entity", "subdomain"):
+        attr = sop_geo.findPrimAttrib(name)
+        if attr is not None and attr.dataType() == hou.attribData.Int \
+                and (attr.size() != 1 or attr.isArrayType()):
+            yield f"Geometry {geo}: ignored '{name}' because it is an integer tuple or array."
 
 
 def create_geo_nodes(kwargs):
@@ -3169,7 +3210,7 @@ def _compressed_table(points, values):
     if len(p) <= 2:
         return p, v
     slopes = np.diff(v) / np.diff(p)
-    size = max(1.0, float(np.abs(v).max()))
+    size = float(np.abs(v).max())
     floor = size / max(float(p[-1] - p[0]), 1e-300)
     bend = np.abs(np.diff(slopes)) > 1e-9 * np.maximum(
         np.maximum(np.abs(slopes[1:]), np.abs(slopes[:-1])), floor)
@@ -3330,6 +3371,18 @@ def _interpolation_functions(interpolation, width, line=None):
     functions, notes = [], []
     for item in items[:width]:
         kind = item.get("type", "none") if isinstance(item, dict) else "none"
+        if kind == "piecewise_linear":
+            try:
+                p = np.asarray(item.get("points"), dtype=float)
+                v = np.asarray(item.get("values"), dtype=float)
+                if (p.ndim != 1 or p.size == 0 or p.shape != v.shape or
+                        not np.isfinite(p).all() or not np.isfinite(v).all() or
+                        np.any(np.diff(p) <= 0)):
+                    raise ValueError
+            except (TypeError, ValueError, OverflowError):
+                raise hou.NodeError(
+                    "piecewise_linear interpolation needs equal-length, nonempty "
+                    "finite points and values, with strictly increasing points.")
         if kind == "none":
             functions.append(None)
             continue
@@ -3349,6 +3402,7 @@ def _interpolation_functions(interpolation, width, line=None):
         note = ("its time function ({}) was turned into keyframes at the "
                 "time steps, exact where PolyFEM evaluates it".format(
                     ", ".join(sorted(set(notes)))))
+    functions.extend([None] * (width - len(functions)))
     return functions, note
 
 
@@ -3548,68 +3602,47 @@ def _sideset_conditions(parent, geo, vol, sideset, lazy_timeline=None):
     return conditions
 
 
-# A few points (x, y, z, t) at which two entered values are compared.
-_COMPARISON_SAMPLES = (
-    {"x": 0.31, "y": -0.72, "z": 1.13, "t": 0.37},
-    {"x": -1.27, "y": 0.21, "z": 0.05, "t": 1.93},
-    {"x": 2.0, "y": 1.5, "z": -0.4, "t": 0.0},
-    {"x": math.sqrt(2), "y": -math.pi, "z": math.e, "t": math.sqrt(3)},
-    {"x": -math.e, "y": math.sqrt(5), "z": -math.sqrt(2), "t": math.pi / 10},
-    {"x": math.pi / 7, "y": math.e / 9, "z": math.sqrt(7), "t": math.e})
-_EXPRESSION_FUNCTIONS = {
-    "sin": math.sin, "cos": math.cos, "tan": math.tan, "exp": math.exp,
-    "log": math.log, "sqrt": math.sqrt, "abs": abs, "pi": math.pi}
-_EXPRESSION_NODES = (
-    ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant, ast.Name,
-    ast.Load, ast.Call, ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow,
-    ast.USub, ast.UAdd)
+class _NormalizeConditionExpression(ast.NodeTransformer):
+    def visit_BinOp(self, node):
+        self.generic_visit(node)
+        if not isinstance(node.op, ast.Mult):
+            return node
+        factors = [node.left, node.right]
+        negations = 0
+        for i, factor in enumerate(factors):
+            if isinstance(factor, ast.UnaryOp) and isinstance(factor.op, ast.USub):
+                factors[i] = factor.operand
+                negations += 1
+        factors.sort(key=ast.dump)
+        # Retain the legacy 0*t shorthand. A literal zero times a finite
+        # coordinate is identically zero, independent of its input.
+        left, right = factors
+        if isinstance(left, ast.Constant) and type(left.value) in (int, float) \
+                and left.value == 0 and isinstance(right, ast.Name) \
+                and right.id in ("x", "y", "z", "t"):
+            return ast.Constant(0)
+        product = ast.BinOp(left, ast.Mult(), right)
+        return ast.UnaryOp(ast.USub(), product) if negations % 2 else product
 
 
-def _sampled(value):
-    """Values of an entered scalar at the comparison samples, or None when it
-    is not a plain arithmetic expression of x, y, z, t."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return [float(value)] * len(_COMPARISON_SAMPLES)
-    if not isinstance(value, str):
-        return None
+def _expression_structure(value):
+    text = re.sub(r"\bif\s*(?=\()", "_if", str(value).strip())
     try:
-        tree = ast.parse(value.strip(), mode="eval")
+        tree = ast.parse(text.replace("^", "**"), mode="eval")
+        return ast.dump(_NormalizeConditionExpression().visit(tree))
     except SyntaxError:
-        return None
-    for node in ast.walk(tree):
-        if not isinstance(node, _EXPRESSION_NODES):
-            return None
-        if isinstance(node, ast.Name) and node.id not in "xyzt" \
-                and node.id not in _EXPRESSION_FUNCTIONS:
-            return None
-        if isinstance(node, ast.Call) and not (
-                isinstance(node.func, ast.Name)
-                and node.func.id in _EXPRESSION_FUNCTIONS):
-            return None
-        if isinstance(node, ast.Constant) \
-                and not isinstance(node.value, (int, float)):
-            return None
-    code = compile(tree, "<condition>", "eval")
-    values = []
-    for sample in _COMPARISON_SAMPLES:
-        scope = dict(_EXPRESSION_FUNCTIONS)
-        scope.update(sample)
-        try:
-            values.append(float(eval(code, {"__builtins__": {}}, scope)))
-        except Exception:
-            return None
-    return values
+        return text
 
 
 def _same_value(first, second):
-    """Whether two entered values prescribe the same thing ("0*t" and 0 do)."""
-    a, b = _sampled(first), _sampled(second)
-    if a is not None and b is not None:
-        return all(abs(p - q) <= 1e-12 * max(1.0, abs(p), abs(q))
-                   for p, q in zip(a, b))
-    return str(first).replace(" ", "") == str(second).replace(" ", "")
+    """Compare overlapping prescriptions without sampling variable expressions."""
+    if _expression_structure(first) == _expression_structure(second):
+        return True
+    try:
+        a, b = float(first), float(second)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return a == b and math.isfinite(a)
 
 
 def _value_text(value):
@@ -4213,7 +4246,7 @@ def export_volumes(parent, geo, input_dir):
     keep = _volume_mask(geo_data)
     if keep is not None:
         entity = entity[keep]
-    entity = entity[solver_element_order(geo_data)]
+    entity = entity[solver_element_order(geo_data, expect_msh=True)]
     fname = f"volumes{geo}.txt"
     np.savetxt(os.path.join(input_dir, fname),
                1000 * int(geo) + entity.astype(np.int64), fmt="%d")
@@ -4402,7 +4435,7 @@ def _volume_mask(geo_data):
         dtype=np.int32).astype(bool)
 
 
-def solver_element_order(geo_data, is_direct_sop=False):
+def solver_element_order(geo_data, is_direct_sop=False, *, expect_msh=False):
     """Indices that gather Houdini volume rows into PolyFEM element order.
 
     The original Direct SOP already has the order written by the MSH writer.
@@ -4419,10 +4452,13 @@ def solver_element_order(geo_data, is_direct_sop=False):
     identity = np.arange(count, dtype=np.int64)
     attribute = geo_data.findPrimAttrib("msh_element_order")
     if attribute is None:
-        if any(geo_data.countPrimType(kind) == 0 for kind in
-               (hou.primType.Tetrahedron, hou.primType.Hexahedron)):
+        if not expect_msh and geo_data.findPrimAttrib("ElementNum") is None \
+                and geo_data.findPointAttrib("msh_pt_id") is None \
+                and any(geo_data.countPrimType(kind) == 0 for kind in
+                        (hou.primType.Tetrahedron, hou.primType.Hexahedron)):
             return identity
-    elif attribute.dataType() == hou.attribData.Int and attribute.size() == 1:
+    elif attribute.dataType() == hou.attribData.Int and attribute.size() == 1 \
+            and not attribute.isArrayType():
         order = np.frombuffer(
             geo_data.primIntAttribValuesAsString("msh_element_order"),
             dtype=np.int32)
@@ -4986,10 +5022,10 @@ def resolve_scalar(parent, geo, vol, fam, name, count):
     values = np.asarray(values, dtype=np.float64).reshape(-1)
     if name == "kappa":
         limit = 1.0 / 3.0
-        out = np.flatnonzero((values < 0) | (values > limit + 1e-9))
+        out = np.flatnonzero(~np.isfinite(values) | (values < 0) | (values > limit + 1e-9))
         if len(out):
             raise hou.NodeError(
-                f"{label}: dispersion must be within [0, 1/3]; element(s) "
+                f"{label}: dispersion must be finite and within [0, 1/3]; element(s) "
                 f"{list(out[:10])} are outside (min {values.min():.4g}, "
                 f"max {values.max():.4g})")
     return values
@@ -5452,7 +5488,7 @@ def _check_composite_consistency(parent):
 
 
 def export_per_element_materials(parent, input_dir, output_dir=None,
-                                 cache=None):
+                                 cache=None, shared_fields=None):
     """Write solver fields and a ReadPVD companion fiber-family file.
 
     Every file spans the GLOBAL element range: polyfem indexes them by global
@@ -5472,7 +5508,15 @@ def export_per_element_materials(parent, input_dir, output_dir=None,
     table, total = global_element_table(parent)
     if not total:
         return
-    fiber_fields = {}
+    shared_fields = shared_fields or {}
+    shared_sources = {source for sources in shared_fields.values()
+                      for source in sources.values() if isinstance(source, str)}
+    fiber_fields = {name: np.tile([1.0, 0.0, 0.0], (total, 1))
+                    for name in shared_fields}
+    shared_by_geo = {}
+    for name, sources in shared_fields.items():
+        for (geo, vol), source in sources.items():
+            shared_by_geo.setdefault(geo, []).append((name, vol, source))
     family_names, family_labels, family_body_ids, family_values = [], [], [], []
     all_centroids = np.zeros((total, 3), dtype=np.float64)
     all_body_ids = np.zeros(total, dtype=np.int64)
@@ -5485,7 +5529,7 @@ def export_per_element_materials(parent, input_dir, output_dir=None,
                 f"({resolved} vs {count}); re-cook the node and try again")
         branch_geo = parent.node(f"branch_{geo}").geometry()
         volume_mask = _volume_mask(branch_geo)
-        order = solver_element_order(branch_geo)
+        order = solver_element_order(branch_geo, expect_msh=True)
         entities = np.frombuffer(
             branch_geo.primIntAttribValuesAsString("Entity"),
             dtype=np.int32)
@@ -5496,16 +5540,19 @@ def export_per_element_materials(parent, input_dir, output_dir=None,
         all_body_ids[offset:offset + count] = \
             1000 * int(geo) + entities.astype(np.int64)
 
+        local_fields = {}
         for vol in range(1, parent.evalParm(f"num_volumes{geo}") + 1):
             for fam, model in material_families(parent, geo, vol):
                 for side in mirror_sides(parent, geo, vol, fam):
                     values = fields.get(fiber_attrib(vol, fam, side))
                     if values is not None:
                         values = values[order]
-                        column = fiber_fields.setdefault(
-                            fiber_field(geo, vol, fam, side),
-                            np.tile([1.0, 0.0, 0.0], (total, 1)))
-                        column[offset:offset + count] = values
+                        name = fiber_field(geo, vol, fam, side)
+                        local_fields[name] = values
+                        if name not in shared_sources:
+                            column = fiber_fields.setdefault(
+                                name, np.tile([1.0, 0.0, 0.0], (total, 1)))
+                            column[offset:offset + count] = values
                     elif _slot_parm(
                             parent, geo, vol, fam, "fib_source") == "constant":
                         direction = np.asarray(parent.parmTuple(
@@ -5546,6 +5593,11 @@ def export_per_element_materials(parent, input_dir, output_dir=None,
                             input_dir,
                             per_element_scalar_file(geo, vol, fam, "kappa")),
                         padded, fmt="%.9g")
+
+        for name, vol, source in shared_by_geo.get(geo, ()):
+            owned = entities == vol
+            values = local_fields[source][owned] if isinstance(source, str) else source
+            fiber_fields[name][offset:offset + count][owned] = values
 
     # Disabled geometries still have their material block written to
     # params.json (so Import restores them); emit valid length-`total`
@@ -5916,10 +5968,11 @@ def build_geometry_and_materials(parent, data, input_dir, plans=None,
     orders = []
 
     _check_composite_consistency(parent)
+    materials, shared_fields = _plan_body_materials(parent)
     export_per_element_materials(
         parent, input_dir,
         os.path.join(os.path.dirname(input_dir), "output"),
-        cache=cache)
+        cache=cache, shared_fields=shared_fields)
 
     # Normally every mesh is already staged in input/; after a change of
     # working directory they are staged again here, under names that two
@@ -5977,7 +6030,8 @@ def build_geometry_and_materials(parent, data, input_dir, plans=None,
         data["geometry"].append(geo_data)
 
         for vol in range(1, num_vols + 1):
-            data["materials"].append(build_material(parent, geo, vol))
+            data["materials"].append(materials.get((geo, vol)) if enabled
+                                     else build_material(parent, geo, vol))
             orders.append({"id": vol_id(geo, vol),
                            "order": parent.evalParm(f"mainOrder{geo}_{vol}") + 1})
     return orders
@@ -6029,13 +6083,13 @@ def _read_growth_tensor(parent, geo, vol):
     return out
 
 
-def _check_growth_tensor(entries, where):
+def _check_growth_tensor(entries, where, resource_dir=None):
     """Validate GrowthNeoHookean G entries: TinyExpr syntax, plus Sylvester's
     positive-definiteness criterion when all 6 entries are plain numbers."""
     errors = []
     for key in ("g11", "g22", "g33", "g12", "g13", "g23"):
         val = entries[key]
-        err = _validate_tinyexpr(val, f"{where} {key}")
+        err = _validate_tinyexpr(val, f"{where} {key}", resource_dir)
         if err:
             errors.append(err)
     if errors:
@@ -6061,12 +6115,30 @@ def _check_growth_tensor(entries, where):
 _IDENTITY_MATERIAL_AXES = [1, 0, 0, 0, 1, 0, 0, 0, 1]
 
 
-def _material_axes_are_identity(raw):
+def _material_axes(raw):
     try:
-        axes = ast.literal_eval(raw)
-        return np.asarray(axes, dtype=float).reshape(-1).tolist() == _IDENTITY_MATERIAL_AXES
-    except (SyntaxError, TypeError, ValueError):
-        return False
+        axes = np.asarray(ast.literal_eval(raw), dtype=float)
+        if axes.shape in ((9,), (3, 3)) and np.isfinite(axes).all():
+            return axes.reshape(3, 3)
+    except (SyntaxError, TypeError, ValueError, OverflowError):
+        pass
+    return None
+
+
+def _material_axes_are_identity(raw):
+    axes = _material_axes(raw)
+    return axes is not None and np.array_equal(axes, np.eye(3))
+
+
+def _hooke_axes(parent, geo, vol):
+    axes = _material_axes(parent.evalParm(f"material_coord{geo}_{vol}"))
+    if axes is None or not np.allclose(axes.T @ axes, np.eye(3), rtol=0, atol=1e-8) \
+            or not math.isclose(float(np.linalg.det(axes)), 1.0, abs_tol=1e-8):
+        raise hou.NodeError(
+            f"{_slot_label(geo, vol, None)} (HookeLinearElasticity): Material "
+            "Axes must be an orthonormal right-handed 3x3 rotation "
+            "(identity: [1,0,0,0,1,0,0,0,1]).")
+    return axes.ravel().tolist()
 
 
 def _saint_venant_axes_message(parent, geo, vol):
@@ -6082,7 +6154,7 @@ def _saint_venant_axes_message(parent, geo, vol):
 
 def _saint_venant_axes_findings(parent):
     for geo in range(1, parent.evalParm("num_geos") + 1):
-        if parent.evalParm(f"is_obstacle{geo}"):
+        if parent.evalParm(f"is_obstacle{geo}") or not parent.evalParm(f"is_enabled{geo}"):
             continue
         for vol in range(1, parent.evalParm(f"num_volumes{geo}") + 1):
             token = material_token(parent, geo, vol)
@@ -6126,7 +6198,8 @@ def _isotropic_model(parent, geo, vol, token, allow_damping=True):
     if token == "GrowthNeoHookean":
         E, nu = ep()
         entries = _read_growth_tensor(parent, geo, vol)
-        errs = _check_growth_tensor(entries, _slot_label(geo, vol, None))
+        errs = _check_growth_tensor(entries, _slot_label(geo, vol, None),
+                                    os.path.join(parent.evalParm("working_dir"), "input"))
         if errs:
             raise hou.NodeError(errs[0])
         model = {"type": token, "E": E, "nu": nu}
@@ -6163,15 +6236,18 @@ def _isotropic_model(parent, geo, vol, token, allow_damping=True):
             model["normalized"] = True
         return model
     if token in ("HookeLinearElasticity", "SaintVenant"):
-        if token == "SaintVenant":
+        if token == "SaintVenant" and parent.evalParm(f"is_enabled{geo}"):
             note = _saint_venant_axes_message(parent, geo, vol)
             if note:
                 raise hou.NodeError(note)
         model = {"type": token,
                  "elasticity_tensor": _read_elast_tensor(parent, geo, vol)}
         if token == "HookeLinearElasticity":
-            model["fiber_direction"] = parse_vector(
-                parent.evalParm(f"material_coord{geo}_{vol}"), "fiber_direction")
+            if parent.evalParm(f"is_enabled{geo}"):
+                model["fiber_direction"] = _hooke_axes(parent, geo, vol)
+            else:
+                model["fiber_direction"] = parse_vector(
+                    parent.evalParm(f"material_coord{geo}_{vol}"), "fiber_direction")
         elif allow_damping:
             _damping(parent, geo, vol, model)
         return model
@@ -6333,6 +6409,106 @@ def build_material(parent, geo, vol):
         return material
     material.update(_isotropic_model(parent, geo, vol, token))
     return material
+
+
+class _SharedMaterialError(hou.NodeError):
+    """An incompatible set of bodies sharing a solver assembler."""
+
+
+def _plan_body_materials(parent):
+    """Validate shared assemblers and plan the global fiber columns they use."""
+    materials, owned_fields = {}, {}
+    for geo in range(1, parent.evalParm("num_geos") + 1):
+        if parent.evalParm(f"is_obstacle{geo}") or not parent.evalParm(f"is_enabled{geo}"):
+            continue
+        for vol in range(1, parent.evalParm(f"num_volumes{geo}") + 1):
+            body = (geo, vol)
+            materials[body] = build_material(parent, *body)
+            owned_fields[body] = {
+                fiber_field(geo, vol, fam, side)
+                for fam, model in material_families(parent, geo, vol)
+                for side in mirror_sides(parent, geo, vol, fam)
+                if model in ("HGODispersion", "HGOFiber") and
+                (_slot_parm(parent, geo, vol, fam, "fib_source")
+                 in PER_ELEMENT_FIBER_SOURCES or side)}
+
+    tensors, fibers = {}, {}
+
+    def collect(body, material, slot=()):
+        token = material.get("type")
+        if token == "MaterialSum":
+            for index, child in enumerate(material.get("models", []), 1):
+                if isinstance(child, dict):
+                    collect(body, child, (*slot, index))
+        elif token in _TENSOR_MODELS:
+            tensor = material.get("elasticity_tensor")
+            if tensor is None or tensor == []:
+                tensor = _young_poisson(material)
+            tensors.setdefault(token, []).append((body, tensor))
+        elif token in ("HGODispersion", "HGOFiber"):
+            fibers.setdefault((token, slot), []).append((body, material))
+
+    for body, material in materials.items():
+        collect(body, material)
+
+    for token, entries in tensors.items():
+        bodies = sorted({body for body, _ in entries})
+        if len(bodies) < 2:
+            continue
+        first = entries[0][1]
+        if any(not isinstance(tensor, (list, tuple)) or
+               not all(type(value) in (int, float) and math.isfinite(value)
+                       for value in tensor) or tuple(tensor) != tuple(first)
+               for _, tensor in entries):
+            labels = ", ".join(_slot_label(*body, None) for body in bodies)
+            raise _SharedMaterialError(
+                f"{labels}: PolyFEM shares one elasticity tensor per "
+                f"anisotropic model. Every body using {token} must use "
+                "the same finite numeric elasticity tensor.")
+
+    shared = {}
+    for (token, slot), entries in fibers.items():
+        staged, external, constants, expressions = {}, {}, {}, []
+        for body, material in entries:
+            direction = material.get("fiber_direction")
+            if isinstance(direction, dict) and direction.get("type") == "per_element_file":
+                name, path = direction.get("field", "FIB_DIR1"), direction.get("path")
+                if path == FIBER_FILE and name in owned_fields[body]:
+                    staged[body] = name
+                else:
+                    external[body] = (path, name)
+            elif isinstance(direction, list) and len(direction) == 3 and all(
+                    type(value) in (int, float) and math.isfinite(value)
+                    for value in direction):
+                constants[body] = direction
+            else:
+                expressions.append(body)
+
+        if not staged and not external:
+            continue
+        labels = ", ".join(_slot_label(*body, None) for body, _ in entries)
+        where = token + (" MaterialSum slot " + ".".join(map(str, slot)) if slot else "")
+        if expressions and (staged or len(entries) > 1):
+            raise _SharedMaterialError(
+                f"{labels}: {where} cannot mix a per-element fiber file "
+                "with a spatially or time-varying fiber expression.")
+        if external and (staged or constants or
+                         any(ref != next(iter(external.values())) for ref in external.values())):
+            raise _SharedMaterialError(
+                f"{labels}: {where} has incompatible external per-element "
+                "fiber files. Use the HDA Fiber File source to stage the "
+                "directions, or use the same external file and field for every body.")
+        if not staged:
+            continue
+        name = next(iter(staged.values()))
+        sources = shared.setdefault(name, dict(staged))
+        for body, direction in constants.items():
+            sources[body] = _normalize_fibers(
+                np.asarray([direction], dtype=float), _slot_label(*body, None))[0]
+        for _, material in entries:
+            material["fiber_direction"] = {
+                "type": "per_element_file", "path": FIBER_FILE, "field": name}
+    return materials, shared
 
 
 # PolyFEM formats {:d} with the output step index.
@@ -7237,26 +7413,40 @@ def build_params(parent, cache=None):
     build_solver(parent, data)
     build_output(parent, data)
     build_provenance(parent, data)
-    sideset_override = False
+    sideset_override = scene_override = False
     if extra_params:
+        pre_time = _digest(data.get("time"))
         pre_override = _digest([data["geometry"], data.get("boundary_conditions")])
         _deep_merge_json(data, extra_params)
         sideset_override = pre_override != _digest(
             [data.get("geometry"), data.get("boundary_conditions")])
+        scene_override = sideset_override or pre_time != _digest(data.get("time"))
     _guard_forward_json(data)
 
     params_path = os.path.join(input_dir, "params.json")
     with open(params_path, "w") as f:
         json.dump(data, f, indent=4)
     if sideset_override:
-        for filename in (SIDESET_RECORD_FILE, SCENE_RECORD_FILE):
-            path = os.path.join(input_dir, filename)
-            if os.path.isfile(path):
-                os.remove(path)
+        path = os.path.join(input_dir, SIDESET_RECORD_FILE)
+        if os.path.isfile(path):
+            os.remove(path)
     else:
         write_sideset_record(input_dir, data, plans)
+    if scene_override:
+        path = os.path.join(input_dir, SCENE_RECORD_FILE)
+        if os.path.isfile(path):
+            os.remove(path)
+    else:
         write_scene_record(parent, input_dir, data, plans, motions, cache=cache)
     _set_export_report(parent, plans)
+    if scene_override:
+        note = ("Extra JSON changed geometry, boundary conditions or time. "
+                "The HDA scene record was omitted because it would describe "
+                "different settings.")
+        report = parent.parm("export_report")
+        if report is not None:
+            report.set("\n".join(filter(None, (report.eval(), note))))
+        _status(note)
     return params_path
 
 
@@ -7595,40 +7785,62 @@ def _material_ui_records(parent, input_dir, data):
 
 
 def _material_ui_reproduces(parent, geo, vol, material, params_dir):
-    """Whether the subdomain's settings give exactly `material` and the
-    per-element values in its files."""
+    """Check the material and the file rows owned by this subdomain."""
     built = json.loads(json.dumps(build_material(parent, geo, vol)))
-    if built != material:
-        return False
-    fields, count = per_element_data(parent, geo)
-    order = solver_element_order(parent.node(f"branch_{geo}").geometry())
+    fields, _ = per_element_data(parent, geo)
+    branch = parent.node(f"branch_{geo}").geometry()
+    order = solver_element_order(branch, expect_msh=True)
+    entities = np.frombuffer(branch.primIntAttribValuesAsString("Entity"), dtype=np.int32)
+    mask = _volume_mask(branch)
+    owned = (entities[mask] if mask is not None else entities)[order] == vol
     table, total = global_element_table(parent)
-    offset = next((start for index, start, _ in table
-                   if int(index) == int(geo)), None)
+    offset = next((start for index, start, _ in table if index == geo), None)
     if offset is None:
         return False
-    for fam, model in material_families(parent, geo, vol):
+    stored_rows = offset + np.flatnonzero(owned)
+    directions = {}
+    for fam, _ in material_families(parent, geo, vol):
         for side in mirror_sides(parent, geo, vol, fam):
             values = fields.get(fiber_attrib(vol, fam, side))
-            if values is None:
-                continue
-            stored = read_cell_vectors_legacy_vtk(
-                os.path.join(params_dir, FIBER_FILE),
-                fiber_field(geo, vol, fam, side))
-            if len(stored) != total or not np.allclose(
-                    values[order], stored[offset:offset + count], rtol=0,
-                    atol=1e-8):
-                return False
+            if values is not None:
+                directions[fiber_field(geo, vol, fam, side)] = values[order][owned]
         kappa = fields.get(scalar_attrib("kappa", vol, fam))
         if kappa is not None:
             stored = np.loadtxt(os.path.join(
-                params_dir, per_element_scalar_file(geo, vol, fam, "kappa")),
-                ndmin=1)
+                params_dir, per_element_scalar_file(geo, vol, fam, "kappa")), ndmin=1)
             if len(stored) != total or not np.allclose(
-                    kappa[order], stored[offset:offset + count], rtol=1e-8,
-                    atol=0):
+                    kappa[order][owned], stored[stored_rows], rtol=1e-8, atol=0):
                 return False
-    return True
+
+    # The source settings may emit a local field name or a constant while
+    # the actual solver input references a shared global column. Compare
+    # directions on this subdomain before treating the references as equal.
+    local_models = built.get("models", [built])
+    stored_models = material.get("models", [material])
+    for local, stored_model in zip(local_models, stored_models):
+        if not isinstance(local, dict) or not isinstance(stored_model, dict):
+            continue
+        ref = stored_model.get("fiber_direction")
+        if not isinstance(ref, dict) or ref.get("path") != FIBER_FILE:
+            continue
+        source = local.get("fiber_direction")
+        if isinstance(source, dict) and source.get("path") == FIBER_FILE:
+            values = directions.get(source.get("field"))
+        elif isinstance(source, list) and len(source) == 3 and all(
+                type(v) in (int, float) for v in source):
+            values = _normalize_fibers(np.asarray([source], dtype=float),
+                                       _slot_label(geo, vol, None))
+        else:
+            values = None
+        if values is None:
+            return False
+        stored = read_cell_vectors_legacy_vtk(
+            os.path.join(params_dir, FIBER_FILE), ref["field"])
+        if len(stored) != total or not np.allclose(
+                values, stored[stored_rows], rtol=0, atol=1e-8):
+            return False
+        local["fiber_direction"] = ref
+    return built == material
 
 
 def _restore_material_ui(parent, scene, materials, params_dir, warnings):
@@ -7715,7 +7927,10 @@ def load_sideset_record(input_dir, data, resource_dir=None):
         return None, ("the boundary conditions in params.json differ from "
                       f"the ones the asset wrote, {stale}")
     files = record.get("selection_files", {})
-    for name in _selection_file_names(data):
+    current_files = set(_selection_file_names(data))
+    if not isinstance(files, dict) or set(files) != current_files:
+        return None, f"the selection files referenced in params.json changed, {stale}"
+    for name in sorted(current_files):
         selection_path = name if os.path.isabs(name) else os.path.join(
             resource_dir or input_dir, name)
         current = _file_digest(selection_path) \
@@ -7934,7 +8149,9 @@ def _material_findings(parent, geo, vol, quasistatic, errors):
                     "makes the bulk modulus infinite.")
             if model == "GrowthNeoHookean":
                 entries = _read_growth_tensor(parent, geo, vol)
-                errors.extend(_check_growth_tensor(entries, f"{where} ({name})"))
+                errors.extend(_check_growth_tensor(
+                    entries, f"{where} ({name})",
+                    os.path.join(parent.evalParm("working_dir"), "input")))
             elif model == "InversionBarrier":
                 thresh = parent.evalParm(f"inv_barrier_thresh{geo}_{vol}")
                 if not thresh > 0:
@@ -7973,12 +8190,11 @@ def _material_findings(parent, geo, vol, quasistatic, errors):
                     _orthotropic_values(parent, geo, vol))
                 if pd_err:
                     errors.append(f"{where} ({name}): {pd_err}")
-            axes = _numbers(parent.evalParm(f"material_coord{geo}_{vol}"))
-            if axes is None or len(axes) != 9:
-                errors.append(
-                    f"{where} ({name}): Material Axes must be 9 numbers, a "
-                    "3x3 rotation written row by row "
-                    "(identity: [1,0,0,0,1,0,0,0,1]).")
+            if model == "HookeLinearElasticity":
+                try:
+                    _hooke_axes(parent, geo, vol)
+                except hou.NodeError as exc:
+                    errors.append(_error_text(exc))
         elif model == "MooneyRivlin":
             if parent.evalParm(f"c1{geo}_{vol}") == 0 \
                     and parent.evalParm(f"c2{geo}_{vol}") == 0:
@@ -8212,7 +8428,7 @@ def _msh_duplicate_elements(geo_data):
         return 0
 
 
-def check_setup(parent, purpose="check", cache=None):
+def check_setup(parent, purpose="check", cache=None, *, raise_shared=False):
     """Find setup problems before PolyFEM does.
 
     purpose: "check" (the button: everything), "write" (no binary needed) or
@@ -8224,6 +8440,7 @@ def check_setup(parent, purpose="check", cache=None):
     """
     errors, warnings, notes = [], [], []
     working_dir = parent.evalParm("working_dir")
+    resource_dir = os.path.abspath(os.path.join(working_dir, "input"))
     if not working_dir.strip():
         errors.append("Working Directory is empty: choose the folder this "
                       "node writes the simulation's input and output to.")
@@ -8231,8 +8448,8 @@ def check_setup(parent, purpose="check", cache=None):
         notes.append(f"Working Directory {working_dir} does not exist yet; "
                      "it is created when the input is written.")
     if purpose != "write":
-        binary = parent.evalParm("polyfem_bin")
-        if not binary.strip():
+        binary = _resolved_binary(parent.evalParm("polyfem_bin").strip())
+        if not binary:
             errors.append("PolyFEM Binary is empty: point it at the PolyFEM "
                           "executable (PolyFEM_bin).")
         elif not os.path.isfile(binary):
@@ -8267,6 +8484,15 @@ def check_setup(parent, purpose="check", cache=None):
     for geo in range(1, num_geos + 1):
         path = parent.evalParm(f"file_location{geo}")
         obstacle = bool(parent.evalParm(f"is_obstacle{geo}"))
+        source = parent.parm(f"mesh_source{geo}")
+        if not obstacle and source is not None and source.evalAsString() == "sop":
+            sop_path = parent.evalParm(f"sop_path{geo}")
+            sop = (parent.node(sop_path) or hou.node(sop_path)) if sop_path else None
+            if isinstance(sop, hou.SopNode):
+                try:
+                    notes.extend(_sop_subdomain_notes(sop.geometry(), geo))
+                except hou.Error:
+                    pass  # existing mesh/source checks report cook failures
         if not parent.evalParm(f"is_enabled{geo}"):
             _disabled_geometry_findings(
                 parent, geo, obstacle, path, errors, cache=cache)
@@ -8328,7 +8554,8 @@ def check_setup(parent, purpose="check", cache=None):
         branch = parent.node(f"branch_{geo}")
         if branch is not None:
             try:
-                solver_element_order(branch.geometry())
+                solver_element_order(branch.geometry(),
+                                     expect_msh=path.lower().endswith(".msh"))
             except hou.Error as exc:
                 errors.append(f"Geometry {geo}: {_error_text(exc)}")
         fibers = False
@@ -8375,7 +8602,7 @@ def check_setup(parent, purpose="check", cache=None):
                         comp,
                         f"Geometry {geo} {key} (axis {'xyz'[axis_i]})"
                         if isinstance(val, list) and axis_i < 3
-                        else f"Geometry {geo} {key}")
+                        else f"Geometry {geo} {key}", resource_dir)
                     if err:
                         errors.append(err)
                 if key == "dirichlet_boundary":
@@ -8397,7 +8624,7 @@ def check_setup(parent, purpose="check", cache=None):
                         ic_vec if isinstance(ic_vec, list) else [ic_vec]):
                     err = _validate_tinyexpr(
                         comp, f"Geometry {geo} subdomain {vol} initial "
-                        f"condition {l} ({'xyz'[axis_i]})")
+                        f"condition {l} ({'xyz'[axis_i]})", resource_dir)
                     if err:
                         errors.append(err)
         bodies.append((geo, fixed))
@@ -8413,14 +8640,15 @@ def check_setup(parent, purpose="check", cache=None):
         for axis_i, comp in enumerate(
                 obs_vec if isinstance(obs_vec, list) else [obs_vec]):
             err = _validate_tinyexpr(
-                comp, f"Obstacle {geo} displacement ({'xyz'[axis_i]})")
+                comp, f"Obstacle {geo} displacement ({'xyz'[axis_i]})", resource_dir)
             if err:
                 errors.append(err)
     try:
         rhs_vec = _read_expr_vector(parent, "rhs_vec", "RHS", "rhs")
         for axis_i, comp in enumerate(
                 rhs_vec if isinstance(rhs_vec, list) else [rhs_vec]):
-            err = _validate_tinyexpr(comp, f"Global Body Load ({'xyz'[axis_i]})")
+            err = _validate_tinyexpr(
+                comp, f"Global Body Load ({'xyz'[axis_i]})", resource_dir)
             if err:
                 errors.append(err)
     except hou.Error as exc:
@@ -8505,10 +8733,17 @@ def check_setup(parent, purpose="check", cache=None):
             errors.append(
                 f"Strong Wolfe curvature c2 ({c2:g}) must lie strictly "
                 f"between Armijo c ({c1:g}) and 1 (Solver > Line Search).")
+    shared_error = None
     try:
         _check_composite_consistency(parent)
-    except hou.Error as exc:
+        _plan_body_materials(parent)
+    except _SharedMaterialError as exc:
+        shared_error = exc
         errors.append(_error_text(exc))
+    except (hou.Error, TypeError, ValueError) as exc:
+        message = _error_text(exc)
+        if not any(message in error for error in errors):
+            errors.append(message)
 
     t0, tend = parent.evalParm("t0"), parent.evalParm("tend")
     tend_on, dt_on, steps_on = _time_flags(parent)
@@ -8533,7 +8768,11 @@ def check_setup(parent, purpose="check", cache=None):
     hdf5 = _hdf5_note(parent)
     if hdf5:
         notes.append(hdf5)
-    return {"errors": errors, "warnings": warnings, "notes": notes}
+    report = {"errors": errors, "warnings": warnings, "notes": notes}
+    if shared_error is not None and raise_shared:
+        _set_check_report(parent, report)
+        raise shared_error
+    return report
 
 
 def _disabled_geometry_findings(parent, geo, obstacle, path, errors,
@@ -8782,7 +9021,7 @@ def _set_check_report(parent, report):
 def check_setup_button(kwargs):
     """Check Setup button: list every problem at once."""
     parent = kwargs["node"]
-    report = check_setup(parent, "check")
+    report = check_setup(parent, "check", raise_shared=True)
     _set_check_report(parent, report)
     if report["errors"] and not _resume_checkpoint(parent):
         _raise_saint_venant_axes(parent)
@@ -8800,7 +9039,7 @@ def gate_setup(parent, purpose, cache=None):
     before a run, once per node for the same list; writing only reports
     them, and without an interface (hython) they are printed.
     """
-    report = check_setup(parent, purpose, cache=cache)
+    report = check_setup(parent, purpose, cache=cache, raise_shared=True)
     _set_check_report(parent, report)
     if report["errors"]:
         if not _resume_checkpoint(parent):
@@ -8858,13 +9097,14 @@ _STOPPED_RE = re.compile(r"PolyFEM stopped: (.*)")
 
 
 def _launch_command(parent, params_path):
-    polyfem_bin = parent.evalParm("polyfem_bin")
+    polyfem_bin = _resolved_binary(parent.evalParm("polyfem_bin").strip())
     if not polyfem_bin or not os.path.isfile(polyfem_bin):
         raise hou.NodeError("No valid PolyFEM binary provided!")
+    params_path = os.path.abspath(params_path)
     input_dir = os.path.dirname(params_path)
     log_level = parent.evalParm("log_level")
     max_threads = parent.evalParm("max_threads")
-    args = [polyfem_bin, "-j", "params.json", "-o", "../output/",
+    args = [polyfem_bin, "-j", params_path, "-o", "../output/",
             "--log_level", str(log_level)]
     if max_threads > 0:
         args += ["--max_threads", str(max_threads)]
@@ -8900,16 +9140,55 @@ def _write_json(path, value):
     os.replace(temporary, path)
 
 
+def _posix_process(pid):
+    """Start time (one-second precision) and command from the POSIX process table."""
+    if os.name != "posix":
+        return None
+    try:
+        result = subprocess.run(
+            ["ps", "-ww", "-p", str(pid), "-o", "lstart=,command="],
+            env=dict(os.environ, LC_ALL="C"), capture_output=True, text=True,
+            timeout=2, check=True)
+        day_name, month, day, clock, year, command = result.stdout.split(maxsplit=5)
+        months = "Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec".split()
+        start = time.mktime((int(year), months.index(month) + 1, int(day),
+                             *map(int, clock.split(":")), 0, 0, -1))
+        return start, command.strip()
+    except (OSError, ValueError, OverflowError, subprocess.SubprocessError):
+        return None
+
+
+def _posix_run_alive(pid, expect, binary, created, earliest, latest, launcher):
+    process = _posix_process(pid)
+    if process is None or (created is None and earliest is None and latest is None):
+        return False
+    start, command = process
+    if ((created is not None and abs(start - created) >= 1.0)
+            or (earliest is not None and start + 1.0 < earliest)
+            or (latest is not None and start > latest)):
+        return False
+    if launcher:
+        # ps prints argv as a string. Match the complete script path after
+        # the interpreter, including any spaces in the working directory.
+        return command == launcher or command.partition(" ")[2] == launcher
+    if not binary or not expect or not os.path.isabs(expect):
+        return False
+    return (command.startswith(binary + " ") or
+            command.startswith(os.path.realpath(binary) + " ")) and bool(
+        re.search(r"(?:^|\s)(?:-j|--json)\s+" + re.escape(expect) +
+                  r"(?=\s|$)", command))
+
+
 def _process_alive(pid, expect=None, *, cwd=None, binary=None, created=None,
-                   earliest=None, latest=None, launcher=None):
+                   earliest=None, latest=None, launcher=None, for_signal=False):
     """Verify a run process against its input path and recorded start."""
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False
     try:
         import psutil
     except ImportError:
-        # Without process metadata, a recorded PID alone is unsafe to use.
-        return False
+        return not for_signal and _posix_run_alive(
+            pid, expect, binary, created, earliest, latest, launcher)
     try:
         process = psutil.Process(pid)
         if process.status() == psutil.STATUS_ZOMBIE:
@@ -8934,6 +9213,9 @@ def _process_alive(pid, expect=None, *, cwd=None, binary=None, created=None,
             return params is not None and _normalized_path(
                 os.path.join(actual_cwd, params)) == _normalized_path(expect)
         return expect is None or expect in command
+    except psutil.AccessDenied:
+        return not for_signal and _posix_run_alive(
+            pid, expect, binary, created, earliest, latest, launcher)
     except (psutil.Error, OSError, ValueError, TypeError):
         return False
 
@@ -8946,20 +9228,24 @@ def _process_created(pid):
     try:
         import psutil
     except ImportError:
-        return None
-    try:
-        return psutil.Process(pid).create_time()
-    except psutil.Error:
-        return None
+        psutil = None
+    if psutil is not None:
+        try:
+            return psutil.Process(pid).create_time()
+        except psutil.AccessDenied:
+            pass
+        except psutil.Error:
+            return None
+    return None  # the recorded launch window is used for POSIX fallback
 
 
-def _run_pid_matches(run, pid, *, launcher=False):
+def _run_pid_matches(run, pid, *, launcher=False, for_signal=False):
     if not pid:
         return False
     output = run["output"]
     input_dir = os.path.join(os.path.dirname(output), "input")
     started = run.get("started")
-    if started is not None and not isinstance(started, (int, float)):
+    if started is not None and (type(started) not in (int, float) or not math.isfinite(started)):
         return False
     earliest = started - 2 if started is not None else None
     if launcher:
@@ -8970,7 +9256,8 @@ def _run_pid_matches(run, pid, *, launcher=False):
         script = os.path.join(output, "run_polyfem.command"
                               if platform.system() == "Darwin" else "run_polyfem.sh")
         return _process_alive(pid, cwd=input_dir, launcher=script,
-                              earliest=earliest, latest=recorded_at + 1)
+                              earliest=earliest, latest=recorded_at + 1,
+                              for_signal=for_signal)
 
     manifest = _manifest_of_run(run) if started is not None else _manifest(output)
     process = manifest.get("process")
@@ -8988,10 +9275,13 @@ def _run_pid_matches(run, pid, *, launcher=False):
             latest = datetime.fromisoformat(stamp).timestamp() + 1
         except ValueError:
             pass
+    if not manifest and started is not None:
+        latest = started + 2  # the HDA records a Popen immediately after launch
     return _process_alive(pid, os.path.join(input_dir, "params.json"),
                           cwd=input_dir, binary=binary,
                           created=run.get("process_created"),
-                          earliest=earliest, latest=latest)
+                          earliest=earliest, latest=latest,
+                          for_signal=for_signal)
 
 
 def _manifest(output):
@@ -9288,6 +9578,10 @@ def active_run(parent):
     if isinstance(completion, dict) and completion.get("status") == "running" \
             and _run_pid_matches(external, pid):
         return dict(external, pid=pid)
+    if not manifest and record.get("kind") == "background":
+        pid = record.get("pid")
+        if _run_pid_matches(external, pid):
+            return dict(external, pid=pid)
     launcher = _read_launcher_pid(output)
     if record.get("kind") == "terminal" and launcher \
             and not os.path.isfile(os.path.join(output, _EXIT_STATUS_FILE)) \
@@ -9515,7 +9809,7 @@ def stop_run(kwargs):
                 popen.terminate()
             else:
                 os.killpg(popen.pid, signal.SIGTERM)
-        elif popen is None and _run_pid_matches(run, pid):
+        elif popen is None and _run_pid_matches(run, pid, for_signal=True):
             if platform.system() == "Windows":
                 subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
                                capture_output=True, timeout=10, check=True)
@@ -9523,9 +9817,10 @@ def stop_run(kwargs):
                 os.kill(pid, signal.SIGTERM)
         else:
             launcher = run.get("launcher_pid") or _read_launcher_pid(run["output"])
-            if popen is not None or not _run_pid_matches(run, launcher, launcher=True) \
+            if popen is not None or not _run_pid_matches(
+                    run, launcher, launcher=True, for_signal=True) \
                     or os.getpgid(launcher) != launcher:
-                _status("PolyFEM Stop could not verify the run process.")
+                _status("PolyFEM Stop refused: process identity unknown.")
                 return False
             os.killpg(launcher, signal.SIGTERM)
     except (OSError, subprocess.SubprocessError) as exc:
@@ -9769,8 +10064,11 @@ def _restore_obstacle_tables(parent, geo, entry, line, notes):
         notes.append(f"Obstacle {geo}: its motion was not restored (the Time "
                      "tab defines no run).")
         return False
-    functions, note = _interpolation_functions(entry["interpolation"], 3,
-                                               line)
+    interpolation = entry["interpolation"]
+    if isinstance(interpolation, list) and len(interpolation) == 2:
+        notes.append(f"Obstacle {geo}: two interpolation tables were supplied "
+                     "for three axes. The third axis uses a constant multiplier.")
+    functions, note = _interpolation_functions(interpolation, 3, line)
     if note:
         notes.append(f"Obstacle {geo}: {note}")
     for axis, (component, function) in enumerate(zip("xyz", functions)):
@@ -9793,7 +10091,7 @@ def _restore_obstacle_tables(parent, geo, entry, line, notes):
 
 
 def _restore_conditions(parent, data, volume_remap=None, scene=None,
-                        notes=None):
+                        notes=None, geometry=()):
     """Initial conditions, body force and obstacle motion from new-format
     json (sideset conditions are restored by _restore_sidesets). An obstacle
     the asset animated gets its transform keyframes back from the scene
@@ -9819,7 +10117,7 @@ def _restore_conditions(parent, data, volume_remap=None, scene=None,
         _set_expr_vector(parent, f"ic_vec{geo}_{vol}_{l}",
                          f"condition_vector_{geo}_{vol}_{l}", value)
 
-    _restore_obstacle_conditions(parent, data, scene, notes)
+    _restore_obstacle_conditions(parent, data, scene, notes, geometry)
 
 
 def _restore_body_load(parent, data, notes):
@@ -10407,13 +10705,13 @@ def _restore_legacy_scene(parent, data, geometry, input_dir, material_slots,
     per_slot = {}
     for type_index, key in enumerate(("solution", "velocity", "acceleration")):
         for entry in initial.get(key, []) if isinstance(initial, dict) else []:
-            slot = _material_slot(entry.get("id"), material_slots, True)
-            if slot is None:
+            slots = _material_slots(entry.get("id"), material_slots, True)
+            if not slots:
                 skipped.append(
                     f"Initial condition id {entry.get('id')} was not mapped.")
                 continue
-            per_slot.setdefault(slot, []).append(
-                (type_index, entry.get("value")))
+            for slot in slots:
+                per_slot.setdefault(slot, []).append((type_index, entry.get("value")))
     for (geo, vol), entries in per_slot.items():
         parent.setParms({f"initial_conditions{geo}_{vol}": len(entries)})
         for index, (type_index, value) in enumerate(entries, start=1):
@@ -10429,7 +10727,7 @@ def _restore_legacy_scene(parent, data, geometry, input_dir, material_slots,
         line = timeline(parent)
     except hou.Error:
         line = None
-    next_bc = {}
+    used_slots = {}
     for type_index, key in enumerate(_BC_LIST_KEYS):
         for entry in bc.get(key, []):
             if not isinstance(entry, dict):
@@ -10445,12 +10743,11 @@ def _restore_legacy_scene(parent, data, geometry, input_dir, material_slots,
                     f"Boundary condition selection id {sid} was not found.")
                 continue
             for geo, vol, sideset in selected_targets:
-                if direct is not None:
-                    index = direct[3]
-                else:
-                    key_tuple = (geo, vol, sideset)
-                    index = next_bc.get(key_tuple, 0) + 1
-                    next_bc[key_tuple] = index
+                used = used_slots.setdefault((geo, vol, sideset), set())
+                index = direct[3] if direct is not None else 1
+                while index in used:
+                    index += 1
+                used.add(index)
                 count = parent.parm(
                     f"Boundary_Condition__{geo}_{vol}_{sideset}")
                 if count is not None and count.eval() < index:
@@ -10467,7 +10764,7 @@ def _young_poisson(model):
     if young is not None and nu is not None:
         return young, nu
     lam, mu = model.get("lambda"), model.get("mu")
-    if not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+    if not all(type(v) in (int, float) and math.isfinite(v)
                for v in (lam, mu)) or lam + mu == 0:
         return None
     return mu * (3 * lam + 2 * mu) / (lam + mu), lam / (2 * (lam + mu))
@@ -10476,7 +10773,7 @@ def _young_poisson(model):
 def _import_isotropic(parent, geo, vol, model, warnings=None):
     warn = warnings.append if warnings is not None else _message
     token = model.get("type")
-    if token in ("SaintVenant", "HookeLinearElasticity", "InversionBarrier"):
+    if token in _TENSOR_MODELS + _E_NU_MODELS:
         elastic = _young_poisson(model)
         if token in ("SaintVenant", "HookeLinearElasticity") \
                 and "elasticity_tensor" not in model:
@@ -10491,7 +10788,7 @@ def _import_isotropic(parent, geo, vol, model, warnings=None):
                 warn(f"{_slot_label(geo, vol, None)}: {token} scalar stiffness "
                      "could not be converted to a numeric Elasticity Tensor.")
                 model = {k: v for k, v in model.items() if k not in ("E", "nu")}
-        elif token == "InversionBarrier" and elastic is not None:
+        elif token in _E_NU_MODELS and elastic is not None:
             model = dict(model, E=elastic[0], nu=elastic[1])
 
     parms = {}
@@ -10778,10 +11075,13 @@ def _restore_volume_assignments(parent, geo, geometry_data, params_dir,
     else:
         path = _selection_file(selection, params_dir)
         if path is None:
-            warnings.append(
-                f"Geometry {geo}: no file/scalar volume_selection; retained "
-                "the subdomains stored in the mesh.")
-            return {}
+            if selection is not None:
+                warnings.append(
+                    f"Geometry {geo}: unsupported volume_selection; retained "
+                    "the subdomains stored in the mesh.")
+            groups = physical_groups(geo_data)
+            return {tag: (geo, vol)
+                    for vol, tag in enumerate(groups["tags"], 1)}
         try:
             ids = np.loadtxt(path, dtype=np.int64, ndmin=1).reshape(-1)
         except (OSError, ValueError) as exc:
@@ -10855,22 +11155,33 @@ def _restore_volume_assignments(parent, geo, geometry_data, params_dir,
         for body, volume in body_to_volume.items()}
 
 
-def _material_slot(mid, material_slots, legacy):
+def _material_slots(mid, material_slots, legacy):
     try:
         value = int(mid)
-    except (TypeError, ValueError):
-        return None
+    except (TypeError, ValueError, OverflowError):
+        return []
     if value in material_slots:
         return material_slots[value]
     if legacy:
         text = str(abs(value))
         if len(text) >= 2:
-            return int(text[0]), int(text[1:] or 1)
+            return [(int(text[0]), int(text[1:]))]
     geo, vol = divmod(value, 1000)
-    return (geo, vol) if geo > 0 and vol > 0 else None
+    return [(geo, vol)] if geo > 0 and vol > 0 else []
 
 
-def _restore_time(parent, data):
+def _set_import_parms(parent, parms, section, warnings):
+    for name, value in parms.items():
+        try:
+            if value is None or isinstance(value, (list, dict)) or (
+                    isinstance(value, float) and not math.isfinite(value)):
+                raise ValueError(f"invalid value {value!r}")
+            parent.parm(name).set(value)
+        except (hou.Error, AttributeError, TypeError, ValueError, OverflowError) as exc:
+            warnings.append(f"{section}: could not restore {name} ({_error_text(exc)}).")
+
+
+def _restore_time(parent, data, warnings):
     time = data.get("time")
     if not isinstance(time, dict):
         return
@@ -10885,13 +11196,13 @@ def _restore_time(parent, data):
             "BDF6", "ImplicitNewmark"))}
     if isinstance(integrator, dict):
         token = integrator.get("type")
-        if token in integrators:
+        if isinstance(token, str) and token in integrators:
             parms["integrator"] = integrators[token]
         if "beta" in integrator:
             parms["newmark_beta"] = integrator["beta"]
         if "gamma" in integrator:
             parms["newmark_gamma"] = integrator["gamma"]
-    elif integrator in integrators:
+    elif isinstance(integrator, str) and integrator in integrators:
         parms["integrator"] = integrators[integrator]
     parms["end_time_bool"] = int("tend" in time)
     parms["time_inc_bool"] = int("dt" in time)
@@ -10908,10 +11219,10 @@ def _restore_time(parent, data):
             ("time_steps", "num_timesteps")):
         if key in time:
             parms[parm] = time[key]
-    parent.setParms(parms)
+    _set_import_parms(parent, parms, "time", warnings)
 
 
-def _restore_contact(parent, data):
+def _restore_contact(parent, data, warnings):
     contact = data.get("contact")
     if not isinstance(contact, dict):
         return
@@ -10949,7 +11260,7 @@ def _restore_contact(parent, data):
                 ("epsa", "adhesion_epsa")):
             if key in adhesion:
                 parms[parm] = adhesion[key]
-    parent.setParms(parms)
+    _set_import_parms(parent, parms, "contact", warnings)
 
 
 def _restore_space(parent, data, material_slots, legacy, warnings):
@@ -10975,16 +11286,16 @@ def _restore_space(parent, data, material_slots, legacy, warnings):
         for entry in orders:
             if not isinstance(entry, dict) or "order" not in entry:
                 continue
-            slot = _material_slot(entry.get("id"), material_slots, legacy)
-            if slot is None:
+            slots = _material_slots(entry.get("id"), material_slots, legacy)
+            if not slots:
                 warnings.append(
                     f"Discretization order id {entry.get('id')} could not be "
                     "mapped to a geometry/subdomain.")
                 continue
-            geo, vol = slot
-            parm = parent.parm(f"mainOrder{geo}_{vol}")
-            if parm is not None:
-                parm.set(max(0, int(entry["order"]) - 1))
+            for geo, vol in slots:
+                parm = parent.parm(f"mainOrder{geo}_{vol}")
+                if parm is not None:
+                    parm.set(max(0, int(entry["order"]) - 1))
 
 
 def _restore_solver(parent, data, legacy, warnings):
@@ -11032,12 +11343,12 @@ def _restore_solver(parent, data, legacy, warnings):
         if nonlinear_type in nonlinear_types \
                 and parent.parm("solver_nl") is not None:
             parms["solver_nl"] = nonlinear_types[nonlinear_type]
-        elif nonlinear_type in _UNSUPPORTED_NONLINEAR:
+        elif isinstance(nonlinear_type, str) and nonlinear_type in _UNSUPPORTED_NONLINEAR:
             warnings.append(
                 f"Nonlinear solver '{nonlinear_type}' is not offered by the "
                 f"HDA: it {_UNSUPPORTED_NONLINEAR[nonlinear_type]}; Newton "
                 "was kept.")
-        elif nonlinear_type not in nonlinear_types:
+        elif not isinstance(nonlinear_type, str) or nonlinear_type not in nonlinear_types:
             warnings.append(
                 f"Nonlinear solver '{nonlinear_type}' is not offered by the "
                 "HDA; Newton was kept.")
@@ -11105,12 +11416,12 @@ def _restore_solver(parent, data, legacy, warnings):
                 method = "None"
             aliases = {"ArmijoAlt": "Armijo", "MoreThuente": "Backtracking",
                        "ResidualBacktracking": "Backtracking"}
-            if method in aliases:
+            if isinstance(method, str) and method in aliases:
                 warnings.append(
                     f"Line search '{method}' is not available in this "
                     f"PolyFEM; '{aliases[method]}' was restored instead.")
                 method = aliases[method]
-            if method in methods:
+            if isinstance(method, str) and method in methods:
                 parms["method"] = methods[method]
             for key, parm in (
                     ("use_grad_norm_tol", "use_grad_norm_tol"),
@@ -11365,7 +11676,7 @@ def _restore_solver(parent, data, legacy, warnings):
                 f"exports {_BFGS_LINEAR_SOLVER} with it.")
     elif isinstance(linear, dict):
         _restore_linear_solver(parent, linear, parms, warnings)
-    parent.setParms(parms)
+    _set_import_parms(parent, parms, "solver", warnings)
 
     rayleigh = solver.get("rayleigh_damping", [])
     if isinstance(rayleigh, dict):
@@ -11385,7 +11696,7 @@ def _restore_solver(parent, data, legacy, warnings):
                 values[f"rayleigh_lagging{index}"] = \
                     entry["lagging_iterations"]
             if values:
-                parent.setParms(values)
+                _set_import_parms(parent, values, f"solver.rayleigh_damping[{index}]", warnings)
 
 
 def _restore_linear_solver(parent, linear, parms, warnings):
@@ -11400,6 +11711,9 @@ def _restore_linear_solver(parent, linear, parms, warnings):
             "was restored.")
     aliases = {"Eigen:SparseLU": "Eigen::SparseLU",
                "Eigen:PardisoLU": "Eigen::PardisoLU"}
+    if not isinstance(name, str):
+        warnings.append("solver.linear.solver must be a solver name.")
+        return
     name = aliases.get(name, name)
     if not name:
         parms["solver"] = tokens.index("auto")
@@ -11489,7 +11803,7 @@ def _restore_linear_solver(parent, linear, parms, warnings):
                     parms["eps_strong"] = aggr["eps_strong"]
 
 
-def _restore_output(parent, data, warnings=None):
+def _restore_output(parent, data, warnings):
     output = data.get("output")
     if not isinstance(output, dict):
         return
@@ -11603,7 +11917,7 @@ def _restore_output(parent, data, warnings=None):
         if "quiet" in log:
             parms["log_quiet"] = log["quiet"]
         parms["write_log"] = int("path" in log)
-    parent.setParms(parms)
+    _set_import_parms(parent, parms, "output", warnings)
 
 
 def _restore_units(parent, data):
@@ -11706,6 +12020,165 @@ def _revert_global_parms(parent):
     walk(ptg)
 
 
+# JSON keys the importer maps to controls or reconstructs by convention.
+# Object keys are listed by path so unused nested solver parameters can be
+# reported even when their enclosing section has supported controls.
+_IMPORT_KEYS = {
+    "space": "discr_order remesh",
+    "space.discr_order": "id order",
+    "space.remesh": REMESH_DEFAULTS.keys(),
+    **{f"space.remesh.{key}": value.keys() for key, value in REMESH_DEFAULTS.items()
+       if isinstance(value, dict)},
+    "time": "t0 tend dt time_steps quasistatic integrator",
+    "time.integrator": "type beta gamma",
+    "contact": ("enabled dhat epsv friction_coefficient use_convergent_formulation "
+                "use_gcp_formulation use_area_weighting use_improved_max_operator "
+                "use_physical_barrier alpha_n alpha_t min_distance_ratio "
+                "use_adaptive_dhat adhesion"),
+    "contact.adhesion": ("adhesion_enabled dhat_p dhat_a adhesion_strength "
+                         "tangential_adhesion_coefficient epsa"),
+    "solver": "max_threads nonlinear contact augmented_lagrangian advanced linear rayleigh_damping",
+    "solver.nonlinear": (
+        "solver max_iterations x_delta_tol x_delta grad_norm_tol grad_norm "
+        "first_grad_norm_tol rel_grad_norm_tol rel_x_delta_tol newton_decrement_tol "
+        "allow_non_grad_convergence iterations_per_strategy allow_out_of_iterations "
+        "norm_type Newton DenseNewton L-BFGS L-BFGS-B ADAM StochasticADAM "
+        "StochasticGradientDescent advanced line_search"),
+    "solver.nonlinear.solver": "type",
+    **{f"solver.nonlinear.{method}": (
+        "residual_tolerance reg_weight_min reg_weight_max reg_weight_inc "
+        "force_psd_projection use_psd_projection use_psd_projection_in_regularized")
+       for method in ("Newton", "DenseNewton")},
+    **{f"solver.nonlinear.{method}": "history_size"
+       for method in ("L-BFGS", "L-BFGS-B")},
+    **{f"solver.nonlinear.{method}": "alpha beta_1 beta_2 epsilon erase_component_probability"
+       for method in ("ADAM", "StochasticADAM")},
+    "solver.nonlinear.StochasticGradientDescent": "erase_component_probability",
+    "solver.nonlinear.advanced": ("f_delta_tol f_delta f_delta_step_tol "
+                                 "derivative_along_delta_x_tol gradient_fd_eps apply_gradient_fd"),
+    "solver.nonlinear.line_search": (
+        "method use_grad_norm_tol min_step_size max_step_size_iter min_step_size_final "
+        "max_step_size_iter_final default_init_step_size step_ratio "
+        "accept_energy_decrease_in_grad_mode Armijo RobustArmijo Wolfe"),
+    "solver.nonlinear.line_search.Armijo": "c roundoff_tolerance",
+    "solver.nonlinear.line_search.RobustArmijo": "delta_relative_tolerance",
+    "solver.nonlinear.line_search.Wolfe": ("c2 growth_factor growth_limit max_evaluations "
+                                          "max_objective_restarts approximate_wolfe_epsilon"),
+    "solver.contact": ("friction_iterations tangential_adhesion_iterations friction_convergence_tol "
+                       "CCD barrier_stiffness semi_implicit initial_barrier_stiffness dhat_epsilon_scale"),
+    "solver.contact.CCD": "broad_phase tolerance max_iterations resource_limits",
+    "solver.contact.CCD.resource_limits": "max_cell_items max_candidate_emissions",
+    "solver.contact.semi_implicit": (
+        "trim_lower trim_upper trim_factor initial_trim_estimate kappa_spread kappa_min "
+        "refresh_interval conditioning_cap controller_interval trial_displacement_cap "
+        "force_continuation continuation_max_ratio coefficient_identity friction_lag "
+        "band_statistic clamped_contacts gradient_balance_dofs restart"),
+    "solver.contact.semi_implicit.restart": (
+        "enabled alpha_threshold patience min_iterations soft_iteration_limit max_restarts stall_trim_factor"),
+    "solver.augmented_lagrangian": (
+        "initial_weight initial_weight_multiplier scaling max_weight eta error lumping nonlinear budget"),
+    "solver.augmented_lagrangian.nonlinear": "max_iterations",
+    "solver.augmented_lagrangian.budget": (
+        "max_passes stagnation_window progress_tolerance snap_tolerance drift_tolerance"),
+    "solver.advanced": ("cache_size lump_mass_matrix lagged_regularization_weight "
+                        "lagged_regularization_iterations jacobian_threshold check_inversion "
+                        "stall_restart line_search_failure_restarts"),
+    "solver.advanced.stall_restart": (
+        "enabled alpha_threshold patience min_iterations soft_iteration_limit "
+        "max_restarts feasible_ratio_threshold alpha_basis remedy"),
+    "solver.linear": "solver precond Pardiso Hypre AMGCL",
+    "solver.linear.Pardiso": "mtype",
+    "solver.linear.Hypre": "max_iter pre_max_iter tolerance theta nodal_coarsening",
+    "solver.linear.AMGCL": "solver precond",
+    "solver.linear.AMGCL.solver": "maxiter tol type",
+    "solver.linear.AMGCL.precond": "class max_levels direct_coarse ncycle relax coarsening",
+    "solver.linear.AMGCL.precond.relax": "type degree power_iters higher lower scale",
+    "solver.linear.AMGCL.precond.coarsening": "type estimate_spectral_radius relax aggr",
+    "solver.linear.AMGCL.precond.coarsening.aggr": "eps_strong",
+    "solver.rayleigh_damping": "form stiffness_ratio lagging_iterations",
+    "output": "directory paraview data advanced log json checkpoint restart_json",
+    "output.checkpoint": "path",
+    "output.paraview": "file_name vismesh_rel_area skip_frame high_order_mesh volume surface wireframe points async options fields",
+    "output.paraview.options": (
+        "use_hdf5 material body_ids contact_forces friction_forces normal_adhesion_forces "
+        "tangential_adhesion_forces velocity acceleration scalar_values tensor_values "
+        "discretization_order nodes forces force_high_order jacobian_validity obstacle_volume"),
+    "output.data": "solution stress_mat diagnostic_state state mises nodes",
+    "output.advanced": (
+        "timestep_prefix sol_on_grid compute_error sol_at_node vis_boundary_only curved_mesh_size "
+        "save_solve_sequence_debug save_ccd_debug_meshes save_time_sequence save_nl_solve_sequence spectrum"),
+    "output.log": "level quiet path",
+    "geometry": (
+        "type mesh mesh_sequence fps enabled is_obstacle volume_selection "
+        "surface_selection point_selection transformation"),
+    "geometry.transformation": "translation rotation rotation_mode scale",
+    "geometry.volume_selection": "file",
+    "geometry.surface_selection": "file id axis position box center radius normal point",
+    "geometry.point_selection": "file id",
+    "boundary_conditions": (*_BC_LIST_KEYS, "rhs", "obstacle_displacements"),
+    **{f"boundary_conditions.{kind}": "id value dimension interpolation"
+       for kind in (*_BC_LIST_KEYS, "obstacle_displacements")},
+}
+_IMPORT_KEYS = {path: frozenset(keys.split() if isinstance(keys, str) else keys)
+                for path, keys in _IMPORT_KEYS.items()}
+
+_IMPORT_MATERIAL_KEYS = {
+    **{token: "E young nu lambda mu phi psi" for token in _E_NU_MODELS},
+    **{token: "E young nu lambda mu phi psi elasticity_tensor fiber_direction"
+       for token in _TENSOR_MODELS},
+    "GrowthNeoHookean": "E young nu lambda mu g11 g12 g13 g22 g23 g33",
+    "InversionBarrier": "E young nu lambda mu JBarrierThreshold",
+    "AMIPS": "weight power normalized use_rest_pose",
+    "IncompressibleOgden": "c C m k",
+    "UnconstrainedOgden": "alphas mus Ds ds",
+    "MooneyRivlin": "c1 c2 k",
+    "MooneyRivlin3Param": "c1 c2 c3 d1",
+    "MooneyRivlin3ParamSymbolic": "c1 c2 c3 d1",
+    "MooneyRivlin3ParmSymbolic": "c1 c2 c3 d1",
+    "HGODispersion": "fiber_direction k1 k2 kappa k_chi",
+    "HGOFiber": "fiber_direction k1 k2",
+    "ActiveFiber": "fiber_direction Tmax activation",
+    "VolumePenalty": "k",
+    "MaterialSum": "models",
+}
+
+
+def _unrepresented_import_paths(data):
+    def walk(value, schema_path, path, missing=False):
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                yield from walk(item, schema_path, f"{path}[{index}]", missing)
+            return
+        if not isinstance(value, dict):
+            return
+        keys = _IMPORT_KEYS.get(schema_path, ())
+        if schema_path == "materials":
+            token = value.get("type")
+            model_keys = _IMPORT_MATERIAL_KEYS.get(token, "") if isinstance(token, str) else ""
+            keys = {"type", "id", "rho", *model_keys.split()}
+        elif schema_path == "materials.fiber_direction":
+            keys = {"type", "path", "field"}
+        elif schema_path.startswith("solver.linear.Eigen::"):
+            keys = {"max_iter", "tolerance"}
+        elif schema_path.startswith("boundary_conditions.") and schema_path.endswith(".interpolation"):
+            keys = {"type", "points", "values", "extend", "from", "to"}
+        for key, item in value.items():
+            child_schema = f"{schema_path}.{key}"
+            child_path = f"{path}.{key}"
+            represented = key in keys or (schema_path == "solver.linear" and key.startswith("Eigen::"))
+            if schema_path == "solver.advanced" and key == "stall_restart":
+                represented = isinstance(item, dict)
+            if missing or not represented:
+                yield child_path
+            if schema_path == "materials" and key == "models":
+                child_schema = "materials"
+            yield from walk(item, child_schema, child_path, missing or not represented)
+
+    for section in ("space", "solver", "time", "contact", "output",
+                    "materials", "geometry", "boundary_conditions"):
+        yield from walk(data.get(section), section, section)
+
+
 def read_params(kwargs):
     parent = kwargs["node"]
     selected_value = parent.evalParm("old_input_dir").strip()
@@ -11726,7 +12199,7 @@ def read_params(kwargs):
     try:
         with open(params_path) as f:
             data = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, ValueError) as e:
         _message(f"Error reading JSON file: {e}")
         return
     if not isinstance(data, dict):
@@ -11777,14 +12250,29 @@ def read_params(kwargs):
     raw_geometry = [
         _sequence_as_obstacle(item, index, scene, resource_dir, warnings)
         for index, item in enumerate(raw_geometry, 1)]
-    geometry = [item for item in raw_geometry
+    retained = [(index, item) for index, item in enumerate(raw_geometry, 1)
                 if isinstance(item, dict) and "mesh" in item]
+    geometry = [item for _, item in retained]
+    if scene is not None:
+        obstacles = scene.get("obstacles")
+        if isinstance(obstacles, dict):
+            remapped = {}
+            for geo, (index, _) in enumerate(retained, 1):
+                obstacle = obstacles.get(str(index))
+                if not isinstance(obstacle, dict):
+                    continue
+                transforms = obstacle.get("transform", {})
+                remapped[str(geo)] = dict(obstacle, transform={
+                    re.sub(rf"(?<!\d){index}([xyz]?)$", rf"{geo}\g<1>", name): keys
+                    for name, keys in transforms.items()}) if isinstance(transforms, dict) else obstacle
+            scene = dict(scene, obstacles=remapped)
     ignored = len(raw_geometry) - len(geometry)
     if ignored:
         warnings.append(f"Skipped {ignored} procedural/non-mesh geometry entries.")
-    if not any(_usable_import_mesh(item, resource_dir) for item in geometry):
-        _message("The geometry section contains no usable mesh files. Check "
-                 "the mesh paths, file format and geometry type.")
+    mesh_errors = [_import_mesh_error(item, resource_dir) for item in geometry]
+    if not geometry or all(mesh_errors):
+        _message("The geometry section contains no usable mesh files.\n" +
+                 "\n".join(error for error in mesh_errors if error))
         return
 
     if hou.isUIAvailable() and _has_loaded_geometry(parent):
@@ -11798,35 +12286,62 @@ def read_params(kwargs):
             return
     with hou.undos.group("Import PolyFEM JSON"):
         _import_scene(kwargs, parent, data, geometry, scene, params_path,
-                      input_dir, resource_dir, warnings)
+                      input_dir, resource_dir, warnings, mesh_errors)
 
 
-def _usable_import_mesh(item, resource_dir):
+def _import_mesh_error(item, resource_dir):
     mesh = item.get("mesh")
     if not isinstance(mesh, str) or not mesh.strip():
-        return False
-    path = os.path.join(resource_dir, mesh)
+        return "mesh path is not a file string."
+    path = os.path.abspath(os.path.join(resource_dir, os.path.expandvars(mesh)))
     if not os.path.isfile(path):
-        return False
+        return f"mesh file not found: {path}"
     extension = os.path.splitext(path)[1].lower()
     try:
         if extension == ".msh":
             reader = hou.nodeType(hou.sopNodeTypeCategory(), "MSH_Reader::3.0")
+            if reader is None:
+                return "MSH Reader 3.0 is unavailable."
             cells = reader.hdaModule().read_msh(path)["cells"]
-            return bool(cells) if item.get("is_obstacle") else any(
+            has_elements = bool(cells) if item.get("is_obstacle") else any(
                 family in cells and len(cells[family]["corners"])
                 for family in ("tet", "hex"))
+            return None if has_elements else f"mesh has no usable elements: {path}"
         if extension in (".obj", ".stl", ".ply"):
             geometry = hou.Geometry()
             geometry.loadFromFile(path)
-            return bool(geometry.intrinsicValue("primitivecount"))
-    except (OSError, ValueError, RuntimeError, hou.Error):
-        return False
-    return False
+            return None if geometry.intrinsicValue("primitivecount") else f"empty mesh: {path}"
+    except Exception as exc:  # preserve later geometries even on parser failure
+        return f"could not read mesh {path} ({_error_text(exc)})"
+    return f"unsupported mesh format: {path}"
+
+
+def _import_rotation(transform):
+    rotation = transform.get("rotation")
+    if rotation is None or rotation == []:
+        return [0, 0, 0]
+    mode = transform.get("rotation_mode", "xyz")
+    if not isinstance(mode, str):
+        raise ValueError(f"unsupported rotation_mode {mode!r}")
+    mode = mode.lower()
+    if mode == "axis_angle":
+        if not isinstance(rotation, list) or len(rotation) != 4 or not all(
+                type(v) in (int, float) and math.isfinite(v) for v in rotation):
+            raise ValueError("axis_angle needs [angle_deg, ax, ay, az]")
+        angle, *axis = rotation
+        if not math.hypot(*axis) > 0:
+            raise ValueError("axis_angle needs a nonzero rotation axis")
+        return tuple(hou.hmath.buildRotateAboutAxis(axis, angle).extractRotates())
+    if mode == "xyz" and isinstance(rotation, list) and len(rotation) == 3 and all(
+            type(v) in (int, float) and math.isfinite(v) for v in rotation):
+        return rotation
+    if mode == "xyz":
+        raise ValueError("xyz rotation needs three finite Euler angles")
+    raise ValueError(f"unsupported rotation_mode {mode!r}")
 
 
 def _import_scene(kwargs, parent, data, geometry, scene, params_path,
-                  input_dir, resource_dir, warnings):
+                  input_dir, resource_dir, warnings, mesh_errors):
     legacy = _looks_legacy(data)
     if legacy:
         warnings.append(
@@ -11848,20 +12363,33 @@ def _import_scene(kwargs, parent, data, geometry, scene, params_path,
     parent.setParms({"num_geos": len(geometry), "geo_int": len(geometry)})
 
     valid_geometries = []
-    for i, g in enumerate(geometry, 1):
-        mesh = g.get("mesh", "")
-        if not isinstance(mesh, str) or not mesh:
-            warnings.append(f"Geometry {i}: mesh path is not a file string.")
+    # Reserve the entire incoming set before any basename can be copied.
+    mesh_paths = [
+        os.path.abspath(os.path.join(resource_dir, os.path.expandvars(item["mesh"])))
+        if isinstance(item.get("mesh"), str) and item["mesh"].strip() else ""
+        for item in geometry]
+    destination = os.path.abspath(os.path.join(working_dir, "input"))
+    taken = {path: path for path in mesh_paths
+             if os.path.dirname(path) == destination}
+    real_destination = os.path.realpath(destination)
+    for path in filter(None, mesh_paths):
+        resolved = os.path.realpath(path)
+        if os.path.dirname(resolved) == real_destination:
+            taken[os.path.join(destination, os.path.basename(resolved))] = path
+    for i, (g, mesh, error) in enumerate(zip(geometry, mesh_paths, mesh_errors), 1):
+        if error:
+            warnings.append(f"Geometry {i}: {error}")
             continue
-        if not os.path.isabs(mesh):
-            mesh = os.path.join(resource_dir, mesh)
-        if not os.path.isfile(mesh):
-            warnings.append(f"Geometry {i}: mesh file not found: {mesh}")
+        try:
+            staged = _stage_mesh(i, mesh, destination, taken)
+            parent.setParms({f"file_location{i}": staged,
+                             f"is_enabled{i}": bool(g.get("enabled", True)),
+                             f"is_obstacle{i}": bool(g.get("is_obstacle", False))})
+            create_geo_nodes({"node": parent, "script_multiparm_index": str(i),
+                              "parm_name": f"file_location{i}"})
+        except (hou.Error, OSError, ValueError, RuntimeError) as exc:
+            warnings.append(f"Geometry {i}: could not load {mesh} ({_error_text(exc)})")
             continue
-        parent.setParms({f"file_location{i}": mesh,
-                         f"is_enabled{i}": bool(g.get("enabled", True)),
-                         f"is_obstacle{i}": bool(g.get("is_obstacle", False))})
-        parent.parm(f"file_location{i}").pressButton()
         if parent.node(f"geo_{i}") is None:
             warnings.append(
                 f"Geometry {i}: Houdini could not construct the mesh node tree.")
@@ -11871,18 +12399,23 @@ def _import_scene(kwargs, parent, data, geometry, scene, params_path,
         if not isinstance(tr, dict):
             tr = {}
 
-        def vector3(value, default):
-            if isinstance(value, (int, float)):
-                return [value, value, value]
-            if not isinstance(value, (list, tuple)) or len(value) < 3:
-                return list(default)
-            return list(value[:3])
+        def vector3(key, default):
+            value = tr.get(key, [default] * 3)
+            if type(value) in (int, float):
+                value = [value] * 3
+            if isinstance(value, list) and len(value) == 3 and all(
+                    type(v) in (int, float) and math.isfinite(v) for v in value):
+                return value
+            warnings.append(f"Geometry {i}: invalid transformation.{key}; kept the default.")
+            return [default] * 3
 
-        t = vector3(tr.get("translation"), [0, 0, 0])
-        r = vector3(tr.get("rotation"), [0, 0, 0])
-        s = vector3(tr.get("scale"), [1, 1, 1])
-        if isinstance(s, (int, float)):
-            s = [s, s, s]
+        t = vector3("translation", 0)
+        s = vector3("scale", 1)
+        try:
+            r = _import_rotation(tr)
+        except (hou.Error, TypeError, ValueError, OverflowError) as exc:
+            warnings.append(f"Geometry {i}: {_error_text(exc)}; kept zero rotation.")
+            r = [0, 0, 0]
         parent.setParms({
             f"xform_t__{i}x": t[0], f"xform_t__{i}y": t[1], f"xform_t__{i}z": t[2],
             f"xform_r__{i}x": r[0], f"xform_r__{i}y": r[1], f"xform_r__{i}z": r[2],
@@ -11898,24 +12431,30 @@ def _import_scene(kwargs, parent, data, geometry, scene, params_path,
     material_slots = {}
     for i, g in enumerate(geometry, 1):
         if i in valid_geometries and not bool(g.get("is_obstacle", False)):
-            material_slots.update(_restore_volume_assignments(
-                parent, i, g, resource_dir, legacy, warnings))
+            try:
+                slots = _restore_volume_assignments(parent, i, g, resource_dir,
+                                                    legacy, warnings)
+                for body, slot in slots.items():
+                    material_slots.setdefault(body, []).append(slot)
+            except (hou.Error, OSError, TypeError, ValueError, RuntimeError) as exc:
+                warnings.append(f"Geometry {i}: volume assignments were not "
+                                f"restored ({_error_text(exc)}).")
 
     # Subdomain numbers that changed on the way in (compacted gaps):
     # {geo: {number in the file's ids: subdomain here}}.
     volume_remap = {}
-    for body, (geo, vol) in material_slots.items():
-        if body // 1000 == geo and body % 1000 != vol:
-            volume_remap.setdefault(geo, {})[body % 1000] = vol
+    for body, slots in material_slots.items():
+        for geo, vol in slots:
+            if body // 1000 == geo and body % 1000 != vol:
+                volume_remap.setdefault(geo, {})[body % 1000] = vol
 
     # Also recognize both HDA id encodings when volume_selection was absent.
     for geo in valid_geometries:
         if parent.evalParm(f"is_obstacle{geo}"):
             continue
         for vol in range(1, parent.evalParm(f"num_volumes{geo}") + 1):
-            material_slots.setdefault(1000 * geo + vol, (geo, vol))
-            material_slots.setdefault(
-                int(f"{geo}{vol}"), (geo, vol))
+            material_slots.setdefault(1000 * geo + vol, [(geo, vol)])
+            material_slots.setdefault(int(f"{geo}{vol}"), [(geo, vol)])
 
     # Materials: use the volume-selection lookup first. This preserves the
     # association even for arbitrary material ids and edited multi-material
@@ -11930,71 +12469,74 @@ def _import_scene(kwargs, parent, data, geometry, scene, params_path,
     elif not isinstance(materials, list):
         materials = []
         warnings.append("The materials section was not a list; defaults remain.")
-    all_slots = sorted(set(material_slots.values()))
+    all_slots = sorted({slot for slots in material_slots.values() for slot in slots})
     for material_index, m in enumerate(materials):
         if not isinstance(m, dict):
             warnings.append(
                 f"Material entry {material_index + 1} was not an object.")
             continue
         mid = m.get("id")
-        slot = _material_slot(mid, material_slots, legacy)
-        if slot is None and mid is None and material_index < len(all_slots):
-            slot = all_slots[material_index]
+        slots = _material_slots(mid, material_slots, legacy)
+        if not slots and material_index < len(all_slots) and (
+                mid is None or len(materials) == len(all_slots)):
+            geo, vol = all_slots[material_index]
+            slots = [(geo, vol)]
             warnings.append(
-                f"Material entry {material_index + 1} had no id and was "
-                f"associated positionally with geo {slot[0]} subdomain "
-                f"{slot[1]}.")
-        if slot is None and len(materials) == len(all_slots) \
-                and material_index < len(all_slots):
-            slot = all_slots[material_index]
-            warnings.append(
-                f"Material id {mid} did not match this HDA's id convention "
-                f"and was associated positionally with geo {slot[0]} "
-                f"subdomain {slot[1]}.")
-        if slot is None:
+                f"Material entry {material_index + 1} (id {mid}) was "
+                f"associated positionally with geo {geo} subdomain {vol}.")
+        if not slots:
             warnings.append(f"Material id {mid} could not be mapped; skipped.")
             continue
-        geo, vol = slot
-        if parent.parm(f"materials{geo}_{vol}") is None:
-            warnings.append(
-                f"Material id {mid} has no matching geometry/subdomain "
-                f"(geo {geo}, vol {vol}); skipped.")
-            continue
         token = m.get("type")
-        if token not in type_menu:
-            warnings.append(
-                f"Unknown material type '{token}' on id {mid}; its parameters "
-                "could not be shown in the interface.")
+        if not isinstance(token, str) or token not in type_menu:
+            warnings.append(f"Unknown material type '{token}' on id {mid}.")
             continue
-        parms = {f"materials{geo}_{vol}": type_menu[token]}
-        if "rho" in m:
-            parms[f"rho{geo}_{vol}"] = m["rho"]
-        parent.setParms(parms)
-
-        if token == "MaterialSum":
-            _import_composite(parent, geo, vol, m.get("models", []),
-                              params_dir, warnings)
-        elif token in FIBER_MODELS:
-            _import_fiber_model(
-                parent, geo, vol, None, m, params_dir, warnings)
-        else:
-            _import_isotropic(parent, geo, vol, m, warnings)
+        for geo, vol in slots:
+            if parent.parm(f"materials{geo}_{vol}") is None:
+                warnings.append(
+                    f"Material id {mid} has no matching geometry/subdomain "
+                    f"(geo {geo}, vol {vol}); skipped.")
+                continue
+            try:
+                parent.setParms({f"materials{geo}_{vol}": type_menu[token]})
+                if "rho" in m:
+                    parent.parm(f"rho{geo}_{vol}").set(m["rho"])
+                if token == "MaterialSum":
+                    _import_composite(parent, geo, vol, m.get("models", []),
+                                      params_dir, warnings)
+                elif token in FIBER_MODELS:
+                    _import_fiber_model(parent, geo, vol, None, m, params_dir, warnings)
+                else:
+                    _import_isotropic(parent, geo, vol, m, warnings)
+            except (hou.Error, OSError, TypeError, ValueError, RuntimeError) as exc:
+                warnings.append(f"Material id {mid} ({_slot_label(geo, vol, None)}): "
+                                f"{_error_text(exc)}")
     _restore_material_ui(parent, scene, materials, params_dir, warnings)
 
-    _restore_time(parent, data)
-    _restore_timeline(parent, scene)
-    _restore_contact(parent, data)
-    _restore_space(parent, data, material_slots, legacy, warnings)
-    _restore_solver(parent, data, legacy, warnings)
-    _restore_output(parent, data, warnings)
-    _restore_units(parent, data)
+    for section, restore, args in (
+            ("time", _restore_time, (data, warnings)),
+            ("timeline", _restore_timeline, (scene,)),
+            ("contact", _restore_contact, (data, warnings)),
+            ("space", _restore_space, (data, material_slots, legacy, warnings)),
+            ("solver", _restore_solver, (data, legacy, warnings)),
+            ("output", _restore_output, (data, warnings)),
+            ("units", _restore_units, (data,))):
+        try:
+            if section in ("time", "contact", "solver", "output") and \
+                    section in data and not isinstance(data[section], dict):
+                warnings.append(f"Section '{section}' is not a JSON object; kept defaults.")
+                continue
+            restore(parent, *args)
+        except (hou.Error, KeyError, TypeError, ValueError, OverflowError) as exc:
+            warnings.append(f"Section '{section}' was partially restored "
+                            f"({_error_text(exc)}).")
 
     # Current collision-free ids round-trip directly. Older HDA decimal ids and
     # generic PolyFEM selection ids are rebuilt through a compatibility mapper.
     _restore_body_load(parent, data, warnings)
     if not legacy:
         try:
-            _restore_conditions(parent, data, volume_remap, scene, warnings)
+            _restore_conditions(parent, data, volume_remap, scene, warnings, geometry)
         except Exception as e:
             warnings.append(f"Conditions were only partially restored: {e}")
         try:
@@ -12012,7 +12554,7 @@ def _import_scene(kwargs, parent, data, geometry, scene, params_path,
                 f"Older selections/conditions were only partially restored: "
                 f"{exc}")
     for i, g in enumerate(geometry, 1):
-        if g.get("is_obstacle"):
+        if i not in valid_geometries or parent.evalParm(f"is_obstacle{i}"):
             continue
         try:
             for vol in range(1, parent.evalParm(f"num_volumes{i}") + 1):
@@ -12037,6 +12579,9 @@ def _import_scene(kwargs, parent, data, geometry, scene, params_path,
         warnings.append(
             "Top-level JSON section(s) retained only in the source file (no "
             "equivalent HDA controls): " + ", ".join(unrepresented))
+
+    for path in _unrepresented_import_paths(data):
+        warnings.append(f"{path} has no equivalent HDA control and remains in the source JSON.")
 
     for geo in valid_geometries:
         if not parent.evalParm(f"is_obstacle{geo}"):

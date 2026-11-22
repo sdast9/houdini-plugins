@@ -30,6 +30,7 @@ class State(object):
         self.scene_viewer = scene_viewer
         self.handle = hou.Handle(scene_viewer, "Transform")
         self.node = None
+        self._bar_visibility = None
         self.geo_of_prim = current_tab + 1
         self.handle_settings = (
             "translate(1) scale(1) rotate(1) snap_to_selection(1)")
@@ -47,6 +48,8 @@ class State(object):
 
     # --- handle placement -----------------------------------------------------
     def _apply_pivot(self, parms: dict):
+        if self.node is None:
+            return
         idx = int(self.geo_of_prim)
         c = self._read_pivot_local(idx)
         p_world = c * self.node.worldTransform()
@@ -58,6 +61,8 @@ class State(object):
     def onEnter(self, kwargs):
         self.node = kwargs["node"]
         self.scene_viewer.setPromptMessage(State.MSG)
+        self._bar_visibility = (self.scene_viewer.isShowingOperationBar(),
+                                self.scene_viewer.isShowingSelectionBar())
         self.scene_viewer.showOperationBar(False)
         self.scene_viewer.showSelectionBar(False)
         self.handle.show(True)
@@ -66,8 +71,15 @@ class State(object):
         self.geo_of_prim = int(self.geo_of_prim) or 1
 
     def onExit(self, kwargs):
-        self.scene_viewer.showOperationBar(True)
-        self.scene_viewer.showSelectionBar(True)
+        if self._bar_visibility is not None:
+            operation, selection = self._bar_visibility
+            self.scene_viewer.showOperationBar(operation)
+            if selection:
+                self.scene_viewer.showSelectionBar(True)
+            else:
+                self.scene_viewer.showSelectionBar(False)
+            self._bar_visibility = None
+        self.node = None
 
     # --- interaction ----------------------------------------------------------
     def onMouseEvent(self, kwargs):
@@ -112,11 +124,18 @@ class State(object):
     # --- handle <-> state -----------------------------------------------------
     def onHandleToState(self, kwargs):
         parms = kwargs["parms"]
-        self._apply_pivot(parms)
         if self.node is None:
             return
+        self._apply_pivot(parms)
         try:
             idx = int(self.geo_of_prim)
+            if self.node.evalParm(f"is_obstacle{idx}"):
+                module = self.node.hdaModule()
+                if any(p.keyframes() for p in module._transform_parms(self.node, idx)):
+                    self.scene_viewer.setPromptMessage(
+                        "This obstacle has keyed transform parameters. Edit its "
+                        "keys in the parameter editor or Animation Editor.")
+                    return
             with hou.undos.group("PolyFEM Transform Handle"):
                 self.node.setParms({
                     f"xform_t__{idx}x": parms["tx"],
