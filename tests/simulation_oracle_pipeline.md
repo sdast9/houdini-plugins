@@ -60,3 +60,35 @@ This suite covers the constant isotropic materials, face loads and
 separate support reactions exposed by the HDA. The HDA Material Axes
 field accepts numerical rotation matrices. Run the matrix-expression
 case with the solver's CLI reproducer.
+
+## Transient nodal load and checkpoint continuation
+
+Use the command above with `tests/test_transient_load_restart.py` and a new
+output directory. The test uses one native P1 tetrahedron with its base fixed
+and its apex free in x. The PolyFEM node's Nodal Force condition applies a
+linear ramp from 0 to 30 N in 0.625 s at the apex only. The test verifies the
+exported node selection, load, interpolation, Implicit Euler settings, and
+physical units before comparing the output. The node exports a checkpoint at
+each 0.125 s step.
+
+The shear modulus is 12 kPa and the apex stiffness is 2,000 N/m. The
+consistent mass matrix has 2 kg on the diagonal and 1 kg off the diagonal.
+Row-sum lumping gives 5 kg on the diagonal. The analytical step solves
+`m (q_next - q - h v)/h² + K q_next = 48 t_next N`. The discrete velocity
+and acceleration are the backward differences of position and velocity.
+The initial state is at rest. The expected inertia on each vertex is
+`-M_ia a`.
+
+Two fresh HDA nodes resume their respective mass cases from the checkpoint
+at 0.25 s. Each resumed PVD keeps the global frame indices. Set Read PVD's
+Topology Frame to the first emitted frame, step 2, since the files for
+steps 0 and 1 are in the original output directory. The test uses that
+existing reader control and reads the unedited result files through the
+`OUT_result` SOP.
+
+Both original and resumed series are checked against the same analytical
+displacement, velocity, acceleration and three nodal force fields. At the
+repeated checkpoint frame, expected apex inertia is `-0.043416813 N` for
+consistent mass and `-0.228299643 N` for lumped mass. The comparisons use
+absolute tolerances of 3e-8 m, 3e-7 m/s, 3e-6 m/s² and 3e-5 N for the
+single-precision SOP attributes.

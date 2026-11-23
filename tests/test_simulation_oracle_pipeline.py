@@ -52,11 +52,11 @@ def face_prim(node, volume, keep):
     return prim
 
 
-def add_condition(node, volume, sideset, pattern, kind, value, dims, ramp=False):
+def add_condition(node, volume, sideset, pattern, kind, value, dims, ramp=False, points=False):
     node.parm(f"sideset_selection1_{volume}").set(sideset)
     node.parm(f"sideset_selection1_{volume}").pressButton()
     suffix = f"1_{volume}_{sideset}"
-    node.setParms({f"basegroup{suffix}": pattern, f"grouptype{suffix}": 0,
+    node.setParms({f"basegroup{suffix}": pattern, f"grouptype{suffix}": int(points),
                    f"Boundary_Condition__{suffix}": 1,
                    f"boundary_type{suffix}_1": kind,
                    f"vector_{suffix}_1": json.dumps(value),
@@ -100,8 +100,8 @@ def setup(work, binary, order):
     return node, faces
 
 
-def msh22_tets(path):
-    # The native SOP exporter stages a two-tetrahedron ASCII Gmsh 2.2 file.
+def msh22_tets(path, count=2):
+    # The fixtures stage disconnected tetrahedra in an ASCII Gmsh 2.2 file.
     text = path.read_text()
     assert text.startswith("$MeshFormat\n2.2 0 8\n"), path
     points = {}
@@ -113,7 +113,7 @@ def msh22_tets(path):
         _, element_type, ntags, *data = map(int, row.split())
         assert element_type == 4 and len(data) == ntags + 4, row
         elements.append(sorted(points[index - 1] for index in data[ntags:]))
-    assert len(points) == 8 and len(elements) == 2, (path, points, elements)
+    assert len(points) == 4 * count and len(elements) == count, (path, points, elements)
     return points, elements
 
 
@@ -153,7 +153,7 @@ def check_export(work, order, expected_faces):
                 ], entry
 
 
-def read_results(node, work, binary, identity, order, faces):
+def run_reader(node, work, binary, identity):
     module = node.hdaModule()
     run = module.run_background({"node": node})
     assert run and Path(run["binary"]).resolve() == binary, run
@@ -165,7 +165,6 @@ def read_results(node, work, binary, identity, order, faces):
         process.wait()
         raise
     assert code == 0, Path(run["log"]).read_text()
-    check_export(work, order, faces)
     manifest = read_json(work / "output" / "run-manifest.json")
     assert manifest["completion"]["exit_status"] == 0, manifest["completion"]
     assert manifest["build"] == identity["build_info"]
@@ -231,8 +230,8 @@ def check_readback(reader, work):
     (work / "measurements.json").write_text(json.dumps(measurements, indent=2) + "\n")
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def pipeline_inputs(description):
+    parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--solver", type=Path, required=True)
     parser.add_argument("--expect-commit", required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -251,10 +250,16 @@ def main():
                 "hda_sha256": install_libraries(), "houdini": hou.applicationVersionString(),
                 "preferences": str(prefs)}
     (root / "identity.json").write_text(json.dumps(identity, indent=2) + "\n")
+    return root, binary, identity
+
+
+def main():
+    root, binary, identity = pipeline_inputs(__doc__)
     for label, order in (("sop_order_ab", (0, 1)), ("sop_order_ba", (1, 0))):
         work = root / label
         node, expected_faces = setup(work, binary, order)
-        reader = read_results(node, work, binary, identity, order, expected_faces)
+        reader = run_reader(node, work, binary, identity)
+        check_export(work, order, expected_faces)
         check_readback(reader, work)
         print(f"PASS {label}", flush=True)
     print("2/2 Houdini cases passed", flush=True)
