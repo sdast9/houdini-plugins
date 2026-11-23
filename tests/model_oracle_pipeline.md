@@ -59,11 +59,17 @@ gives `sigma_xz = 83,000 Pa` and `W = 415 J/m³`. These follow from
 `sigma_xz = G gamma` and `W = G gamma² / 2`.
 
 The test checks the exported orthotropic constants and axes, the raw VTU
-energy, and the displacement, energy and Cauchy tensor on Read PVD geometry.
-Input body IDs, sideset face IDs and SI units are checked in all three cases.
+energy, and the displacement, energy, Cauchy tensor and nodal elastic force
+on Read PVD geometry. At the original vertex `z=1`, the integral of its shape
+gradient is `e_z/6 m²` because its boundary trace equals `z`. PolyFEM
+exports the negative energy gradient, so the apex force is `(-tau/6, 0, 0)`
+in N. The rotated and aligned cases give `-6333.333333 N` and
+`-13833.333333 N` in x. Input body IDs, sideset face IDs and SI units are
+checked in all three cases.
 
 The readback checks allow `5e-8 m` for displacement, `5e-7` for unit-axis
 distance and `I4bar`, `3e-5 Pa` and `2e-6 J/m³` for fiber stress and energy,
-and `0.05 Pa` and `2e-3 J/m³` for Hooke stress and energy. These absolute
-tolerances allow for single-precision SOP attributes and leave a wide margin
-to the orientation controls. Raw VTU energies use double-precision tolerances.
+and `0.05 Pa`, `2e-3 J/m³` and `5e-3 N` for Hooke stress, energy and force.
+These absolute tolerances allow for single-precision SOP attributes and
+leave a wide margin to the orientation controls. Raw VTU energies use
+double-precision tolerances.

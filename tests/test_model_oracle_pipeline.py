@@ -69,7 +69,7 @@ def new_case(path, binary, sop, displacement):
                    "quasistatic": 1, "end_time_bool": 1, "tend": 1.0,
                    "time_inc_bool": 1, "dt": 1.0,
                    "use_hdf5": 0, "tensor_values": 1, "materials_fields": 1,
-                   "body_ids_fields": 1, "output_json": 1,
+                   "body_ids_fields": 1, "forces_fields": 1, "output_json": 1,
                    "vis_boundary_only": 0, "sol_at_node": 1})
     mod = node.hdaModule()
     assert mod.load_sop_mesh({"node": node, "script_multiparm_index": "1"})
@@ -294,6 +294,14 @@ def hooke_case(root, binary, commit, rotated):
     check_close("Read PVD Hooke energy (J/m^3)", vectors(geo, "energy"), W, 2e-3)
     check_close("Read PVD Hooke Cauchy stress (Pa)",
                 stress_columns(lambda name: vectors(geo, name), "cauchy_stress"), sigma, 0.05)
+
+    # The original z=1 apex hat function equals z on the exterior. Splitting
+    # the tet at its centroid keeps that boundary trace, so the integral of
+    # its gradient stays e_z/6. PolyFEM exports the negative energy gradient.
+    apex = np.isclose(pos[:, 1], 0.0) & np.isclose(pos[:, 2], 1.0)
+    assert np.any(apex)
+    check_close("Read PVD apex elastic force (N)", vectors(geo, "elastic_forces")[apex],
+                np.array([-tau / 6.0, 0.0, 0.0]), 5e-3)
 
 
 def main():
