@@ -92,3 +92,24 @@ repeated checkpoint frame, expected apex inertia is `-0.043416813 N` for
 consistent mass and `-0.228299643 N` for lumped mass. The comparisons use
 absolute tolerances of 3e-8 m, 3e-7 m/s, 3e-6 m/s² and 3e-5 N for the
 single-precision SOP attributes.
+
+## One active vertex-to-face equilibrium
+
+Use the headless command above with `tests/test_contact_equilibrium_oracle.py`.
+A native tetrahedron has only the apex z displacement free. A fixed triangle
+contains the apex's orthogonal projection well inside its edges. The other
+solid vertices and the triangle's edges lie outside the barrier support.
+
+The initial gap is 0.09375 m and the reference displacement is -0.03125 m.
+At the resulting 0.0625 m gap, the unweighted clamped-log barrier with
+support 0.125 m and coefficient 10,000 gives an upward force of
+84.559405111 N. This comes from `-2 k d B'(d²)` where `B(s) =
+-(s-h)² log(s/h)` and `h = dhat²`. The axial elastic stiffness of the
+tetrahedron is 6,000 N/m, so the elastic force is +187.5 N.
+The manufactured nodal load is -272.059405111 N.
+
+The test audits the exported obstacle, contact mode and nodal load.
+It checks displacement, stress and the three apex forces in the cooked
+`OUT_result` SOP. Read PVD's force curves must report the base reaction
+of +187.5 N and the contact force on the triangle of -84.559405111 N.
+The supported setup uses quasistatics, a fixed barrier, and zero friction.
